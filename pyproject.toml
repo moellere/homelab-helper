@@ -43,6 +43,11 @@ helper = "homelab_helper.cli.main:app"
 # First-party probes ship via the same entry-point mechanism third-party
 # plugins use — no internal/external distinction.
 "host.identity" = "homelab_helper.probes.host.identity:HostIdentityProbe"
+"host.cpu"      = "homelab_helper.probes.host.cpu:HostCpuProbe"
+"host.memory"   = "homelab_helper.probes.host.memory:HostMemoryProbe"
+"host.network"  = "homelab_helper.probes.host.network:HostNetworkProbe"
+"host.storage"  = "homelab_helper.probes.host.storage:HostStorageProbe"
+"host.services" = "homelab_helper.probes.host.services:HostServicesProbe"
 
 [project.urls]
 Homepage = "https://github.com/enochroot/homelab-helper"

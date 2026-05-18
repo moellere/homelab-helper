@@ -112,7 +112,8 @@ def discover_host(
         console.print("[red]error:[/red] no probes matched the filter.")
         raise typer.Exit(code=2)
 
-    adapters = AdapterRegistry({"kernel-ssh": KernelSSHAdapter()})
+    ssh_adapter = KernelSSHAdapter()
+    adapters = AdapterRegistry({"kernel-ssh": ssh_adapter})
     runner = ProbeRunner(adapters)
 
     async def _go() -> int:
@@ -123,6 +124,7 @@ def discover_host(
             failures = 0
             async with session_scope(sm) as session:
                 host = await _resolve_host(session, name, primary_ip)
+                connect_host = host.primary_ip or host.hostname or name
                 target = ProbeTarget(
                     kind="host",
                     host_id=str(host.id),
@@ -134,19 +136,31 @@ def discover_host(
                     ssh_port=ssh_port,
                 )
 
-                for cls in probe_classes:
-                    probe = cls()
-                    console.print(f"[cyan]→ {probe.name}[/cyan] v{probe.version}")
-                    _run_row, result = await runner.run(
-                        probe, target, session, host_id=host.id, triggered_by="manual"
-                    )
-                    if result.success:
-                        n = len(result.observations)
-                        total_observations += n
-                        console.print(f"  [green]ok[/green] - {n} observation(s)")
-                    else:
-                        failures += 1
-                        console.print(f"  [red]failed[/red] - {result.error}")
+                # One SSH connection shared across the whole probe batch.
+                try:
+                    async with ssh_adapter.shared_session(
+                        connect_host,
+                        user=ssh_user,
+                        key_path=str(ssh_key) if ssh_key else None,
+                        password=ssh_password,
+                        port=ssh_port,
+                    ):
+                        for cls in probe_classes:
+                            probe = cls()
+                            console.print(f"[cyan]→ {probe.name}[/cyan] v{probe.version}")
+                            _run_row, result = await runner.run(
+                                probe, target, session, host_id=host.id, triggered_by="manual"
+                            )
+                            if result.success:
+                                n = len(result.observations)
+                                total_observations += n
+                                console.print(f"  [green]ok[/green] - {n} observation(s)")
+                            else:
+                                failures += 1
+                                console.print(f"  [red]failed[/red] - {result.error}")
+                except Exception as exc:
+                    console.print(f"[red]could not establish SSH session:[/red] {exc}")
+                    failures += 1
 
             console.print(
                 f"\nrun complete: [bold]{total_observations}[/bold] observation(s), "

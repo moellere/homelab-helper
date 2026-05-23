@@ -13,7 +13,7 @@ This is the harness's own database for the discovery/inventory MVP. NetBox is in
 
 Deferred to later slices, deliberately not here: workload profiles, service endpoints, storage volumes, network paths, action manifests, audit log for L2 actions, trust gradient, LLM router state, skill profile, project memory.
 
-L1 stance: the framework reads, proposes, never applies. Manifest schema is L2-compatible (so we don't repaint later) but no executor wires through it in Slice 1.
+L1 stance: the framework reads, proposes, never applies. Manifest schema is L2-compatible (so we don't repaint later) but no executor wires through it in Slice 1. L2 (execution) is a committed phase — Phase 6, gated by the trust gradient; its tables are forward-specified at the end of this doc so the L1 `ProposalLog` shape stays compatible with what `decide()` will consume.
 
 ## Cross-cutting conventions
 
@@ -663,12 +663,128 @@ For visibility, the things you'll see references to in design docs but not here:
 - `ServiceEndpoint` — DNS adapter slice
 - `StorageVolume`, `StorageBacking` — storage adapter slice
 - `NetworkPath` — planner slice
-- `ActionManifest`, `AuditLog` — L2 future
-- Trust gradient tables (`UserTrust`, `Domain`, `TrustHistory`) — L2 future
+- `ActionManifest`, `AuditLog` — L2 (Phase 6); the `ProposalLog.artifact` already carries the manifest shape
+- Trust gradient tables (`Domain`, `CellTrust`, `TrustBoundary`, `ElevationWindow`, `TrustHistory`) — L2 (Phase 6); forward-specified below under "Trust gradient tables"
 - LLM router state (`LLMRequest`, `ModelInvocation`) — agent slice
 - Skill profile, project memory — agent slice
 
 Each of these has a placeholder in design but no MVP code path. Worth noting because the day-one reconciler will produce *some* findings that the full system would handle automatically; in MVP they're text in `finding.description` and links in `finding.proposed_actions`.
+
+## Trust gradient tables (L2 slice — forward spec)
+
+Not in Slice 1. Specified here because the design is settled and the shapes constrain the L1 `ProposalLog`: `blast_radius`, `affected`, and `artifact.rollback` are exactly the inputs the gradient consumes. The gradient is the deterministic authorization model that gates execution when L2 (Phase 6) lands — see `architecture.md`, "Trust gradient (L2 authorization model)". The decision function `decide(action, context) → AutonomyLevel` is pure Python and never calls an LLM.
+
+```python
+class AutonomyLevel(str, Enum):
+    BLOCK = "block"            # forbidden by policy
+    PROPOSE = "propose"        # L1 default — log it, a human applies by hand
+    CONFIRM = "confirm"        # execute after explicit per-action approval
+    AUTONOMOUS = "autonomous"  # auto-execute, emit receipt, can auto-rollback
+
+class TrustDomain(str, Enum):
+    INVENTORY_METADATA = "inventory-metadata"
+    CONTAINERS = "containers"
+    DNS = "dns"
+    NETWORK_FABRIC = "network-fabric"
+    STORAGE = "storage"
+    HYPERVISOR = "hypervisor"        # vm / lxc lifecycle
+    HOST_OS = "host-os"
+    SECRETS = "secrets"              # absolute by default — see Domain.is_absolute
+
+
+# Domain — taxonomy + policy defaults. Seeded; edited at config level, rarely.
+class Domain(Base):
+    __tablename__ = "trust_domain"
+
+    name: Mapped[TrustDomain] = mapped_column(primary_key=True)
+    default_level: Mapped[AutonomyLevel] = mapped_column(default=AutonomyLevel.PROPOSE)
+    max_level: Mapped[AutonomyLevel] = mapped_column(default=AutonomyLevel.AUTONOMOUS)
+    is_absolute: Mapped[bool] = mapped_column(default=False)
+    # is_absolute=True ⇒ no override and no elevation window can cross this
+    # domain's floors; only a policy-config edit changes it. SECRETS ships True.
+
+
+# CellTrust — the moving floor, per (domain × action-kind × blast-radius).
+class CellTrust(Base):
+    __tablename__ = "cell_trust"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
+    domain: Mapped[TrustDomain] = mapped_column(index=True)
+    action_kind: Mapped[str] = mapped_column(String(64))    # "restart" | "recreate" | "reweight" | ...
+    blast_radius: Mapped[str] = mapped_column(String(64))   # mirrors ProposalLog.blast_radius
+    level: Mapped[AutonomyLevel] = mapped_column(default=AutonomyLevel.PROPOSE)
+    granted_by: Mapped[Optional[str]] = mapped_column(String(255))  # None ⇒ reached by auto-escalation
+    clean_streak: Mapped[int] = mapped_column(default=0)
+    on_probation: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(default=now)
+
+    __table_args__ = (
+        UniqueConstraint("domain", "action_kind", "blast_radius", name="uq_cell"),
+    )
+    # Auto-escalation raises level by one step ONLY for reversible + low-blast
+    # cells (blast_radius in {"metadata-only", "single-host"}) after N clean
+    # approvals. One bad outcome resets: level→PROPOSE, clean_streak→0,
+    # on_probation→True. Every other cell needs an explicit grant (granted_by set)
+    # and never auto-promotes.
+
+
+# TrustBoundary — per-host ceiling and window-proof marking.
+class TrustBoundary(Base):
+    __tablename__ = "trust_boundary"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
+    host_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("host.id"), index=True)
+    netbox_device_id: Mapped[Optional[int]] = mapped_column(index=True)
+    max_agent_authority: Mapped[AutonomyLevel] = mapped_column(default=AutonomyLevel.CONFIRM)
+    absolute: Mapped[bool] = mapped_column(default=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    # decide() clamps a cell's computed level to max_agent_authority for actions
+    # touching this host. absolute=True ⇒ window-proof: no override or window
+    # crosses the ceiling ("my production NAS, never, under any circumstances").
+
+
+# ElevationWindow — time-boxed lift of soft-hard floors, scoped and killable.
+class ElevationWindow(Base):
+    __tablename__ = "elevation_window"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
+    opened_by: Mapped[str] = mapped_column(String(255))     # owner identity; never an agent
+    reason: Mapped[str] = mapped_column(Text)
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON)     # {"domains": [...], "hosts": [...], "cells": [...]}
+    opened_at: Mapped[datetime] = mapped_column(default=now, index=True)
+    expires_at: Mapped[datetime] = mapped_column(index=True)  # hard expiry; no auto-renew
+    revoked_at: Mapped[Optional[datetime]]                    # the kill switch
+    revoked_by: Mapped[Optional[str]] = mapped_column(String(255))
+    # Within an open, unexpired, unrevoked window whose scope matches an action's
+    # cell, the executor may cross the verified-rollback floor and a NON-absolute
+    # host ceiling without per-action prompts — but still captures a best-effort
+    # snapshot first and tags the receipt with this window id. Never crosses an
+    # absolute floor. Outside any window, autonomous-meets-floor degrades to CONFIRM.
+
+
+# TrustHistory — append-only audit spine. Every authority change of any kind.
+class TrustHistory(Base):
+    __tablename__ = "trust_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
+    at: Mapped[datetime] = mapped_column(default=now, index=True)
+    actor: Mapped[str] = mapped_column(String(255))   # owner identity, or "system:auto-escalation"
+    event: Mapped[str] = mapped_column(String(64))
+    # "grant" | "auto-promote" | "demote" | "override" | "window-open" | "window-revoke"
+    domain: Mapped[Optional[TrustDomain]]
+    cell_trust_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("cell_trust.id"))
+    window_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("elevation_window.id"))
+    proposal_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("proposal_log.id"))
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    __table_args__ = (Index("ix_trust_history_at", "at"),)
+```
+
+Design notes:
+- **`decide()` is the only gate.** Every adapter `write()` at L2 routes through it; it reads the action's `(domain, action_kind, blast_radius)` cell, the matching `CellTrust.level`, the host's `TrustBoundary`, any open `ElevationWindow`, and the manifest's `artifact.rollback`. No LLM is ever in this path.
+- **Three tiers of floor hardness.** The cell default (`CellTrust.level`, moves) sits under the soft-hard floors (verified-rollback requirement + non-absolute `TrustBoundary` ceiling, crossable by override or window) which sit under the absolute floors (`Domain.is_absolute` or `TrustBoundary.absolute`, crossable only by editing policy config).
+- **Override is an event, not a table.** A per-action owner override is recorded as a `TrustHistory` row with `event="override"`; the action then proceeds and emits a receipt. Like the elevation window, it is owner-only and interactive — never available to an agent and never self-invoked by autonomous execution.
+- **Receipts.** Executed actions write back to `ProposalLog` (outcome, outcome_by, outcome_notes) and, where a snapshot was taken, store its restore handle in the proposal's outcome metadata. `AuditLog`/receipt detail beyond `ProposalLog` + `TrustHistory` is a Phase 6 design call.
 
 ## Migration strategy
 

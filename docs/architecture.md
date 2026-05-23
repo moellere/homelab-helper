@@ -10,7 +10,7 @@ Reminder of locked decisions, because the architecture is downstream of all of t
 - **Plugin-from-day-one probes**.
 - **Plugin objects** (`PhysicalPart`, `Placement`, `ConfigurationAssertion`, etc.) live in **harness DB**, not as NetBox plugins.
 - **Continuous mode uses an agent** running on managed hosts (helper-agent).
-- **L1 only for the foreseeable future** — propose, never apply. Manifest schema is L2-ready.
+- **L1 is the default and the floor; L2 is the planned final phase** — propose-never-apply ships first (Phases 1–5) and remains the product for anyone who never opts in. Execution (Phase 6) is gated by the **trust gradient**, a deterministic authorization model the operator controls (see "Security & trust"). Manifest schema is L2-ready from Slice 1.
 - **Ollama as default local LLM backend**; cloud BYOK as opt-in.
 - **No K8s pod-level modeling**; logical service surface kept by K8s adapter.
 - **Cables in NetBox**: chokepoints only, not every patch.
@@ -363,7 +363,67 @@ The LLM never sees raw secrets, raw SSH output, or anything that hasn't been thr
   - Harness DB tables (inventory, findings, proposals — harness's own state)
   - NetBox custom fields and InventoryItems (per the NetBox sync invariants in the schema doc)
 - Adapters for Proxmox/K8s/UniFi/Cloudflare have their write methods *implemented* (for L2-ready interfaces) but their dispatcher gates them behind a policy check that always returns False at L1.
-- Future L2 lift is a policy toggle plus the trust-gradient implementation — not a re-architecture.
+- Future L2 lift is the trust gradient (below) plus an Executor that consumes pending proposals — not a re-architecture. At L1, the gradient is present but every cell is pinned to `PROPOSE`.
+
+### Trust gradient (L2 authorization model)
+
+The trust gradient is the deterministic policy that decides whether a proposed change may execute. It is the *only* gate in front of every adapter write path once L2 lands. Two trust concepts live in this system and must not be conflated:
+
+- **Trust boundaries** (the table above) are an *information-flow* concept — who gets secrets, who is an attack surface.
+- **The trust gradient** is an *action-authority* concept — how much the framework may change without asking.
+
+They intersect at one invariant, the most important rule in the whole L2 design:
+
+> **The LLM is on the untrusted side of the boundary, so an LLM is never in the path that authorizes execution.** An agent may *draft* an action manifest; a deterministic policy function decides whether it runs. This is the reconciler/narrator split extended to actions: deterministic core, LLM explains.
+
+#### The decision function
+
+```
+decide(action, context) → BLOCK | PROPOSE | CONFIRM | AUTONOMOUS
+```
+
+| Level | Meaning |
+|---|---|
+| `BLOCK` | Forbidden by policy. |
+| `PROPOSE` | Log it; a human applies it by hand. **This is all of L1.** |
+| `CONFIRM` | System can execute, but each action needs explicit per-action approval. Proves the execution + rollback machinery under a human gate. |
+| `AUTONOMOUS` | Auto-executes, emits a receipt, notifies, can auto-rollback. |
+
+L1 is this function with every cell pinned to `PROPOSE`. L2 is raising that floor deliberately, per cell, opt-in. A user who never opts in keeps exactly the propose-only product. `decide()` is pure, deterministic Python — it never calls an LLM.
+
+Inputs (five axes; four already live on `ProposalLog`): **domain · user-trust-in-this-cell · blast radius · reversibility · provenance.**
+
+#### The promotable unit is a narrow cell
+
+```
+cell = (domain × action-kind × blast-radius)
+```
+
+Trust accrues per cell, not per domain, so a clean track record on `containers / restart / single-host` never authorizes `containers / recreate / single-host` — a different cell that earns its trust separately. Two ways a cell's floor rises:
+
+- **Auto-escalation** — applies *only* to reversible + low-blast cells (`blast ∈ {metadata-only, single-host}`): after N clean approvals the cell's default level rises one step. **One bad outcome instantly demotes** the cell to `PROPOSE` and flags it on probation. Trust accrues slowly, evaporates instantly.
+- **Explicit grant** — every other cell requires a durable owner grant to leave `PROPOSE`, and never auto-promotes.
+
+#### Three tiers of floor hardness
+
+This is the spine of the safety model:
+
+| Tier | What | How it is crossed |
+|---|---|---|
+| **Cell default** | the level auto-escalation and grants move | rises slowly, falls instantly |
+| **Soft-hard floors** | verified-rollback requirement; non-absolute per-host ceiling | per-action owner **override**, or an open **elevation window** |
+| **Absolute floors** | `secrets`, and any owner-marked window-proof host/domain | **only** by editing the policy config out-of-band — no runtime gesture, ever |
+
+Without the absolute tier, the only backstop is the reactive kill switch; with it, `secrets` and "my production NAS, never under any circumstances" are preventively unreachable by any window or override.
+
+#### Override and elevation window
+
+Both cross *soft-hard* floors only — never an absolute floor — and both are **owner-only, interactive, high-friction, and logged**. Neither is ever available to an agent, and neither is ever self-invoked by autonomous execution.
+
+- **Override** — a single action, past a soft-hard floor, with an explicit logged "I accept this." Recorded as a distinct `TrustHistory` event.
+- **Elevation window** — a time-boxed lift of soft-hard floors, **scoped** to specific cells/hosts (never blanket), with **hard expiry and no auto-renew**, a **live kill switch** (halts in-flight autonomous actions at the next checkpoint), and a **best-effort snapshot captured before each action** even though rollback isn't required. Every action under a window is tagged with the window id for post-hoc audit. Outside any open window, autonomous-meets-floor **degrades to `CONFIRM`** — the system asks rather than crossing the floor on its own.
+
+Schema carriers (`Domain`, `CellTrust`, `TrustBoundary`, `ElevationWindow`, `TrustHistory`) and their semantics are specified in `harness-schema-slice1.md` under "Trust gradient tables."
 
 ## Failure modes
 
@@ -402,7 +462,7 @@ User asked for `strict-local` but the requested task needs Frontier capability a
 | No K8s pod-level modeling | K8sAdapter keeps `local_context_data` updated on logical service VMs; doesn't sync pods. Scheduler-driven workload placement reasoning happens in the planner (P5), not in inventory. |
 | Cables chokepoints only | NetBox cable model lightly used; topology queries traverse only modeled cables. NetworkPath abstraction (P5) consumes this graph. |
 | Ollama default | LLMRouter ships with OllamaBackend pre-configured. First-run experience auto-detects local Ollama or prompts to install. |
-| L1 only | ProposalManager exists; no Executor. Action manifest schema is part of ProposalLog from day one. |
+| L1 default, L2 gated | ProposalManager exists from day one; the Executor lands in Phase 6 behind the trust gradient (`decide()`). Action manifest schema is part of ProposalLog from day one, so L2 is a wire-up. Phases 1–5 keep every cell pinned to `PROPOSE`. |
 | Inventory MVP | Phase 1 boundary is "discovery + inventory + day-one audit produces the 11 findings against dorktool." Everything else is Phase 2+. |
 
 ## What's deliberately not in this architecture document

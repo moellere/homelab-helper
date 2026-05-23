@@ -1,5 +1,10 @@
 # homelab-helper — Roadmap
 
+> For the concrete, checkbox-tracked task list of what's actually left
+> (remaining Phase 1 work + the Phase 6 trust-gradient build), see
+> [`backlog.md`](./backlog.md). This doc is the narrative; the backlog is the
+> punch list.
+
 ## Principles
 
 Three rules that shape every phase below.

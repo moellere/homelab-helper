@@ -35,11 +35,19 @@ The rest of Phase 1, and all of Phase 6, is below.
 ### P0 — critical path
 
 - [ ] **Reconciler** (`engine/reconciler.py`) — the keystone; everything below leans on it.
-  - [ ] Observation → inventory: update `Host.capabilities`, `Host.arch`, `Host.discovery_last_run`
-  - [ ] Part lineage: look up `PhysicalPart` by serial/wwid; open/close `Placement` rows on moves (no deletes)
-  - [ ] Precedence rules: kernel beats management-plane, recent beats stale, verified beats inferred
-  - [ ] Finding generation with deterministic fingerprint dedup (wire in the existing `FingerprintGenerator`)
-  - [ ] Re-run idempotency: update `last_seen`, don't duplicate (AC4)
+  - [x] Plug-rule architecture (`HostProjectionRule` registry) — extensible by appending entries; future probes don't change the reconciler core
+  - [x] `host.identity.*` slice → `Host.capabilities` projection + freshness markers (`discovery_last_run`, `last_verified`)
+  - [x] Latest-observation-per-key precedence (single-source; multi-source lands with non-SSH probes)
+  - [x] Host-field idempotency: re-run is a no-op (returns empty deltas)
+  - [x] CLI wiring: `helper discover host` invokes the reconciler after the probe batch
+  - [x] Replay-style test pattern (in-process fixtures); migrates to YAML when dorktool fixture lands
+  - [ ] `host.cpu.*` slice: arch, cores, threads, model, flags → `Host.arch` + capabilities
+  - [ ] `host.memory.*` slice + DIMM `PhysicalPart` / `Placement` lineage (open/close, append-only)
+  - [ ] `host.storage.*` slice + storage device `PhysicalPart` / `Placement` lineage
+  - [ ] `host.network.*` slice + NIC `PhysicalPart` / `Placement` lineage
+  - [ ] Multi-source precedence rules: kernel beats management-plane, verified beats inferred (lands with first non-SSH source)
+  - [ ] Finding generation with deterministic fingerprint dedup (wire in `FingerprintGenerator`)
+  - [ ] Finding-level idempotency: re-runs update `last_seen`, don't duplicate (AC4)
   - _Unblocks AC2, AC3, AC4. Expect to rewrite parts of it twice (per roadmap risk note); build the replay test fixture alongside it._
 
 ### P1 — needed for the acceptance criteria

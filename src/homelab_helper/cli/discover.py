@@ -21,11 +21,16 @@ from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.reconciler import Reconciler
 from homelab_helper.engine.runner import ProbeRunner
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
 from homelab_helper.probes.registry import discover_probes
 
 if TYPE_CHECKING:
+    import uuid
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from homelab_helper.probes.base import Probe
 
 discover_app = typer.Typer(
@@ -68,6 +73,17 @@ def _resolve_probes(filter_names: list[str] | None) -> list[type[Probe]]:
             chosen.append(available[n])
         return chosen
     return [cls for cls in available.values() if "host" in cls.target_kinds]
+
+
+async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
+    """Run the reconciler for a host and print the deltas."""
+    result = await Reconciler().reconcile_host(session, host_id)
+    console.print(
+        f"\n[cyan]reconciled[/cyan]: {result.observations_seen} "
+        f"observation(s) applied, {len(result.changes)} change(s)"
+    )
+    for field_name, value in result.changes.items():
+        console.print(f"  [dim]+[/dim] {field_name} = {value!r}")
 
 
 @discover_app.command(name="host")
@@ -161,6 +177,10 @@ def discover_host(
                 except Exception as exc:
                     console.print(f"[red]could not establish SSH session:[/red] {exc}")
                     failures += 1
+
+                # Reconcile from whatever observations landed (partial runs are
+                # worth applying). reconcile_host is idempotent.
+                await _reconcile_and_report(session, host.id)
 
             console.print(
                 f"\nrun complete: [bold]{total_observations}[/bold] observation(s), "

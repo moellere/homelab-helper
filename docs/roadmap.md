@@ -1,5 +1,10 @@
 # homelab-helper — Roadmap
 
+> For the concrete, checkbox-tracked task list of what's actually left
+> (remaining Phase 1 work + the Phase 6 trust-gradient build), see
+> [`backlog.md`](./backlog.md). This doc is the narrative; the backlog is the
+> punch list.
+
 ## Principles
 
 Three rules that shape every phase below.
@@ -8,7 +13,7 @@ Three rules that shape every phase below.
 
 **2. Acceptance criteria are demoable, not aspirational.** Every phase has at least one criterion that ends with "...against the dorktool.com lab." Real artifacts, real tests, no "we'll know it's done when it feels right."
 
-**3. The L2 executor is post-roadmap.** Five phases get to a fully useful read-only system: discovery, continuous monitoring, multi-source coordination, conversational layer, planning. L2 lift (the framework applying changes) is a separate decision later. The roadmap below does not pretend it knows when L2 happens.
+**3. L2 (execution) is the final phase, gated by the trust gradient.** Five phases get to a fully useful read-only system: discovery, continuous monitoring, multi-source coordination, conversational layer, planning. Phase 6 adds the executor — but every prior phase is independently complete, and L2 is opt-in: the framework never applies a change until the operator raises the trust floor for that specific class of action. The propose-only system (Phases 1–5) is the product for everyone who never opts in. L2 is committed to the roadmap, but deliberately last and deliberately gated.
 
 ## Dependency graph
 
@@ -25,11 +30,14 @@ Phase 1 — Inventory & Discovery
     │       │
     │       ▼
     │   Phase 5 — Planning & Recommendations
+    │       │
+    │       ▼
+    │   Phase 6 — L2 Execution & Trust Gradient
     │
     └── Cross-cutting: probe catalog growth, docs, test fixtures
 ```
 
-Phases 2 and 3 are sequential as written but loosely coupled — could be parallelized once Phase 1 is solid. Phase 4 can begin once Phase 3 produces enough cross-source signal to be worth narrating; can ship narratively before all of Phase 3 is done. Phase 5 needs both inventory depth (P1-2) and external context (P3).
+Phases 2 and 3 are sequential as written but loosely coupled — could be parallelized once Phase 1 is solid. Phase 4 can begin once Phase 3 produces enough cross-source signal to be worth narrating; can ship narratively before all of Phase 3 is done. Phase 5 needs both inventory depth (P1-2) and external context (P3). Phase 6 needs the proposal stream and blast-radius/rollback metadata that the planner (P5) and reconciler (P1-2) produce — it executes what the read-only system has been proposing all along.
 
 ## Effort scale
 
@@ -266,20 +274,63 @@ The framework starts producing recommendations, not just observations. The plann
 
 ### Stop-here value
 
-With Phase 5 you have **a homelab framework that recommends, not just reports**. This is the original vision realized. From here, the obvious next step is L2 (the framework actually applies the recommended changes), but Phase 5 alone is a complete product — recommendations a human applies by hand.
+With Phase 5 you have **a homelab framework that recommends, not just reports**. This is the read-only vision realized — recommendations a human applies by hand. Phase 6 is where the framework can also *apply* them, under operator control.
 
 ---
 
-## Post-roadmap (Phase 6+)
+## Phase 6 — L2 Execution & Trust Gradient
+
+The framework gains the ability to apply the changes it has been proposing — but only through a deterministic authorization model the operator controls. L1 (propose, never apply) is the floor; L2 raises it deliberately, per class of action, opt-in. Nothing about the read-only product changes for users who never enable execution. This is the phase the rest of the roadmap was built to make safe: the proposal stream, blast-radius tagging, and L2-ready manifest schema have existed since Phase 1 precisely so this phase is a wire-up, not a re-architecture.
+
+### Goals
+
+- Build the Executor: consumes approved action manifests, dispatches to adapter write paths, captures rollback state, emits receipts.
+- Build the trust gradient: the deterministic `decide()` policy function and its backing tables.
+- Build snapshot/rollback orchestration: per-blast-radius state capture before any execution.
+- Build the override and elevation-window mechanics, with a live kill switch.
+- Wire the gradient as the single gate in front of every adapter write path.
+
+### Deliverables
+
+| Deliverable | Notes |
+|---|---|
+| Executor | Reads pending `ProposalLog` artifacts; dispatches to adapter `write()` paths; transactional where the target supports it; emits a receipt per action. |
+| `decide()` policy engine | Pure function `(action, context) → BLOCK/PROPOSE/CONFIRM/AUTONOMOUS`. Deterministic; **no LLM in the authorization path**. |
+| Trust gradient tables | `Domain`, `CellTrust`, `TrustBoundary`, `ElevationWindow`, `TrustHistory` — see `harness-schema-slice1.md`. |
+| Auto-escalation engine | Per-cell clean-streak tracking; promotes reversible + low-blast cells after N clean approvals; instant demotion + probation on one bad outcome. |
+| Snapshot/rollback orchestrator | Per-blast-radius capture (ZFS/LVM snapshot, VM snapshot, config backup) before execution; the verified-rollback gate that caps autonomy. |
+| Override + elevation window | Owner-only, interactive, logged. Window scoping, hard expiry, no auto-renew, kill switch, best-effort snapshot under elevation. |
+| Receipts + audit spine | Every executed action → receipt; `TrustHistory` append-only record of every grant, auto-promotion, demotion, override, and window open/revoke. |
+| CLI: `helper trust grant/show`, `helper window open/revoke`, `helper exec` | The authorization surface. |
+
+### Acceptance criteria
+
+1. **With every cell at its default (`PROPOSE`), nothing executes** — Phases 1–5 behaviour is bit-for-bit unchanged. L1 is the gradient's floor, not a separate code path.
+2. **Grant `CONFIRM` on `containers/restart/single-host`**: approving a proposed container restart actually executes it and records a receipt carrying the captured rollback state.
+3. **A reversible + low-blast cell auto-promotes to `AUTONOMOUS`** after N clean approvals; a subsequent matching action runs unattended with a receipt; **one bad outcome demotes the cell** to `PROPOSE` and flags probation.
+4. **An action with no verified rollback never auto-executes** — it degrades to `CONFIRM` — *unless* an elevation window is open over its cell.
+5. **An `ElevationWindow` over `storage` on bmax2** lets autonomous runs cross the reversibility floor for 60 minutes, captures best-effort snapshots, tags every receipt with the window id, then auto-expires; **the kill switch halts it on demand**.
+6. **The `secrets` domain and a `TrustBoundary`-marked host reject every override and window** — only a policy-config edit changes them.
+
+### Effort
+
+**12–20 weeks.** The Executor and `decide()` engine are modest; the bulk is the safety machinery — snapshot/rollback orchestration across heterogeneous targets, verified-rollback semantics, the kill switch, and audit-trail integrity. This is the "3+ months focused" effort the earlier roadmap flagged, now committed and specified.
+
+### Stop-here value
+
+Phase 6 is **the full original vision**: a framework that plans, recommends, and — where you have explicitly extended trust — executes and maintains. Beyond it lies operate-and-maintain (incident triage, predictive failure) and the hosted tier; neither is required for L2 to be a complete product.
+
+---
+
+## Post-roadmap (Phase 7+)
 
 These are real future phases, deliberately not committed in this roadmap:
 
-- **L2 executor + trust gradient**. Action manifests become executable; the trust gradient gates execution per domain per user trust level. Significant safety engineering — rollback infrastructure, snapshot orchestration, kill switch, audit trail integrity. Probably 3+ months of focused work.
 - **Operate & maintain**. Incident triage agent, update orchestration, predictive failure analysis using observation history, anomaly detection.
 - **Multi-tenant + hosted service**. The Nabu-Casa-style subscription tier — managed LLM access, off-site backup, remote access, mobile push, community template marketplace.
 - **Heterogeneous architecture support beyond Linux**. FreeBSD probes (TrueNAS Core, pfSense/OPNsense), macOS probes (Mac mini servers), Windows probes (Windows hosts in mixed labs).
 
-Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into Phase 5.
+Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–6).
 
 ---
 
@@ -327,7 +378,7 @@ Replay-based testing for the reconciler is non-negotiable — without it, regres
 
 **LLM hallucination at the wrong level.** Even with the reconciler/narrator split, the LLM could narrate a finding incorrectly or invent a recommendation. Mitigation: every LLM output is citation-bound to specific findings/observations; UI surfaces "this came from finding X" explicitly; no LLM output is presented as fact without a source.
 
-**Scope creep into L2.** The pull to "while we're at it, let's just fix this" is constant. Mitigation: L1-only stance is explicit in the roadmap; every PR reviewer checks "does this enable a write path that wasn't agreed to?"
+**Scope creep into L2.** The pull to "while we're at it, let's just fix this" is constant — and now that L2 is a committed phase, the temptation to wire execution early is stronger. Mitigation: L2 is the *last* phase and every write path must route through the trust gradient. Phases 1–5 stay propose-only; every PR reviewer checks "does this enable a write path that isn't gated by `decide()`, or that ships before Phase 6?" The gradient existing on paper from Phase 1 (cells pinned to `PROPOSE`) is what keeps "L2-ready" from quietly becoming "L2-enabled."
 
 **Workload library accuracy decay.** Service profiles drift as software changes. Mitigation: schema includes version/last-verified per profile; community contribution lowers the maintenance burden on the project owner.
 
@@ -339,4 +390,4 @@ Replay-based testing for the reconciler is non-negotiable — without it, regres
 
 ## Total roadmap effort
 
-Adding the phase ranges: **28–42 weeks** for Phases 1–5, at the optimistic "focused hobby pace" estimate. Realistic (2× factor) is **56–84 weeks** — roughly a year to two of evening/weekend work. That's a lot. The stop-here markers exist precisely because *every* point along that road produces a working system; you decide phase-by-phase whether to continue.
+Adding the phase ranges: **28–42 weeks** for Phases 1–5, plus **12–20 weeks** for Phase 6 — **40–62 weeks** for the full L1→L2 arc, at the optimistic "focused hobby pace" estimate. Realistic (2× factor) is **80–124 weeks** — two to two-and-a-half years of evening/weekend work. That's a lot. The stop-here markers exist precisely because *every* point along that road produces a working system; you decide phase-by-phase whether to continue. Phases 1–5 are a complete read-only product on their own — Phase 6 is the deliberate, gated decision to let the framework act.

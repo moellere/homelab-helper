@@ -8,11 +8,14 @@
 It discovers what you have, maintains a coherent inventory across the many sources
 of truth a real homelab spans (NetBox, Proxmox, Kubernetes, UniFi, Cloudflare,
 kernel probes), surfaces drift and gaps as auditable findings, and proposes
-changes — but never applies them. L1 stance is "propose, never apply" for the
-foreseeable future; an L2 executor is a deliberate post-roadmap decision.
+changes. Phases 1–5 are strictly "propose, never apply" (L1) — and remain a
+complete product for anyone who never opts in. Phase 6 (L2) adds execution,
+but only behind the **trust gradient**: a deterministic, operator-controlled
+authorization model that the framework can never escalate on its own.
 
-See [`architecture.md`](./architecture.md) for the architecture document and
-[`roadmap.md`](./roadmap.md) for the phased delivery plan.
+See [`architecture.md`](./docs/architecture.md) for the architecture document,
+[`roadmap.md`](./docs/roadmap.md) for the phased delivery plan, and
+[`backlog.md`](./docs/backlog.md) for the concrete task list of what's left.
 
 ## Phase 1 — Inventory & Discovery
 
@@ -29,10 +32,11 @@ The current MVP wedge. After Phase 1, the framework can:
 
 ```
 .
-├── architecture.md                 # System architecture (locked decisions)
-├── roadmap.md                      # Phased delivery plan
-├── harness-schema-slice1.md        # Slice 1 DB schema spec (11 tables)
-├── netbox-modeling-walkthrough.md  # NetBox modeling decisions for the dorktool lab
+├── docs/architecture.md            # System architecture (locked decisions)
+├── docs/roadmap.md                 # Phased delivery plan
+├── docs/backlog.md                 # Concrete task list (Phase 1 gaps + Phase 6)
+├── docs/harness-schema-slice1.md   # Slice 1 DB schema spec (11 tables) + trust-gradient forward spec
+├── docs/netbox-modeling-walkthrough.md  # NetBox modeling decisions for the dorktool lab
 ├── pyproject.toml                  # uv-managed project metadata
 ├── src/homelab_helper/             # The package
 │   ├── db/                         # Models, enums, session

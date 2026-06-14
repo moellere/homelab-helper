@@ -29,7 +29,6 @@ from homelab_helper.db.session import make_engine, make_sessionmaker, session_sc
 if TYPE_CHECKING:
     from pathlib import Path
 
-
 runner = CliRunner()
 
 
@@ -242,6 +241,92 @@ def test_assert_list_with_all_includes_disabled(assert_db_url: str, tmp_path: Pa
     assert "3 assertion(s)" in all_listed.stdout
 
 
+_LIB_YAML_BMAX0 = """
+version: 1
+assertions:
+  - name: bmax0.from_library.cores_at_least_4
+    host: bmax0
+    description: bmax0 must report >= 4 cores (loaded from library)
+    severity_on_fail: low
+    verifier_spec:
+      key: host.cpu.cores
+      predicate: gte
+      value: 4
+  - name: bmax0.from_library.os_supported
+    host: bmax0
+    description: bmax0 OS should be Ubuntu/Debian
+    severity_on_fail: low
+    verifier_spec:
+      key: host.identity.os_id
+      predicate: regex
+      value: "^(ubuntu|debian)$"
+"""
+
+
+def test_assert_load_creates_rows(assert_db_url: str, tmp_path: Path) -> None:
+    lib = tmp_path / "lib.yaml"
+    lib.write_text(_LIB_YAML_BMAX0)
+
+    result = runner.invoke(app, ["assert", "load", str(lib)])
+    assert result.exit_code == 0
+    assert "2 created" in result.stdout or "created" in result.stdout.lower()
+    # The newly loaded names should appear in `helper assert list`.
+    listed = runner.invoke(app, ["assert", "list"])
+    assert listed.exit_code == 0
+    # Footer count includes seeded + loaded (3 + 2 = 5).
+    assert "5 assertion(s)" in listed.stdout
+
+
+def test_assert_load_dry_run_writes_nothing(assert_db_url: str, tmp_path: Path) -> None:
+    lib = tmp_path / "lib.yaml"
+    lib.write_text(_LIB_YAML_BMAX0)
+
+    result = runner.invoke(app, ["assert", "load", str(lib), "--dry-run"])
+    assert result.exit_code == 0
+    assert "dry run" in result.stdout.lower()
+
+    # Footer count after dry-run should still show only the originally seeded.
+    listed = runner.invoke(app, ["assert", "list"])
+    assert "3 assertion(s)" in listed.stdout
+
+
+def test_assert_load_idempotent(assert_db_url: str, tmp_path: Path) -> None:
+    lib = tmp_path / "lib.yaml"
+    lib.write_text(_LIB_YAML_BMAX0)
+    runner.invoke(app, ["assert", "load", str(lib)])
+    second = runner.invoke(app, ["assert", "load", str(lib)])
+    assert second.exit_code == 0
+    # Second run: nothing created, nothing updated, both entries unchanged.
+    assert "0 created" in second.stdout or "unchanged" in second.stdout.lower()
+
+
+def test_assert_load_skips_missing_host(assert_db_url: str, tmp_path: Path) -> None:
+    lib = tmp_path / "lib.yaml"
+    lib.write_text(
+        """
+version: 1
+assertions:
+  - name: nonexistent.assert
+    host: ghost-host-not-in-db
+    description: refers to a host that hasn't been discovered yet
+    severity_on_fail: low
+    verifier_spec: {key: host.cpu.cores, predicate: exists}
+"""
+    )
+    result = runner.invoke(app, ["assert", "load", str(lib)])
+    assert result.exit_code == 0  # tolerant, not an error
+    assert "skipped" in result.stdout.lower()
+    assert "ghost-host-not-in-db" in result.stdout
+
+
+def test_assert_load_bad_yaml_errors(assert_db_url: str, tmp_path: Path) -> None:
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("version: 99\nassertions: []\n")
+    result = runner.invoke(app, ["assert", "load", str(bad)])
+    assert result.exit_code == 2
+    assert "library error" in result.stdout.lower()
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -249,6 +334,7 @@ def test_assert_list_with_all_includes_disabled(assert_db_url: str, tmp_path: Pa
         ["assert", "list", "--help"],
         ["assert", "show", "--help"],
         ["assert", "run", "--help"],
+        ["assert", "load", "--help"],
     ],
 )
 def test_assert_subcommand_help_loads(argv: list[str]) -> None:

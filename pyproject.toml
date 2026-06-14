@@ -31,6 +31,7 @@ dependencies = [
     "asyncssh>=2.14.2",
     "uuid6>=2024.7.10",
     "python-dotenv>=1.0.1",
+    "pyyaml>=6.0.1",
 ]
 
 [project.optional-dependencies]

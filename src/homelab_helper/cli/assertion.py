@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
@@ -22,6 +23,7 @@ from sqlalchemy import desc, select
 from homelab_helper.db.enums import AssertionStatus
 from homelab_helper.db.models import AssertionRun, ConfigurationAssertion
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.assertion_library import LibraryError, load_library
 from homelab_helper.engine.assertions import AssertionEngine
 
 if TYPE_CHECKING:
@@ -247,6 +249,57 @@ def assert_run(
                 1 for r in results if r.status in (AssertionStatus.FAIL, AssertionStatus.ERROR)
             )
             return 1 if bad else 0
+        finally:
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@assert_app.command(name="load")
+def assert_load(
+    path: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, readable=True, help="YAML library file to load."
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Parse and report what would change, but write nothing.",
+    ),
+) -> None:
+    """Upsert ConfigurationAssertion rows from a YAML library file.
+
+    Idempotent: re-loading the same file twice produces no changes. Entries
+    whose ``host:`` field references a hostname not in the harness DB are
+    skipped with a reason (the loader is intentionally tolerant — land the
+    library, then discover the hosts, then re-load).
+    """
+
+    async def _go() -> int:
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                try:
+                    result = await load_library(session, path, dry_run=dry_run)
+                except LibraryError as exc:
+                    console.print(f"[red]library error:[/red] {exc}")
+                    return 2
+
+            header = "[dim](dry run)[/dim] " if dry_run else ""
+            console.print(
+                f"{header}[green]{len(result.created)}[/green] created, "
+                f"[yellow]{len(result.updated)}[/yellow] updated, "
+                f"[dim]{len(result.unchanged)}[/dim] unchanged, "
+                f"[red]{len(result.skipped)}[/red] skipped "
+                f"[dim](of {result.total} entries)[/dim]"
+            )
+            for name in result.created:
+                console.print(f"  [green]+[/green] {name}")
+            for name in result.updated:
+                console.print(f"  [yellow]~[/yellow] {name}")
+            for name, reason in result.skipped:
+                console.print(f"  [red]-[/red] {name}  [dim]{reason}[/dim]")
+            return 0
         finally:
             await engine.dispose()
 

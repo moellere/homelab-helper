@@ -1,0 +1,183 @@
+# homelab-helper — assertion library, starter pack
+#
+# A starter set of ConfigurationAssertions to load into the harness, exercising
+# the OBSERVATION_PREDICATE verifier against the host-probe observations the
+# reconciler already projects. Each entry maps to one row in the
+# configuration_assertion table, keyed by `name`.
+#
+# IMPORTANT — before loading: replace the example hostname `myhost` below with
+# one of YOUR hostnames (or duplicate each entry per host). The loader resolves
+# `host:` to a harness Host row by hostname; entries whose host doesn't exist
+# yet are skipped with a warning at load time, so you can land the library
+# before every host has been discovered.
+#
+# Re-loading is idempotent: edits to this file land cleanly via `helper assert
+# load <path>`; matching rows stay unchanged, diverged rows update by `name`.
+#
+# Categories:
+#   1. Probe coverage          — every host should be reachable by every probe
+#   2. Sane baselines          — kernel, OS, CPU, RAM, disk minimums
+#   3. Architecture & capability — arch normalized; CPU features for crypto/perf
+#   4. Network basics          — at least one real interface
+#
+# Severity ladder used here: LOW for hygiene/data-quality; MEDIUM for inventory
+# gaps that affect planning; HIGH for capability mismatches that would silently
+# break workloads. CRITICAL is reserved for active operational issues (Ceph
+# saturation, WAN down, etc.) and isn't used in this generic starter.
+
+version: 1
+assertions:
+
+  # ---------------------------------------------------------------------------
+  # 1. Probe coverage — every host probe namespace should have produced
+  #    an observation. Failures here mean the reconciler ran with a partial
+  #    picture; downstream planners will be wrong.
+  # ---------------------------------------------------------------------------
+
+  - name: myhost.has_cpu_observation
+    host: myhost
+    description: myhost should have been observed by the host.cpu probe
+    rationale: Probe coverage gap means inventory is incomplete for planning
+    severity_on_fail: medium
+    verifier_spec:
+      key: host.cpu.cores
+      predicate: exists
+
+  - name: myhost.has_memory_observation
+    host: myhost
+    description: myhost should have been observed by the host.memory probe
+    rationale: RAM totals are an input to placement; missing data breaks the planner
+    severity_on_fail: medium
+    verifier_spec:
+      key: host.memory.mem_total_bytes
+      predicate: exists
+
+  - name: myhost.has_storage_observation
+    host: myhost
+    description: myhost should have been observed by the host.storage probe
+    rationale: Disk inventory is required to reason about volumes and migrations
+    severity_on_fail: medium
+    verifier_spec:
+      key: host.storage.disk_count
+      predicate: exists
+
+  - name: myhost.has_network_observation
+    host: myhost
+    description: myhost should have been observed by the host.network probe
+    rationale: NIC inventory drives link/path reasoning
+    severity_on_fail: medium
+    verifier_spec:
+      key: host.network.interface_count
+      predicate: exists
+
+  # ---------------------------------------------------------------------------
+  # 2. Sane baselines — minimums most homelab Linux hosts should clear.
+  #    Tune the numbers to your fleet's actual floor.
+  # ---------------------------------------------------------------------------
+
+  - name: myhost.kernel_present
+    host: myhost
+    description: myhost should report a kernel string
+    rationale: Empty kernel = the identity probe ran without permissions to read it
+    severity_on_fail: low
+    verifier_spec:
+      key: host.identity.kernel
+      predicate: regex
+      value: "."   # any non-empty string
+
+  - name: myhost.os_is_supported
+    host: myhost
+    description: myhost should be running a supported Linux distribution
+    rationale: The probe set assumes systemd-era Linux; unsupported OSes silently miss observations
+    severity_on_fail: low
+    verifier_spec:
+      key: host.identity.os_id
+      predicate: regex
+      value: "^(ubuntu|debian|fedora|rocky|alma|centos|nixos|opensuse|arch)$"
+
+  - name: myhost.cpu_cores_at_least_2
+    host: myhost
+    description: myhost should have at least 2 CPU cores
+    rationale: Single-core hosts can't run modern container workloads sensibly
+    severity_on_fail: medium
+    verifier_spec:
+      key: host.cpu.cores
+      predicate: gte
+      value: 2
+
+  - name: myhost.memory_at_least_4gb
+    host: myhost
+    description: myhost should have at least 4 GiB of RAM
+    rationale: Below 4 GiB, most homelab service stacks are paging or OOM-prone
+    severity_on_fail: medium
+    verifier_spec:
+      key: host.memory.mem_total_bytes
+      predicate: gte
+      value: 4294967296   # 4 * 1024**3
+
+  - name: myhost.has_real_disks
+    host: myhost
+    description: myhost should report at least one disk
+    rationale: A host with zero disks is either diskless boot or a probe failure
+    severity_on_fail: medium
+    verifier_spec:
+      key: host.storage.disk_count
+      predicate: gte
+      value: 1
+
+  # ---------------------------------------------------------------------------
+  # 3. Architecture & capability — CPU classification + feature flags that
+  #    actually matter for typical homelab workloads.
+  # ---------------------------------------------------------------------------
+
+  - name: myhost.arch_is_classified
+    host: myhost
+    description: myhost arch should be a recognized value (not OTHER)
+    rationale: |
+      The reconciler's normalize_arch falls back to OTHER for unrecognized
+      uname strings; that means downstream placement can't reason about
+      compatibility. Surface the case so the operator can extend the mapper.
+    severity_on_fail: low
+    verifier_spec:
+      key: host.cpu.architecture
+      predicate: regex
+      value: "^(x86_64|amd64|aarch64|arm64|armv[0-9]+)"
+
+  - name: myhost.cpu_supports_aes
+    host: myhost
+    description: myhost CPU should expose the AES-NI feature flag
+    rationale: |
+      AES-NI dramatically speeds TLS, Wireguard, and ZFS encryption. A host
+      without it shouldn't be picked for TLS termination by the planner.
+    severity_on_fail: low
+    verifier_spec:
+      key: host.cpu.interesting_flags
+      predicate: contains
+      value: aes
+
+  - name: myhost.cpu_supports_avx2
+    host: myhost
+    description: myhost CPU should support AVX2
+    rationale: |
+      Many modern containers (DBs, ML inference, video transcoding) assume
+      AVX2. Without it, those workloads either refuse to start or fall to
+      slow scalar paths.
+    severity_on_fail: low
+    verifier_spec:
+      key: host.cpu.interesting_flags
+      predicate: contains
+      value: avx2
+
+  # ---------------------------------------------------------------------------
+  # 4. Network basics
+  # ---------------------------------------------------------------------------
+
+  - name: myhost.has_real_interfaces
+    host: myhost
+    description: myhost should report at least one network interface
+    rationale: The host.network probe filters loopback; zero interfaces is a probe failure
+    severity_on_fail: high
+    verifier_spec:
+      key: host.network.interface_count
+      predicate: gte
+      value: 1

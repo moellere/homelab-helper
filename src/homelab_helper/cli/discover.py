@@ -84,6 +84,21 @@ async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> No
     )
     for field_name, value in result.changes.items():
         console.print(f"  [dim]+[/dim] {field_name} = {value!r}")
+    if result.touched_lineage:
+        console.print(
+            f"  [cyan]lineage[/cyan]: {result.parts_upserted} part(s) upserted, "
+            f"{len(result.placements_opened)} placement(s) opened, "
+            f"{len(result.placements_closed)} closed"
+            + (
+                f", {result.parts_skipped_no_serial} skipped (no serial)"
+                if result.parts_skipped_no_serial
+                else ""
+            )
+        )
+        for serial, slot in result.placements_opened:
+            console.print(f"  [dim]+ placement[/dim] {serial!r} @ {slot}")
+        for serial, slot in result.placements_closed:
+            console.print(f"  [dim]- placement[/dim] {serial!r} @ {slot}")
 
 
 @discover_app.command(name="host")

@@ -1,11 +1,14 @@
 """Unit + replay tests for the Reconciler.
 
-Covers the ``host.identity.*``, ``host.cpu.*``, and ``host.memory.*`` slices,
-plus the rule registry invariants and the ``normalize_arch`` transform. The
-replay-style tests materialize Observation rows directly from a fixture dict
-(no probe runs, no SSH) and feed them through the reconciler — this is the
-seed of the dorktool replay-test fixture; it lives in-process today and will
-migrate to a YAML fixture loader once the dorktool integration lands.
+Covers the host-row projection slices (``host.identity.*``, ``host.cpu.*``,
+``host.memory.*`` totals), the rule-registry invariants and ``normalize_arch``
+transform, and the DIMM ``PhysicalPart`` / ``Placement`` lineage projection
+(``host.memory.dimms``) including the host-to-host move case.
+
+The replay-style tests materialize Observation rows directly from a fixture
+dict (no probe runs, no SSH) and feed them through the reconciler — this is
+the seed of the dorktool replay-test fixture; it lives in-process today and
+will migrate to a YAML fixture loader once the dorktool integration lands.
 """
 
 from __future__ import annotations
@@ -18,8 +21,15 @@ import pytest
 from sqlalchemy import select
 
 from homelab_helper.db.base import Base
-from homelab_helper.db.enums import Architecture, IntentTargetType, PrivilegeLevel
-from homelab_helper.db.models import DiscoveryRun, Host, Observation, Probe
+from homelab_helper.db.enums import Architecture, IntentTargetType, PartKind, PrivilegeLevel
+from homelab_helper.db.models import (
+    DiscoveryRun,
+    Host,
+    Observation,
+    PhysicalPart,
+    Placement,
+    Probe,
+)
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.reconciler import HostProjectionRule, Reconciler, normalize_arch
 
@@ -532,3 +542,325 @@ async def test_all_three_namespaces_reconcile_in_one_call(sessionmaker) -> None:
         "capabilities.mem_total_bytes": 32 * 1024**3,
         "capabilities.swap_total_bytes": 4 * 1024**3,
     }
+
+
+# ---------------------------------------------------------------------------
+# DIMM PhysicalPart / Placement lineage
+# ---------------------------------------------------------------------------
+
+
+def _dimm(
+    slot: str,
+    serial: str | None = "S-DEFAULT",
+    *,
+    size_bytes: int | None = 16 * 1024**3,
+    manufacturer: str | None = "Crucial",
+    part_number: str | None = "CT16G4SFRA32A",
+    speed_mts: int | None = 3200,
+    dimm_type: str | None = "DDR4",
+) -> dict[str, Any]:
+    """Build a populated-slot dict matching the future dmidecode probe contract."""
+    entry: dict[str, Any] = {"slot": slot}
+    if serial is not None:
+        entry["serial"] = serial
+    if size_bytes is not None:
+        entry["size_bytes"] = size_bytes
+    if manufacturer is not None:
+        entry["manufacturer"] = manufacturer
+    if part_number is not None:
+        entry["part_number"] = part_number
+    if speed_mts is not None:
+        entry["speed_mts"] = speed_mts
+    if dimm_type is not None:
+        entry["type"] = dimm_type
+    return entry
+
+
+async def _open_placements(s, host_id: uuid.UUID) -> list[Placement]:
+    rows = (
+        (
+            await s.execute(
+                select(Placement)
+                .where(Placement.host_id == host_id, Placement.to_date.is_(None))
+                .order_by(Placement.slot)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows)
+
+
+async def test_first_dimm_observation_creates_part_and_placement(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.memory.dimms": [
+                    _dimm("DIMM_A1", serial="ABC123"),
+                    _dimm("DIMM_A2", serial="ABC124"),
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.observations_seen == 1
+    assert result.parts_upserted == 2
+    assert result.parts_skipped_no_serial == 0
+    assert sorted(result.placements_opened) == [("ABC123", "DIMM_A1"), ("ABC124", "DIMM_A2")]
+    assert result.placements_closed == []
+
+    async with sessionmaker() as s:
+        parts = (
+            (await s.execute(select(PhysicalPart).where(PhysicalPart.kind == PartKind.DIMM)))
+            .scalars()
+            .all()
+        )
+        assert {p.serial for p in parts} == {"ABC123", "ABC124"}
+        assert all(p.capacity_bytes == 16 * 1024**3 for p in parts)
+        assert all(p.manufacturer == "Crucial" for p in parts)
+        assert all(p.attributes.get("type") == "DDR4" for p in parts)
+        open_p = await _open_placements(s, host.id)
+        assert len(open_p) == 2
+        assert {p.slot for p in open_p} == {"DIMM_A1", "DIMM_A2"}
+
+
+async def test_dimm_lineage_is_idempotent(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="ABC123")]},
+        )
+
+        first = await Reconciler().reconcile_host(s, host.id)
+        second = await Reconciler().reconcile_host(s, host.id)
+
+    assert first.parts_upserted == 1
+    assert first.placements_opened == [("ABC123", "DIMM_A1")]
+    assert second.parts_upserted == 0
+    assert second.placements_opened == []
+    assert second.placements_closed == []
+    assert not second.touched_lineage
+
+    async with sessionmaker() as s:
+        # Re-run must not duplicate parts or placements.
+        parts = (await s.execute(select(PhysicalPart))).scalars().all()
+        placements = (await s.execute(select(Placement))).scalars().all()
+        assert len(parts) == 1
+        assert len(placements) == 1
+
+
+async def test_dimm_removed_closes_placement(sessionmaker) -> None:
+    """Probe run no longer reports a slot → its placement gets to_date set."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {
+                "host.memory.dimms": [
+                    _dimm("DIMM_A1", serial="ABC123"),
+                    _dimm("DIMM_A2", serial="ABC124"),
+                ],
+            },
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        # Second run: A2 removed.
+        run2 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="ABC123")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.placements_opened == []
+    assert result.placements_closed == [("ABC124", "DIMM_A2")]
+
+    async with sessionmaker() as s:
+        all_placements = (await s.execute(select(Placement))).scalars().all()
+        assert len(all_placements) == 2  # history preserved
+        closed = [p for p in all_placements if p.to_date is not None]
+        assert len(closed) == 1
+        assert closed[0].slot == "DIMM_A2"
+
+
+async def test_dimm_moves_to_different_slot_same_host(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="ABC123")]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        run2 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_B1", serial="ABC123")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 0  # same part, same serial
+    assert result.placements_opened == [("ABC123", "DIMM_B1")]
+    assert result.placements_closed == [("ABC123", "DIMM_A1")]
+
+
+async def test_dimm_moves_to_different_host(sessionmaker) -> None:
+    """The lineage case the schema doc names — a DIMM crosses hosts."""
+    async with session_scope(sessionmaker) as s:
+        src = await _seed_host(s, hostname="bmax0")
+        dst = await _seed_host(s, hostname="bmax1")
+
+        run_src = await _seed_run(s, src.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run_src.id,
+            src.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="ABC123")]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, src.id)
+
+        # Same serial now appears on dst.
+        run_dst = await _seed_run(s, dst.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run_dst.id,
+            dst.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="ABC123")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        result = await Reconciler().reconcile_host(s, dst.id)
+
+    assert result.parts_upserted == 0
+    assert result.placements_opened == [("ABC123", "DIMM_A1")]
+    # The prior placement on src — different host, same slot label — must close.
+    assert result.placements_closed == [("ABC123", "DIMM_A1")]
+
+    async with sessionmaker() as s:
+        all_placements = (await s.execute(select(Placement))).scalars().all()
+        assert len(all_placements) == 2  # history preserved
+        open_rows = [p for p in all_placements if p.to_date is None]
+        assert len(open_rows) == 1
+        assert open_rows[0].host_id == dst.id
+
+
+async def test_dimm_without_serial_is_skipped(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.memory.dimms": [
+                    _dimm("DIMM_A1", serial="ABC123"),
+                    _dimm("DIMM_A2", serial=None),  # no serial
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 1
+    assert result.parts_skipped_no_serial == 1
+    assert result.placements_opened == [("ABC123", "DIMM_A1")]
+
+    async with sessionmaker() as s:
+        parts = (await s.execute(select(PhysicalPart))).scalars().all()
+        assert len(parts) == 1
+        assert parts[0].serial == "ABC123"
+
+
+async def test_dimm_part_enriched_on_later_observation(sessionmaker) -> None:
+    """A part first seen with sparse metadata gets fields filled in later runs."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {
+                "host.memory.dimms": [
+                    # First run: no manufacturer, no model.
+                    _dimm(
+                        "DIMM_A1",
+                        serial="ABC123",
+                        manufacturer=None,
+                        part_number=None,
+                    ),
+                ],
+            },
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        run2 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="ABC123")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+    async with sessionmaker() as s:
+        part = (await s.execute(select(PhysicalPart))).scalar_one()
+        assert part.manufacturer == "Crucial"
+        assert part.model == "CT16G4SFRA32A"
+
+
+async def test_no_dimm_observation_does_not_close_placements(sessionmaker) -> None:
+    """Reconcile without ever seeing a DIMM observation must not touch lineage.
+
+    Otherwise re-running discovery for the cpu/identity slice alone would
+    "remove" all DIMMs the framework has on record — a catastrophic surprise.
+    """
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        # Seed a placement directly (simulates prior DIMM observation).
+        part = PhysicalPart(kind=PartKind.DIMM, serial="ABC123", capacity_bytes=16 * 1024**3)
+        s.add(part)
+        await s.flush()
+        s.add(Placement(part_id=part.id, host_id=host.id, slot="DIMM_A1"))
+        await s.flush()
+
+        # Only identity observation lands.
+        run = await _seed_run(s, host.id, probe_name="host.identity")
+        await _record_observations(s, run.id, host.id, {"host.identity.kernel": "6.8.0-49-generic"})
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.placements_closed == []
+    assert result.placements_opened == []
+    assert result.parts_upserted == 0
+
+    async with sessionmaker() as s:
+        open_p = await _open_placements(s, host.id)
+        assert len(open_p) == 1  # placement still open

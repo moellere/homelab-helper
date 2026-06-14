@@ -44,9 +44,9 @@ The rest of Phase 1, and all of Phase 6, is below.
   - [x] `transform` hook on `HostProjectionRule` (raw observation value → typed column domain) + `normalize_arch` mapper
   - [x] `host.cpu.*` slice: `host.cpu.architecture` → `Host.arch` (typed); model, vendor, sockets, cores, threads, threads_per_core, freq, cache, flags, interesting_flags → capabilities (`cpu_*` keys)
   - [x] `host.memory.*` slice (totals only): mem/swap/hugepage totals from `/proc/meminfo` → capabilities. DIMM-level keys land with the lineage slice below as first-class rows, not capabilities.
-  - [ ] DIMM `PhysicalPart` / `Placement` lineage (the dmidecode-driven probe + open/close placements, append-only history; serial-keyed upsert; replay tests walking a DIMM through a host-to-host move)
-  - [ ] `host.storage.*` slice + storage device `PhysicalPart` / `Placement` lineage
-  - [ ] `host.network.*` slice + NIC `PhysicalPart` / `Placement` lineage
+  - [x] DIMM `PhysicalPart` / `Placement` lineage: `host.memory.dimms` observation contract (list of populated-slot dicts) → serial-keyed `PhysicalPart` upsert with field enrichment; append-only `Placement` open/close; cross-host move closes prior placement; DIMMs without serial counted in `parts_skipped_no_serial`; no-DIMM-observation safety (doesn't close existing placements). Future dmidecode-driven probe will emit the observation contract.
+  - [ ] `host.storage.*` slice + storage device `PhysicalPart` / `Placement` lineage (apply DIMM lineage pattern to SSDs/HDDs/NVMe; key on serial or WWID; slot like `/dev/nvme0n1`)
+  - [ ] `host.network.*` slice + NIC `PhysicalPart` / `Placement` lineage (apply DIMM lineage pattern to NICs; key on MAC; slot like `pci@0000:01:00.0`)
   - [ ] Multi-source precedence rules: kernel beats management-plane, verified beats inferred (lands with first non-SSH source)
   - [ ] Finding generation with deterministic fingerprint dedup (wire in `FingerprintGenerator`)
   - [ ] Finding-level idempotency: re-runs update `last_seen`, don't duplicate (AC4)

@@ -49,6 +49,8 @@ helper = "homelab_helper.cli.main:app"
 "host.network"  = "homelab_helper.probes.host.network:HostNetworkProbe"
 "host.storage"  = "homelab_helper.probes.host.storage:HostStorageProbe"
 "host.services" = "homelab_helper.probes.host.services:HostServicesProbe"
+"network.subnet-scan" = "homelab_helper.probes.network.subnet_scan:NetworkSubnetScanProbe"
+"network.fingerprint" = "homelab_helper.probes.network.fingerprint:NetworkFingerprintProbe"
 
 [project.urls]
 Homepage = "https://github.com/enochroot/homelab-helper"

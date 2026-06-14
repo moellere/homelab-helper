@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
+from rich.table import Table
 from sqlalchemy import select
 
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
@@ -24,6 +25,8 @@ from homelab_helper.db.session import make_engine, make_sessionmaker, session_sc
 from homelab_helper.engine.reconciler import Reconciler
 from homelab_helper.engine.runner import ProbeRunner
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
+from homelab_helper.probes.network.fingerprint import NetworkFingerprintProbe
+from homelab_helper.probes.network.subnet_scan import NetworkSubnetScanProbe
 from homelab_helper.probes.registry import discover_probes
 
 if TYPE_CHECKING:
@@ -257,3 +260,123 @@ def discover_show(
             await engine.dispose()
 
     asyncio.run(_go())
+
+
+def _parse_ports(raw: str | None) -> tuple[int, ...] | None:
+    if raw is None:
+        return None
+    out: list[int] = []
+    for chunk in raw.split(","):
+        cleaned = chunk.strip()
+        if not cleaned:
+            continue
+        try:
+            out.append(int(cleaned))
+        except ValueError as exc:
+            raise typer.BadParameter(f"--ports: {cleaned!r} is not an integer") from exc
+    return tuple(out)
+
+
+@discover_app.command(name="network")
+def discover_network(
+    cidr: str = typer.Argument(..., help="Network range to scan, e.g. 10.250.6.0/24."),
+    ports: str | None = typer.Option(
+        None,
+        "--ports",
+        help="Comma-separated port list. Default: a small panel of common services.",
+    ),
+    timeout: float = typer.Option(0.8, "--timeout", help="Per-port connect timeout in seconds."),
+    concurrency: int = typer.Option(
+        200, "--concurrency", min=1, max=2000, help="Max concurrent TCP connects."
+    ),
+    no_fingerprint: bool = typer.Option(
+        False,
+        "--no-fingerprint",
+        help="Skip the per-host service fingerprint step.",
+    ),
+) -> None:
+    """Scan a CIDR for live hosts; optionally fingerprint discovered services.
+
+    No SSH credentials needed — pure asyncio TCP connect-scan against a small
+    panel of common ports. Observations are written to the harness DB; the
+    reconciler treats the recorded ``network.*`` keys as evidence going
+    forward. NetBox sync happens in a later slice (after NetBoxAdapter lands).
+    """
+    port_tuple = _parse_ports(ports)
+
+    async def _go() -> int:
+        scan_probe = NetworkSubnetScanProbe(
+            ports=port_tuple,
+            per_port_timeout_s=timeout,
+            concurrency=concurrency,
+        )
+        runner = ProbeRunner(AdapterRegistry())
+
+        db_engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(db_engine)
+            async with session_scope(sm) as session:
+                console.print(f"[cyan]→ scanning {cidr}[/cyan]")
+                _scan_run, scan_result = await runner.run(
+                    scan_probe,
+                    ProbeTarget(kind="network", network_cidr=cidr),
+                    session,
+                    triggered_by="manual",
+                )
+                if not scan_result.success:
+                    console.print(f"[red]scan failed:[/red] {scan_result.error}")
+                    return 1
+
+                live = (scan_result.raw_payload or {}).get("live_hosts", [])
+                console.print(
+                    f"  [green]{len(live)}[/green] live host(s) out of "
+                    f"{(scan_result.raw_payload or {}).get('scanned_count', 0)} scanned"
+                )
+                if not live:
+                    return 0
+
+                table = Table(show_header=True, header_style="bold")
+                table.add_column("ip", no_wrap=True)
+                table.add_column("open ports", overflow="fold")
+                table.add_column("identified services", overflow="fold")
+                identified: list[tuple[str, list[dict[str, object]]]] = []
+
+                if no_fingerprint:
+                    for h in live:
+                        table.add_row(h["ip"], ", ".join(str(p) for p in h["open_ports"]), "—")
+                else:
+                    for h in live:
+                        console.print(f"[cyan]→ fingerprint {h['ip']}[/cyan]")
+                        # Fingerprint exactly the ports the scan found open —
+                        # avoids spending time on closed defaults.
+                        fp_probe = NetworkFingerprintProbe(ports=h["open_ports"])
+                        _fp_run, fp_result = await runner.run(
+                            fp_probe,
+                            ProbeTarget(
+                                kind="network",
+                                primary_ip=h["ip"],
+                            ),
+                            session,
+                            triggered_by="manual",
+                        )
+                        services = (fp_result.raw_payload or {}).get("services", [])
+                        identified.append((h["ip"], services))
+                        svc_str = (
+                            ", ".join(
+                                (f"{s['port']}:{s.get('service') or s.get('hint', '?')}")
+                                for s in services
+                            )
+                            or "—"
+                        )
+                        table.add_row(
+                            h["ip"],
+                            ", ".join(str(p) for p in h["open_ports"]),
+                            svc_str,
+                        )
+
+                console.print(table)
+            return 0
+        finally:
+            await db_engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))

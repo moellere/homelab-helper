@@ -1,9 +1,11 @@
-"""Unit + replay tests for the Reconciler — host.identity slice.
+"""Unit + replay tests for the Reconciler.
 
-The replay-style tests materialize Observation rows directly from a fixture
-dict (no probe runs, no SSH) and feed them through the reconciler. This is
-the seed of the dorktool replay-test fixture; it lives in-process today and
-will migrate to a YAML fixture loader once the dorktool integration lands.
+Covers the ``host.identity.*`` and ``host.cpu.*`` slices, plus the rule
+registry invariants and the ``normalize_arch`` transform. The replay-style
+tests materialize Observation rows directly from a fixture dict (no probe
+runs, no SSH) and feed them through the reconciler — this is the seed of
+the dorktool replay-test fixture; it lives in-process today and will migrate
+to a YAML fixture loader once the dorktool integration lands.
 """
 
 from __future__ import annotations
@@ -16,10 +18,10 @@ import pytest
 from sqlalchemy import select
 
 from homelab_helper.db.base import Base
-from homelab_helper.db.enums import IntentTargetType, PrivilegeLevel
+from homelab_helper.db.enums import Architecture, IntentTargetType, PrivilegeLevel
 from homelab_helper.db.models import DiscoveryRun, Host, Observation, Probe
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
-from homelab_helper.engine.reconciler import HostProjectionRule, Reconciler
+from homelab_helper.engine.reconciler import HostProjectionRule, Reconciler, normalize_arch
 
 
 @pytest.fixture
@@ -185,8 +187,8 @@ async def test_unknown_keys_are_ignored(sessionmaker) -> None:
             host.id,
             {
                 "host.identity.kernel": "6.8.0-49-generic",
-                # Other-slice keys; the host-identity reconciler must ignore them.
-                "host.cpu.model": "Intel i5-8260U",
+                # Future-slice keys the reconciler doesn't yet know about.
+                "host.memory.total_bytes": 16 * 1024**3,
                 "host.storage.devices[0].model": "Samsung 980",
             },
         )
@@ -286,4 +288,147 @@ async def test_replay_two_runs_promotes_to_latest_state(sessionmaker) -> None:
         "capabilities.kernel": "6.8.0-49-generic",
         "capabilities.os_pretty_name": "Ubuntu 24.04.1 LTS",
         "capabilities.boot_time_unix": 1_717_092_000,
+    }
+
+
+# ---------------------------------------------------------------------------
+# host.cpu slice
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("x86_64", Architecture.AMD64),
+        ("X86_64", Architecture.AMD64),
+        ("amd64", Architecture.AMD64),
+        ("x64", Architecture.AMD64),
+        ("aarch64", Architecture.ARM64),
+        ("arm64", Architecture.ARM64),
+        ("arm", Architecture.ARM),
+        ("armv7l", Architecture.ARM),
+        ("riscv64", Architecture.OTHER),
+        ("", Architecture.OTHER),
+    ],
+)
+def test_normalize_arch_maps_common_spellings(raw: str, expected: Architecture) -> None:
+    assert normalize_arch(raw) == expected
+
+
+async def test_cpu_projection_sets_typed_arch_and_capability_bag(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.cpu")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.cpu.architecture": "x86_64",
+                "host.cpu.model": "Intel(R) Core(TM) i5-8260U",
+                "host.cpu.vendor": "GenuineIntel",
+                "host.cpu.sockets": 1,
+                "host.cpu.cores": 4,
+                "host.cpu.threads": 8,
+                "host.cpu.threads_per_core": 2,
+                "host.cpu.base_freq_mhz": 1600,
+                "host.cpu.max_freq_mhz": 3900,
+                "host.cpu.l1d_bytes": 131_072,
+                "host.cpu.l1i_bytes": 131_072,
+                "host.cpu.l2_bytes": 1_048_576,
+                "host.cpu.l3_bytes": 6_291_456,
+                "host.cpu.flags": ["avx", "avx2", "aes"],
+                "host.cpu.interesting_flags": ["aes", "avx", "avx2"],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.observations_seen == 15
+    # arch lands on the typed column, NOT in capabilities.
+    assert result.changes["arch"] == Architecture.AMD64
+    assert "capabilities.arch" not in result.changes
+    # Spot-check a few capability projections.
+    assert result.changes["capabilities.cpu_model"] == "Intel(R) Core(TM) i5-8260U"
+    assert result.changes["capabilities.cpu_cores"] == 4
+    assert result.changes["capabilities.cpu_threads"] == 8
+    assert result.changes["capabilities.cpu_l3_bytes"] == 6_291_456
+    assert result.changes["capabilities.cpu_interesting_flags"] == ["aes", "avx", "avx2"]
+
+    async with sessionmaker() as s:
+        h = (await s.execute(select(Host).where(Host.id == host.id))).scalar_one()
+        assert h.arch == Architecture.AMD64
+        assert h.capabilities["cpu_vendor"] == "GenuineIntel"
+        assert h.capabilities["cpu_sockets"] == 1
+
+
+async def test_cpu_arch_transform_is_idempotent(sessionmaker) -> None:
+    """Second reconcile with the same raw observation must not re-emit arch."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.cpu")
+        await _record_observations(s, run.id, host.id, {"host.cpu.architecture": "aarch64"})
+
+        first = await Reconciler().reconcile_host(s, host.id)
+        second = await Reconciler().reconcile_host(s, host.id)
+
+    assert first.changes == {"arch": Architecture.ARM64}
+    assert second.changes == {}
+
+
+async def test_unknown_arch_falls_back_to_other(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.cpu")
+        await _record_observations(s, run.id, host.id, {"host.cpu.architecture": "riscv64"})
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    # OTHER is the seeded default for a fresh Host — so the projection
+    # decides "nothing to change," which is the right outcome for an
+    # unrecognized arch. (A future finding-generation slice will surface
+    # it as UNKNOWN_ARCH; the reconciler itself stays non-raising.)
+    assert result.observations_seen == 1
+    assert result.changes == {}
+
+    async with sessionmaker() as s:
+        h = (await s.execute(select(Host).where(Host.id == host.id))).scalar_one()
+        assert h.arch == Architecture.OTHER
+
+
+async def test_identity_and_cpu_reconcile_together(sessionmaker) -> None:
+    """A real probe batch lands both namespaces; one reconcile applies both."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        identity_run = await _seed_run(s, host.id, probe_name="host.identity")
+        await _record_observations(
+            s,
+            identity_run.id,
+            host.id,
+            {
+                "host.identity.kernel": "6.8.0-49-generic",
+                "host.identity.os_id": "ubuntu",
+            },
+        )
+        cpu_run = await _seed_run(s, host.id, probe_name="host.cpu")
+        await _record_observations(
+            s,
+            cpu_run.id,
+            host.id,
+            {
+                "host.cpu.architecture": "aarch64",
+                "host.cpu.model": "Cortex-A76",
+                "host.cpu.cores": 4,
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.observations_seen == 5
+    assert result.changes == {
+        "capabilities.kernel": "6.8.0-49-generic",
+        "capabilities.os_id": "ubuntu",
+        "arch": Architecture.ARM64,
+        "capabilities.cpu_model": "Cortex-A76",
+        "capabilities.cpu_cores": 4,
     }

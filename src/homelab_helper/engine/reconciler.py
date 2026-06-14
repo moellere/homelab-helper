@@ -1,15 +1,16 @@
 """Reconciler — observation → inventory.
 
-This is the first vertical slice of what the architecture calls "the most
-important component." Today it covers exactly one namespace:
+This is the reconciler — what the architecture calls "the most important
+component." It currently covers two namespaces:
 
-- ``host.identity.*`` observations project onto the ``Host`` row (typed
-  attributes and the open ``capabilities`` JSON bag).
+- ``host.identity.*`` → the ``Host`` capability bag (kernel, OS, machine-id, …).
+- ``host.cpu.*`` → ``Host.arch`` (typed column, via a value transform) and the
+  capability bag (model, topology, cache, flags).
 
-Future slices add ``host.cpu.*``, ``host.memory.*``, ``host.storage.*``,
-``host.network.*``, then part lineage (PhysicalPart/Placement), then the
-NetBox write path, then findings. The shape here is deliberately easy to
-extend by appending rules; no other code changes when a new key lands.
+Future slices add ``host.memory.*``, ``host.storage.*``, ``host.network.*``,
+then part lineage (PhysicalPart/Placement), then the NetBox write path, then
+findings. The shape here is deliberately easy to extend by appending rules; no
+other code changes when a new key lands.
 
 Precedence rule in this slice: **latest observation per (target, key) wins.**
 The Observation table is append-only, so the freshest row reflects the most
@@ -29,13 +30,31 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from homelab_helper.db.enums import IntentTargetType
+from homelab_helper.db.enums import Architecture, IntentTargetType
 from homelab_helper.db.models import Host, Observation
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def normalize_arch(raw: Any) -> Architecture:
+    """Map a raw observed architecture string onto the ``Architecture`` enum.
+
+    Handles the common ``uname``/``lscpu`` spellings; anything unrecognized
+    falls to ``OTHER`` rather than raising — an odd arch is a finding, not a
+    crash.
+    """
+    s = str(raw).strip().lower()
+    if s in ("x86_64", "amd64", "x64"):
+        return Architecture.AMD64
+    if s in ("aarch64", "arm64"):
+        return Architecture.ARM64
+    if s == "arm" or s.startswith("armv"):
+        return Architecture.ARM
+    return Architecture.OTHER
 
 
 @dataclass(frozen=True)
@@ -44,13 +63,15 @@ class HostProjectionRule:
 
     Exactly one of ``attr`` or ``capability`` is set. ``attr`` writes a typed
     column on Host; ``capability`` writes a key into the JSON ``capabilities``
-    bag. The discriminated shape keeps the registry forward-compatible with
-    future probes that land typed columns.
+    bag. ``transform``, when set, maps the raw observation value before it's
+    written/compared — used where the observed value (e.g. ``"x86_64"``) needs
+    coercing onto a typed column's domain (e.g. ``Architecture.AMD64``).
     """
 
     key: str
     attr: str | None = None
     capability: str | None = None
+    transform: Callable[[Any], Any] | None = None
 
     def __post_init__(self) -> None:
         if (self.attr is None) == (self.capability is None):
@@ -60,7 +81,7 @@ class HostProjectionRule:
 # Observed hostname goes into capabilities, not Host.hostname — operator-set
 # hostname is the identity of record. Divergence will become a finding once
 # the finding-generation slice lands.
-_HOST_RULES: tuple[HostProjectionRule, ...] = (
+_IDENTITY_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.identity.hostname", capability="observed_hostname"),
     HostProjectionRule(key="host.identity.kernel", capability="kernel"),
     HostProjectionRule(key="host.identity.machine_id", capability="machine_id"),
@@ -68,6 +89,28 @@ _HOST_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.identity.os_pretty_name", capability="os_pretty_name"),
     HostProjectionRule(key="host.identity.boot_time_unix", capability="boot_time_unix"),
 )
+
+# CPU: architecture lands on the typed Host.arch column (via normalize_arch);
+# everything else fills the capability bag under cpu_-prefixed keys.
+_CPU_RULES: tuple[HostProjectionRule, ...] = (
+    HostProjectionRule(key="host.cpu.architecture", attr="arch", transform=normalize_arch),
+    HostProjectionRule(key="host.cpu.model", capability="cpu_model"),
+    HostProjectionRule(key="host.cpu.vendor", capability="cpu_vendor"),
+    HostProjectionRule(key="host.cpu.sockets", capability="cpu_sockets"),
+    HostProjectionRule(key="host.cpu.cores", capability="cpu_cores"),
+    HostProjectionRule(key="host.cpu.threads", capability="cpu_threads"),
+    HostProjectionRule(key="host.cpu.threads_per_core", capability="cpu_threads_per_core"),
+    HostProjectionRule(key="host.cpu.base_freq_mhz", capability="cpu_base_freq_mhz"),
+    HostProjectionRule(key="host.cpu.max_freq_mhz", capability="cpu_max_freq_mhz"),
+    HostProjectionRule(key="host.cpu.l1d_bytes", capability="cpu_l1d_bytes"),
+    HostProjectionRule(key="host.cpu.l1i_bytes", capability="cpu_l1i_bytes"),
+    HostProjectionRule(key="host.cpu.l2_bytes", capability="cpu_l2_bytes"),
+    HostProjectionRule(key="host.cpu.l3_bytes", capability="cpu_l3_bytes"),
+    HostProjectionRule(key="host.cpu.flags", capability="cpu_flags"),
+    HostProjectionRule(key="host.cpu.interesting_flags", capability="cpu_interesting_flags"),
+)
+
+_HOST_RULES: tuple[HostProjectionRule, ...] = _IDENTITY_RULES + _CPU_RULES
 
 
 @dataclass
@@ -113,8 +156,9 @@ class Reconciler:
         changes: dict[str, Any] = {}
         new_caps = dict(host.capabilities or {})
 
-        for key, value in latest.items():
+        for key, raw_value in latest.items():
             rule = self._rules_by_key[key]
+            value = rule.transform(raw_value) if rule.transform is not None else raw_value
             if rule.attr is not None:
                 if getattr(host, rule.attr) != value:
                     setattr(host, rule.attr, value)
@@ -167,4 +211,4 @@ class Reconciler:
         return latest
 
 
-__all__ = ["HostProjectionRule", "ReconcileResult", "Reconciler"]
+__all__ = ["HostProjectionRule", "ReconcileResult", "Reconciler", "normalize_arch"]

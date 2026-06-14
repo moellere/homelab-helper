@@ -41,7 +41,8 @@ The rest of Phase 1, and all of Phase 6, is below.
   - [x] Host-field idempotency: re-run is a no-op (returns empty deltas)
   - [x] CLI wiring: `helper discover host` invokes the reconciler after the probe batch
   - [x] Replay-style test pattern (in-process fixtures); migrates to YAML when dorktool fixture lands
-  - [ ] `host.cpu.*` slice: arch, cores, threads, model, flags → `Host.arch` + capabilities
+  - [x] `transform` hook on `HostProjectionRule` (raw observation value → typed column domain) + `normalize_arch` mapper
+  - [x] `host.cpu.*` slice: `host.cpu.architecture` → `Host.arch` (typed); model, vendor, sockets, cores, threads, threads_per_core, freq, cache, flags, interesting_flags → capabilities (`cpu_*` keys)
   - [ ] `host.memory.*` slice + DIMM `PhysicalPart` / `Placement` lineage (open/close, append-only)
   - [ ] `host.storage.*` slice + storage device `PhysicalPart` / `Placement` lineage
   - [ ] `host.network.*` slice + NIC `PhysicalPart` / `Placement` lineage

@@ -17,6 +17,7 @@ from homelab_helper.engine.reconciler import (
     HostProjectionRule,
     Reconciler,
     ReconcileResult,
+    normalize_arch,
 )
 from homelab_helper.engine.runner import ProbeRunner
 
@@ -26,4 +27,5 @@ __all__ = [
     "ReconcileResult",
     "Reconciler",
     "make_fingerprint",
+    "normalize_arch",
 ]

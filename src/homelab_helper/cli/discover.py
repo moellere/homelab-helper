@@ -49,9 +49,9 @@ def _database_url() -> str:
     return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
-async def _resolve_host(session, name: str, primary_ip: str | None) -> Host:
+async def _resolve_host(session: AsyncSession, name: str, primary_ip: str | None) -> Host:
     """Find an existing Host by hostname; create one if missing."""
-    existing = (
+    existing: Host | None = (
         await session.execute(select(Host).where(Host.hostname == name))
     ).scalar_one_or_none()
     if existing is not None:

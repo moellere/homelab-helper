@@ -80,14 +80,13 @@ The rest of Phase 1, and all of Phase 6, is below.
 ### Hygiene
 
 - [ ] `engine/__init__.py` docstring lists `Reconciler`/`AssertionEngine`/`Scheduler`/`ProposalManager` as if present — keep as forward-looking, or trim to what's implemented, as those components land
-- [ ] **CI workflow** (`.github/workflows/ci.yml`) — currently nothing automated runs on push or PR; the test suite is green locally but unverified in PRs. Run on push + PR against `main`:
-  - [ ] `uv sync --all-extras --group dev`
-  - [ ] `uv run pytest -q` (42 passing locally today)
-  - [ ] `uv run ruff format --check .`
-  - [ ] `uv run ruff check .`
-  - [ ] `uv run mypy src`
-  - [ ] `uv run pre-commit run --all-files` (covers anything contributors didn't install hooks for; `.pre-commit-config.yaml` already exists)
-  - [ ] Cache the uv environment between runs (`actions/cache` on `~/.cache/uv` keyed by `uv.lock`)
+- [x] **CI workflow** (`.github/workflows/ci.yml`) — runs on push + PR against `main`, with concurrency cancel-in-progress on the same branch:
+  - [x] `uv sync --all-extras --group dev` (uv cache keyed by `uv.lock` via `astral-sh/setup-uv@v6 enable-cache: true`)
+  - [x] `uv run ruff check src tests`
+  - [x] `uv run ruff format --check src tests`
+  - [x] `uv run mypy src` — fixed the two pre-existing `_resolve_host` errors as part of this slice so the gate is genuine, not vacuous
+  - [x] `uv run pytest -q`
+  - [ ] `uv run pre-commit run --all-files` (deferred — explicit ruff+mypy+pytest steps overlap, add only if a contributor lands the hooks-locally workflow)
 - [ ] Decide on Python version matrix for CI — at minimum the `.python-version` pin (3.12); consider also testing on 3.13 once it stabilises in upstream deps
 
 ---

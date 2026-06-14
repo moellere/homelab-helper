@@ -59,7 +59,7 @@ The rest of Phase 1, and all of Phase 6, is below.
   - [ ] `NETBOX_DIVERGENCE` finding on hand-edit conflict (skip write, never overwrite)
   - _Unblocks AC1, AC2._
 - [ ] **NetBox bootstrap** (`helper netbox bootstrap`) — create the harness `cf_*` custom fields via the NetBox API on first run. _Open question #4 in the schema doc resolved in favour of bootstrap over manual setup._
-- [ ] **AssertionEngine** (`engine/assertions.py`, one-shot mode) — run verifiers, write `AssertionRun` rows, emit findings on failure. _Unblocks AC3._
+- [x] **AssertionEngine** (`engine/assertions.py`, one-shot mode) — verifier dispatch (`OBSERVATION_PREDICATE` fully wired; `SSH_COMMAND`/`HTTP_CHECK`/`API_QUERY`/`FILE_HASH` SKIP with a clear reason until their adapter slices land), `AssertionRun` rows persisted, `CONFIG_DRIFT` finding lifecycle on FAIL (deterministic fingerprint dedup, reopen-on-recurrence) and auto-resolve on PASS. CLI: `helper assert list|show|run` with `--name` / `--all` / `--include-disabled`, non-zero exit on FAIL/ERROR for CI gating. _Partial AC3 — combined with the reconciler's INVENTORY_GAP findings, `helper audit` now reports the full day-one finding corpus once the assertion library is seeded._
 - [ ] **Network probes** — `network.subnet-scan` and `network.fingerprint` (asyncio TCP, no nmap dependency; fingerprint Proxmox/Cockpit/K8s API/web servers). _Unblocks AC1._
 - [ ] **CLI verbs**:
   - [ ] `helper discover network <cidr>` (wire the network probes) — AC1

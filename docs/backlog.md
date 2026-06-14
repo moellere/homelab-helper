@@ -63,9 +63,9 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [ ] **Network probes** — `network.subnet-scan` and `network.fingerprint` (asyncio TCP, no nmap dependency; fingerprint Proxmox/Cockpit/K8s API/web servers). _Unblocks AC1._
 - [ ] **CLI verbs**:
   - [ ] `helper discover network <cidr>` (wire the network probes) — AC1
-  - [ ] `helper audit` — AC3
-  - [ ] `helper findings [show|ack|resolve|suppress]`
-  - [ ] `helper host show <name>`
+  - [x] `helper audit` — high-level roll-up (inventory counts, severity × status crosstab, top-N open findings) — AC3 read-side
+  - [x] `helper findings list|show|ack|resolve|suppress` — fingerprint-prefix matching everywhere; status/severity/kind/host filters on list
+  - [x] `helper host show <name>` — identity + capabilities (grouped by prefix) + current placements + open findings table
   - [ ] `helper config`
 - [ ] **dorktool integration fixture** — `fixtures/dorktool.yaml` loading the real lab; replayable, CI-friendly; the day-one audit runs as an integration test producing the 11–16 findings. _Unblocks the AC3/AC4 demonstration._
 

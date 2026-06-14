@@ -3,11 +3,15 @@
 Currently wired:
 
 - ``helper version``
-- ``helper db init|status|reset|migrate``  (Task #6)
+- ``helper db init|status|reset|migrate``
+- ``helper discover host|show``
+- ``helper findings list|show|ack|resolve|suppress``
+- ``helper host show``
+- ``helper audit``
+- ``helper probes ...``
 
-The full verb set (``discover``, ``audit``, ``findings``, ``inventory``,
-``host``, ``assert``, ``agent``, ``netbox``, ``probes``, ``config``) lands
-as Phase 1 progresses.
+The remaining Phase 1 verbs (``netbox bootstrap``, ``discover network``,
+``config``, ``assert``) land as those subsystems come online.
 """
 
 from __future__ import annotations
@@ -16,13 +20,19 @@ import typer
 from rich.console import Console
 
 from homelab_helper import __version__
+from homelab_helper.cli.audit import audit_app
 from homelab_helper.cli.db import db_app
 from homelab_helper.cli.discover import discover_app
+from homelab_helper.cli.findings import findings_app
+from homelab_helper.cli.host import host_app
 from homelab_helper.cli.probes import probes_app
 
 app = typer.Typer(name="helper", no_args_is_help=True, add_completion=False)
 app.add_typer(db_app)
 app.add_typer(discover_app)
+app.add_typer(findings_app)
+app.add_typer(host_app)
+app.add_typer(audit_app, name="audit")
 app.add_typer(probes_app)
 
 console = Console()

@@ -90,8 +90,8 @@ async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> No
             f"{len(result.placements_opened)} placement(s) opened, "
             f"{len(result.placements_closed)} closed"
             + (
-                f", {result.parts_skipped_no_serial} skipped (no serial)"
-                if result.parts_skipped_no_serial
+                f", {result.parts_skipped_no_identity} skipped (no identity)"
+                if result.parts_skipped_no_identity
                 else ""
             )
         )

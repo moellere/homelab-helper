@@ -1,9 +1,11 @@
 """Unit + replay tests for the Reconciler.
 
 Covers the host-row projection slices (``host.identity.*``, ``host.cpu.*``,
-``host.memory.*`` totals), the rule-registry invariants and ``normalize_arch``
-transform, and the DIMM ``PhysicalPart`` / ``Placement`` lineage projection
-(``host.memory.dimms``) including the host-to-host move case.
+``host.memory.*`` totals, ``host.storage.*`` scalars), the rule-registry
+invariants and ``normalize_arch`` transform, and the part-lineage slices —
+DIMMs via ``host.memory.dimms`` and storage devices via
+``host.storage.devices`` — including cross-host move cases and the
+cross-kind regression ensuring DIMM reconcile doesn't touch storage rows.
 
 The replay-style tests materialize Observation rows directly from a fixture
 dict (no probe runs, no SSH) and feed them through the reconciler — this is
@@ -611,7 +613,7 @@ async def test_first_dimm_observation_creates_part_and_placement(sessionmaker) -
 
     assert result.observations_seen == 1
     assert result.parts_upserted == 2
-    assert result.parts_skipped_no_serial == 0
+    assert result.parts_skipped_no_identity == 0
     assert sorted(result.placements_opened) == [("ABC123", "DIMM_A1"), ("ABC124", "DIMM_A2")]
     assert result.placements_closed == []
 
@@ -787,7 +789,7 @@ async def test_dimm_without_serial_is_skipped(sessionmaker) -> None:
         result = await Reconciler().reconcile_host(s, host.id)
 
     assert result.parts_upserted == 1
-    assert result.parts_skipped_no_serial == 1
+    assert result.parts_skipped_no_identity == 1
     assert result.placements_opened == [("ABC123", "DIMM_A1")]
 
     async with sessionmaker() as s:
@@ -864,3 +866,337 @@ async def test_no_dimm_observation_does_not_close_placements(sessionmaker) -> No
     async with sessionmaker() as s:
         open_p = await _open_placements(s, host.id)
         assert len(open_p) == 1  # placement still open
+
+
+# ---------------------------------------------------------------------------
+# Storage PhysicalPart / Placement lineage
+# ---------------------------------------------------------------------------
+
+
+def _disk(
+    name: str,
+    *,
+    wwn: str | None = "WWN-DEFAULT",
+    serial: str | None = "SDISK-DEFAULT",
+    size_bytes: int | None = 500 * 1024**3,
+    vendor: str | None = "Samsung",
+    model: str | None = "SSD 980",
+    transport: str | None = "nvme",
+    rotational: bool | None = False,
+) -> dict[str, Any]:
+    """Build a top-level disk dict matching the host.storage probe contract."""
+    entry: dict[str, Any] = {"name": name, "type": "disk"}
+    if wwn is not None:
+        entry["wwn"] = wwn
+    if serial is not None:
+        entry["serial"] = serial
+    if size_bytes is not None:
+        entry["size_bytes"] = size_bytes
+    if vendor is not None:
+        entry["vendor"] = vendor
+    if model is not None:
+        entry["model"] = model
+    if transport is not None:
+        entry["transport"] = transport
+    if rotational is not None:
+        entry["rotational"] = rotational
+    return entry
+
+
+def _partition(name: str, parent: str) -> dict[str, Any]:
+    """Non-disk entry — must be ignored by lineage."""
+    return {"name": name, "type": "part", "parent": parent}
+
+
+async def test_first_storage_observation_creates_part_and_placement(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.storage.devices": [
+                    _disk("nvme0n1", wwn="nvme-wwn-aaa"),
+                    _disk(
+                        "sda", wwn=None, serial="SATA-SER-bbb", transport="sata", rotational=True
+                    ),
+                    _partition("nvme0n1p1", parent="nvme0n1"),  # not a part
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 2
+    assert result.parts_skipped_no_identity == 0
+    assert sorted(result.placements_opened) == [
+        ("SATA-SER-bbb", "/dev/sda"),
+        ("nvme-wwn-aaa", "/dev/nvme0n1"),
+    ]
+    assert result.placements_closed == []
+
+    async with sessionmaker() as s:
+        parts = (
+            (await s.execute(select(PhysicalPart).where(PhysicalPart.kind != PartKind.DIMM)))
+            .scalars()
+            .all()
+        )
+        by_kind = {p.kind: p for p in parts}
+        assert PartKind.NVME in by_kind  # transport=nvme
+        assert PartKind.HDD in by_kind  # rotational=True
+        assert by_kind[PartKind.NVME].wwid == "nvme-wwn-aaa"
+        assert by_kind[PartKind.HDD].serial == "SATA-SER-bbb"
+        # WWN-keyed part still records serial if probe supplied one.
+        assert by_kind[PartKind.NVME].serial == "SDISK-DEFAULT"
+
+
+async def test_storage_lineage_is_idempotent(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.storage.devices": [_disk("nvme0n1", wwn="nvme-wwn-aaa")]},
+        )
+
+        first = await Reconciler().reconcile_host(s, host.id)
+        second = await Reconciler().reconcile_host(s, host.id)
+
+    assert first.parts_upserted == 1
+    assert first.placements_opened == [("nvme-wwn-aaa", "/dev/nvme0n1")]
+    assert second.parts_upserted == 0
+    assert second.placements_opened == []
+    assert not second.touched_lineage
+
+
+async def test_storage_disk_moves_to_different_host(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        src = await _seed_host(s, hostname="bmax0")
+        dst = await _seed_host(s, hostname="bmax1")
+
+        run_src = await _seed_run(s, src.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run_src.id,
+            src.id,
+            {"host.storage.devices": [_disk("nvme0n1", wwn="nvme-wwn-aaa")]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, src.id)
+
+        # Same WWN appears on dst at a different slot label (renamed by kernel).
+        run_dst = await _seed_run(s, dst.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run_dst.id,
+            dst.id,
+            {"host.storage.devices": [_disk("nvme1n1", wwn="nvme-wwn-aaa")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        result = await Reconciler().reconcile_host(s, dst.id)
+
+    assert result.parts_upserted == 0
+    assert result.placements_opened == [("nvme-wwn-aaa", "/dev/nvme1n1")]
+    assert result.placements_closed == [("nvme-wwn-aaa", "/dev/nvme0n1")]
+
+    async with sessionmaker() as s:
+        all_placements = (await s.execute(select(Placement))).scalars().all()
+        assert len(all_placements) == 2  # history preserved
+
+
+async def test_storage_falls_back_to_serial_when_wwn_missing(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.storage.devices": [_disk("sda", wwn=None, serial="serial-only")]},
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.placements_opened == [("serial-only", "/dev/sda")]
+    async with sessionmaker() as s:
+        part = (
+            await s.execute(select(PhysicalPart).where(PhysicalPart.serial == "serial-only"))
+        ).scalar_one()
+        assert part.wwid is None  # nothing to record
+
+
+async def test_storage_disk_without_identity_is_skipped(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.storage.devices": [
+                    _disk("sda", wwn=None, serial=None),  # no identity at all
+                    _disk("nvme0n1"),  # default WWN
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 1
+    assert result.parts_skipped_no_identity == 1
+    assert result.placements_opened == [("WWN-DEFAULT", "/dev/nvme0n1")]
+
+
+async def test_storage_partition_entries_are_ignored(sessionmaker) -> None:
+    """type != 'disk' must never produce a PhysicalPart."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.storage.devices": [
+                    _partition("sda1", parent="sda"),
+                    {"name": "vg-data", "type": "lvm"},
+                    {"name": "md0", "type": "raid1"},
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 0
+    assert result.parts_skipped_no_identity == 0
+    assert result.placements_opened == []
+
+
+async def test_storage_part_kind_reclassifies_on_better_evidence(sessionmaker) -> None:
+    """First run misses transport → OTHER; second run with transport → NVME."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {
+                "host.storage.devices": [
+                    _disk(
+                        "nvme0n1",
+                        wwn="nvme-wwn-aaa",
+                        transport=None,
+                        rotational=None,
+                    ),
+                ],
+            },
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        run2 = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.storage.devices": [_disk("nvme0n1", wwn="nvme-wwn-aaa")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+    async with sessionmaker() as s:
+        part = (
+            await s.execute(select(PhysicalPart).where(PhysicalPart.wwid == "nvme-wwn-aaa"))
+        ).scalar_one()
+        assert part.kind == PartKind.NVME  # reclassified
+
+
+async def test_no_storage_observation_does_not_close_storage_placements(sessionmaker) -> None:
+    """Reconcile without a storage observation must not touch storage lineage."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        part = PhysicalPart(kind=PartKind.NVME, wwid="nvme-wwn-zzz")
+        s.add(part)
+        await s.flush()
+        s.add(Placement(part_id=part.id, host_id=host.id, slot="/dev/nvme0n1"))
+        await s.flush()
+
+        # Only an identity observation lands — no storage probe data.
+        run = await _seed_run(s, host.id, probe_name="host.identity")
+        await _record_observations(s, run.id, host.id, {"host.identity.kernel": "6.8.0-49-generic"})
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.placements_closed == []
+    async with sessionmaker() as s:
+        open_p = await _open_placements(s, host.id)
+        assert len(open_p) == 1
+        assert open_p[0].slot == "/dev/nvme0n1"
+
+
+async def test_dimm_reconcile_does_not_touch_storage_placements(sessionmaker) -> None:
+    """Regression: the close-on-this-host loop must filter by part kind.
+
+    Without the filter, a DIMM-only observation would close every open
+    placement on the host — including SSDs and NICs — because the active
+    set for DIMMs doesn't contain them.
+    """
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+
+        # Seed a storage part + placement first.
+        ssd = PhysicalPart(kind=PartKind.NVME, wwid="nvme-wwn-stable")
+        s.add(ssd)
+        await s.flush()
+        s.add(Placement(part_id=ssd.id, host_id=host.id, slot="/dev/nvme0n1"))
+        await s.flush()
+
+        # Then a DIMM observation arrives — only DIMM data, no storage.
+        run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="DIMM-AAA")]},
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    # DIMM placement opened, storage placement untouched.
+    assert ("DIMM-AAA", "DIMM_A1") in result.placements_opened
+    assert result.placements_closed == []
+
+    async with sessionmaker() as s:
+        open_p = await _open_placements(s, host.id)
+        slots = {p.slot for p in open_p}
+        assert slots == {"DIMM_A1", "/dev/nvme0n1"}
+
+
+async def test_storage_capability_scalars_project(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.storage.disk_count": 2,
+                "host.storage.disk_names": ["nvme0n1", "sda"],
+                "host.storage.total_disk_bytes": 1_500 * 1024**3,
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.changes == {
+        "capabilities.disk_count": 2,
+        "capabilities.disk_names": ["nvme0n1", "sda"],
+        "capabilities.total_disk_bytes": 1_500 * 1024**3,
+    }

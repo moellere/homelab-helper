@@ -10,18 +10,26 @@ component." It covers two kinds of projection today:
   capability bag (model, topology, cache, flags).
 - ``host.memory.*`` → the capability bag (RAM/swap/hugepage totals from
   ``/proc/meminfo``).
+- ``host.storage.*`` scalars → the capability bag (disk_count, disk_names,
+  total_disk_bytes).
 
 **Part-lineage projection** (first-class ``PhysicalPart`` + ``Placement`` rows):
 
-- ``host.memory.dimms`` → DIMM ``PhysicalPart`` upsert by serial, append-only
-  ``Placement`` open/close. The observation value is a list of populated-slot
-  dicts; the latest observation IS the current DIMM topology. Cross-host moves
-  close the prior placement on the source host. DIMMs missing a serial are
-  counted and skipped (a future finding-generation slice will flag them).
+- ``host.memory.dimms`` → DIMM ``PhysicalPart`` upsert by serial.
+- ``host.storage.devices`` → SSD/HDD/NVME ``PhysicalPart`` upsert by WWN
+  (preferred) or serial. Partitions/LVM/RAID entries are ignored; only
+  top-level disks (``type == "disk"``) become parts. Kind is chosen per-device
+  from transport + rotational and re-classifies on better evidence.
 
-Future slices add ``host.storage.*`` and ``host.network.*`` projection,
-SSD/NIC ``PhysicalPart`` lineage in the same pattern, the NetBox write path,
-then findings.
+Each lineage path uses append-only ``Placement`` open/close — the latest
+observation IS the current topology for its kind. Cross-host moves close the
+prior placement on the source host. The close-on-this-host scan is filtered
+by ``PartKind`` so a DIMM reconcile doesn't disturb storage placements, and
+absence of an observation short-circuits — never close placements just
+because the probe hasn't run yet.
+
+Future slices add ``host.network.*`` projection + NIC ``PhysicalPart``
+lineage in the same pattern, the NetBox write path, then findings.
 
 Precedence rule today: **latest observation per (target, key) wins.** The
 Observation table is append-only, so the freshest row reflects the most
@@ -52,11 +60,22 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# Key the dmidecode-driven DIMM probe must emit. Value contract: list of dicts,
-# one per populated slot, each with ``slot`` plus the optional PhysicalPart
-# fields (``serial``, ``manufacturer``, ``part_number``, ``size_bytes``,
-# ``speed_mts``, ``type``).
+# Lineage observation keys. The host.storage probe already emits the storage
+# contract via lsblk; the host.network probe already emits the NIC contract
+# via ip-link. The dmidecode-driven DIMM probe is future work but the
+# reconciler treats the contract as the same shape: a list of slot dicts.
 _DIMMS_KEY = "host.memory.dimms"
+_STORAGE_DEVICES_KEY = "host.storage.devices"
+
+# Storage parts created via the lineage path use one of these kinds, chosen
+# per-device by transport + rotational flag. The close-on-this-host filter
+# uses this tuple so the storage reconcile only touches storage placements.
+_STORAGE_PART_KINDS: tuple[PartKind, ...] = (
+    PartKind.NVME,
+    PartKind.SSD,
+    PartKind.HDD,
+    PartKind.OTHER,
+)
 
 
 def normalize_arch(raw: Any) -> Architecture:
@@ -130,9 +149,7 @@ _CPU_RULES: tuple[HostProjectionRule, ...] = (
 )
 
 # Memory: RAM/swap/hugepage totals from /proc/meminfo. DIMM-level inventory
-# (slots, vendors, per-DIMM size) needs dmidecode + sudo and will land with
-# the PhysicalPart/Placement lineage slice — *those* keys exit the capability
-# bag and become first-class rows, not capabilities.
+# arrives via host.memory.dimms (handled by the lineage path below), not here.
 _MEMORY_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.memory.mem_total_bytes", capability="mem_total_bytes"),
     HostProjectionRule(key="host.memory.mem_available_bytes", capability="mem_available_bytes"),
@@ -144,7 +161,18 @@ _MEMORY_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.memory.hugepagesize_bytes", capability="hugepagesize_bytes"),
 )
 
-_HOST_RULES: tuple[HostProjectionRule, ...] = _IDENTITY_RULES + _CPU_RULES + _MEMORY_RULES
+# Storage: top-level scalars from host.storage probe. Per-device PhysicalPart
+# rows are created by the lineage path (_reconcile_storage_lineage) from
+# host.storage.devices, not from these capability projections.
+_STORAGE_RULES: tuple[HostProjectionRule, ...] = (
+    HostProjectionRule(key="host.storage.disk_count", capability="disk_count"),
+    HostProjectionRule(key="host.storage.disk_names", capability="disk_names"),
+    HostProjectionRule(key="host.storage.total_disk_bytes", capability="total_disk_bytes"),
+)
+
+_HOST_RULES: tuple[HostProjectionRule, ...] = (
+    _IDENTITY_RULES + _CPU_RULES + _MEMORY_RULES + _STORAGE_RULES
+)
 
 
 @dataclass
@@ -157,9 +185,10 @@ class ReconcileResult:
     # for capability-bag entries. Empty dict ⇒ re-run was a no-op.
     changes: dict[str, Any] = field(default_factory=dict)
     # Part-lineage activity. Empty ⇒ no PhysicalPart/Placement rows were
-    # written. Tuples are ``(serial_or_None, slot)`` for human readability.
+    # written. Tuples are ``(identity_or_None, slot)`` for human readability —
+    # identity is the serial (DIMM/NIC) or WWN (storage) the part was keyed on.
     parts_upserted: int = 0
-    parts_skipped_no_serial: int = 0
+    parts_skipped_no_identity: int = 0
     placements_opened: list[tuple[str | None, str]] = field(default_factory=list)
     placements_closed: list[tuple[str | None, str]] = field(default_factory=list)
 
@@ -167,7 +196,7 @@ class ReconcileResult:
     def touched_lineage(self) -> bool:
         return bool(
             self.parts_upserted
-            or self.parts_skipped_no_serial
+            or self.parts_skipped_no_identity
             or self.placements_opened
             or self.placements_closed
         )
@@ -226,11 +255,12 @@ class Reconciler:
 
         # Phase 2: Part-lineage projection (PhysicalPart + Placement rows).
         dimms_raw = await self._latest_observation_value(session, host_id, _DIMMS_KEY)
-        lineage = await self._reconcile_dimm_lineage(session, host_id, dimms_raw)
+        dimm_summary = await self._reconcile_dimm_lineage(session, host_id, dimms_raw)
+        storage_raw = await self._latest_observation_value(session, host_id, _STORAGE_DEVICES_KEY)
+        storage_summary = await self._reconcile_storage_lineage(session, host_id, storage_raw)
 
-        # Freshness markers — bump on any evidence, projection or lineage.
-        dimms_seen = 1 if dimms_raw is not None else 0
-        if latest or dimms_seen:
+        lineage_seen = sum(1 for raw in (dimms_raw, storage_raw) if raw is not None)
+        if latest or lineage_seen:
             now_ts = datetime.now(UTC)
             host.discovery_last_run = now_ts
             host.last_verified = now_ts
@@ -238,12 +268,19 @@ class Reconciler:
         await session.flush()
         return ReconcileResult(
             host_id=host_id,
-            observations_seen=len(latest) + dimms_seen,
+            observations_seen=len(latest) + lineage_seen,
             changes=changes,
-            parts_upserted=lineage["parts_upserted"],
-            parts_skipped_no_serial=lineage["parts_skipped_no_serial"],
-            placements_opened=lineage["placements_opened"],
-            placements_closed=lineage["placements_closed"],
+            parts_upserted=dimm_summary["parts_upserted"] + storage_summary["parts_upserted"],
+            parts_skipped_no_identity=(
+                dimm_summary["parts_skipped_no_identity"]
+                + storage_summary["parts_skipped_no_identity"]
+            ),
+            placements_opened=(
+                dimm_summary["placements_opened"] + storage_summary["placements_opened"]
+            ),
+            placements_closed=(
+                dimm_summary["placements_closed"] + storage_summary["placements_closed"]
+            ),
         )
 
     async def _latest_per_key(
@@ -302,13 +339,13 @@ class Reconciler:
         circuits: no-op (don't close placements just because the probe hasn't
         run yet).
 
-        DIMMs missing a serial are counted in ``parts_skipped_no_serial`` and
+        DIMMs missing a serial are counted in ``parts_skipped_no_identity`` and
         otherwise ignored — without a stable identity we'd churn parts every
         run. A future finding-generation slice will surface them.
         """
         result: dict[str, Any] = {
             "parts_upserted": 0,
-            "parts_skipped_no_serial": 0,
+            "parts_skipped_no_identity": 0,
             "placements_opened": [],
             "placements_closed": [],
         }
@@ -326,17 +363,24 @@ class Reconciler:
             if not isinstance(slot, str) or not slot:
                 continue
             if not isinstance(serial, str) or not serial:
-                result["parts_skipped_no_serial"] += 1
+                result["parts_skipped_no_identity"] += 1
                 continue
             part, created = await self._upsert_dimm_part(session, serial, raw_entry)
             if created:
                 result["parts_upserted"] += 1
             active[(part.id, slot)] = serial
 
-        # Close any open placements on THIS host whose (part_id, slot) isn't
-        # in the active set — DIMMs removed or relocated within the host.
-        host_open_stmt = select(Placement).where(
-            Placement.host_id == host_id, Placement.to_date.is_(None)
+        # Close open DIMM placements on THIS host whose (part_id, slot) isn't
+        # in the active set. The kind filter is critical: without it, the
+        # DIMM reconcile would close storage/NIC placements as "missing."
+        host_open_stmt = (
+            select(Placement)
+            .join(PhysicalPart, Placement.part_id == PhysicalPart.id)
+            .where(
+                Placement.host_id == host_id,
+                Placement.to_date.is_(None),
+                PhysicalPart.kind == PartKind.DIMM,
+            )
         )
         host_open_rows = (await session.execute(host_open_stmt)).scalars().all()
         host_open_keys: set[tuple[uuid.UUID, str]] = set()
@@ -450,7 +494,238 @@ class Reconciler:
         for p in (await session.execute(stmt)).scalars().all():
             p.to_date = when
             part = await session.get(PhysicalPart, p.part_id)
-            report.append((part.serial if part is not None else None, p.slot))
+            # Prefer WWN over serial — for storage parts that have both, WWN
+            # is the identity of record; DIMMs/NICs have only serial.
+            report.append(((part.wwid or part.serial) if part is not None else None, p.slot))
+
+    async def _reconcile_storage_lineage(
+        self,
+        session: AsyncSession,
+        host_id: uuid.UUID,
+        devices_raw: Any,
+    ) -> dict[str, Any]:
+        """Project the latest ``host.storage.devices`` observation onto rows.
+
+        Only top-level disks (``type == "disk"``) become PhysicalPart rows.
+        Partitions, LVM volumes, and RAID arrays are logical subdivisions of
+        a disk, not first-class parts. Identity is **WWN preferred, serial
+        fallback** — many USB enclosures forge serials but expose WWN. Devices
+        with neither are counted in ``parts_skipped_no_identity``.
+
+        The slot label is the kernel device path (``/dev/<name>``). Cross-host
+        moves close the prior placement; intra-host moves (device renamed
+        because PCI scan order changed) close the old slot and open the new.
+        """
+        result: dict[str, Any] = {
+            "parts_upserted": 0,
+            "parts_skipped_no_identity": 0,
+            "placements_opened": [],
+            "placements_closed": [],
+        }
+        if not isinstance(devices_raw, list):
+            return result
+
+        # We only insert keyed identities (str), never None — narrow the
+        # value type accordingly so the reporting loop type-checks.
+        active: dict[tuple[uuid.UUID, str], str] = {}
+        for raw_entry in devices_raw:
+            if not isinstance(raw_entry, dict):
+                continue
+            if raw_entry.get("type") != "disk":
+                continue  # partitions/LVM/RAID — not physical parts
+            name = raw_entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            slot = f"/dev/{name}"
+            identity = _storage_identity(raw_entry)
+            if identity is None:
+                result["parts_skipped_no_identity"] += 1
+                continue
+            identity_column, identity_value = identity
+            part, created = await self._upsert_storage_part(
+                session, identity_column, identity_value, raw_entry
+            )
+            if created:
+                result["parts_upserted"] += 1
+            active[(part.id, slot)] = identity_value
+
+        # Close-on-this-host: filter to storage kinds so the DIMM/NIC lineage
+        # paths' placements are untouched.
+        host_open_stmt = (
+            select(Placement)
+            .join(PhysicalPart, Placement.part_id == PhysicalPart.id)
+            .where(
+                Placement.host_id == host_id,
+                Placement.to_date.is_(None),
+                PhysicalPart.kind.in_(_STORAGE_PART_KINDS),
+            )
+        )
+        host_open_rows = (await session.execute(host_open_stmt)).scalars().all()
+        host_open_keys: set[tuple[uuid.UUID, str]] = set()
+        now_ts = datetime.now(UTC)
+        for p in host_open_rows:
+            key = (p.part_id, p.slot)
+            host_open_keys.add(key)
+            if key not in active:
+                p.to_date = now_ts
+                closing_part = await session.get(PhysicalPart, p.part_id)
+                result["placements_closed"].append(
+                    (
+                        (closing_part.wwid or closing_part.serial)
+                        if closing_part is not None
+                        else None,
+                        p.slot,
+                    )
+                )
+
+        for (part_id, slot), identity_value in active.items():
+            if (part_id, slot) in host_open_keys:
+                continue
+            await self._close_placements_elsewhere(
+                session, part_id, host_id, now_ts, result["placements_closed"]
+            )
+            session.add(
+                Placement(
+                    part_id=part_id,
+                    host_id=host_id,
+                    slot=slot,
+                    from_date=now_ts,
+                )
+            )
+            result["placements_opened"].append((identity_value, slot))
+
+        if result["placements_opened"] or result["placements_closed"]:
+            await session.flush()
+        return result
+
+    async def _upsert_storage_part(
+        self,
+        session: AsyncSession,
+        identity_column: str,
+        identity_value: str,
+        entry: dict[str, Any],
+    ) -> tuple[PhysicalPart, bool]:
+        """Find or create a storage PhysicalPart, keyed by WWN or serial.
+
+        Looks up by ``(kind ∈ storage_kinds, identity_column == identity_value)``
+        so a disk reclassified from SSD to NVME (transport reporting improved)
+        still resolves to the same row. On a hit, fills in nullable fields and
+        reclassifies kind if the latest observation disagrees. ``identity_value``
+        is also written into its column on a miss so the part is permanently
+        addressable by either side.
+        """
+        column = PhysicalPart.wwid if identity_column == "wwid" else PhysicalPart.serial
+        existing = (
+            await session.execute(
+                select(PhysicalPart).where(
+                    PhysicalPart.kind.in_(_STORAGE_PART_KINDS),
+                    column == identity_value,
+                )
+            )
+        ).scalar_one_or_none()
+
+        kind = _classify_storage_kind(entry)
+        size = entry.get("size_bytes") if isinstance(entry.get("size_bytes"), int) else None
+        vendor = entry.get("vendor") if isinstance(entry.get("vendor"), str) else None
+        model = entry.get("model") if isinstance(entry.get("model"), str) else None
+        transport = entry.get("transport") if isinstance(entry.get("transport"), str) else None
+        rotational = entry.get("rotational") if isinstance(entry.get("rotational"), bool) else None
+
+        if existing is not None:
+            _enrich_storage_part(existing, kind, vendor, model, size, transport, rotational)
+            # Fill in the *other* identity field if we now know it (a disk
+            # first seen via serial may report WWN on a later run).
+            if identity_column == "wwid" and existing.wwid is None:
+                existing.wwid = identity_value
+            elif identity_column == "serial" and existing.serial is None:
+                existing.serial = identity_value
+            return existing, False
+
+        new_attrs: dict[str, Any] = {}
+        if transport is not None:
+            new_attrs["transport"] = transport
+        if rotational is not None:
+            new_attrs["rotational"] = rotational
+        kwargs: dict[str, Any] = {
+            "kind": kind,
+            "manufacturer": vendor,
+            "model": model,
+            "capacity_bytes": size,
+            "attributes": new_attrs,
+        }
+        kwargs[identity_column] = identity_value
+        # Record the *other* identity column too when the probe supplied both —
+        # makes future lookups by either side resolve to the same part.
+        other_column = "serial" if identity_column == "wwid" else "wwid"
+        other_value = entry.get(other_column if other_column == "serial" else "wwn")
+        if isinstance(other_value, str) and other_value and other_column not in kwargs:
+            kwargs[other_column] = other_value
+        part = PhysicalPart(**kwargs)
+        session.add(part)
+        await session.flush()
+        return part, True
+
+
+def _storage_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
+    """Return ``("wwid", wwn)`` or ``("serial", serial)`` for a storage entry.
+
+    WWN preferred — USB enclosures and consumer drives often fake serials but
+    expose stable WWN. Empty strings count as missing.
+    """
+    wwn = entry.get("wwn")
+    if isinstance(wwn, str) and wwn:
+        return ("wwid", wwn)
+    serial = entry.get("serial")
+    if isinstance(serial, str) and serial:
+        return ("serial", serial)
+    return None
+
+
+def _classify_storage_kind(entry: dict[str, Any]) -> PartKind:
+    """Choose ``PartKind`` from probe metadata. Unknown → OTHER (never raises)."""
+    if entry.get("transport") == "nvme":
+        return PartKind.NVME
+    rotational = entry.get("rotational")
+    if rotational is True:
+        return PartKind.HDD
+    if rotational is False:
+        return PartKind.SSD
+    return PartKind.OTHER
+
+
+def _enrich_storage_part(
+    existing: PhysicalPart,
+    kind: PartKind,
+    vendor: str | None,
+    model: str | None,
+    size: int | None,
+    transport: str | None,
+    rotational: bool | None,
+) -> None:
+    """Fill in nullable PhysicalPart fields and refresh storage attributes.
+
+    Only writes when the new value is non-null AND the existing value is null
+    or stale — a probe regression that loses a field doesn't blank what we
+    already know.
+    """
+    if existing.kind != kind:
+        existing.kind = kind
+    if existing.manufacturer is None and vendor is not None:
+        existing.manufacturer = vendor
+    if existing.model is None and model is not None:
+        existing.model = model
+    if existing.capacity_bytes is None and size is not None:
+        existing.capacity_bytes = size
+    updated_attrs = dict(existing.attributes or {})
+    attrs_changed = False
+    if transport is not None and updated_attrs.get("transport") != transport:
+        updated_attrs["transport"] = transport
+        attrs_changed = True
+    if rotational is not None and updated_attrs.get("rotational") != rotational:
+        updated_attrs["rotational"] = rotational
+        attrs_changed = True
+    if attrs_changed:
+        existing.attributes = updated_attrs
 
 
 __all__ = ["HostProjectionRule", "ReconcileResult", "Reconciler", "normalize_arch"]

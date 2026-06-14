@@ -8,28 +8,32 @@ component." It covers two kinds of projection today:
 - ``host.identity.*`` → the ``Host`` capability bag (kernel, OS, machine-id, …).
 - ``host.cpu.*`` → ``Host.arch`` (typed column, via a value transform) and the
   capability bag (model, topology, cache, flags).
-- ``host.memory.*`` → the capability bag (RAM/swap/hugepage totals from
-  ``/proc/meminfo``).
+- ``host.memory.*`` → the capability bag (RAM/swap/hugepage totals).
 - ``host.storage.*`` scalars → the capability bag (disk_count, disk_names,
   total_disk_bytes).
+- ``host.network.*`` scalars → the capability bag (network_interface_count,
+  network_interface_names).
 
 **Part-lineage projection** (first-class ``PhysicalPart`` + ``Placement`` rows):
 
 - ``host.memory.dimms`` → DIMM ``PhysicalPart`` upsert by serial.
 - ``host.storage.devices`` → SSD/HDD/NVME ``PhysicalPart`` upsert by WWN
-  (preferred) or serial. Partitions/LVM/RAID entries are ignored; only
-  top-level disks (``type == "disk"``) become parts. Kind is chosen per-device
-  from transport + rotational and re-classifies on better evidence.
+  (preferred) or serial. Only top-level disks become parts; partitions, LVM,
+  RAID are ignored. Kind re-classifies on better evidence.
+- ``host.network.interfaces`` → NIC ``PhysicalPart`` upsert by lowercased MAC
+  (stored in the ``serial`` column). Virtual interfaces (bridges, veth, wg,
+  tailscale, bond, etc.) are filtered by name prefix and counted in
+  ``parts_skipped_filtered`` so a software interface with a MAC doesn't look
+  like a missing-identity probe failure.
 
 Each lineage path uses append-only ``Placement`` open/close — the latest
 observation IS the current topology for its kind. Cross-host moves close the
 prior placement on the source host. The close-on-this-host scan is filtered
-by ``PartKind`` so a DIMM reconcile doesn't disturb storage placements, and
-absence of an observation short-circuits — never close placements just
+by ``PartKind`` so reconciling one kind never disturbs another's placements,
+and absence of an observation short-circuits — never close placements just
 because the probe hasn't run yet.
 
-Future slices add ``host.network.*`` projection + NIC ``PhysicalPart``
-lineage in the same pattern, the NetBox write path, then findings.
+Future slices add the NetBox write path, then findings.
 
 Precedence rule today: **latest observation per (target, key) wins.** The
 Observation table is append-only, so the freshest row reflects the most
@@ -66,6 +70,7 @@ if TYPE_CHECKING:
 # reconciler treats the contract as the same shape: a list of slot dicts.
 _DIMMS_KEY = "host.memory.dimms"
 _STORAGE_DEVICES_KEY = "host.storage.devices"
+_INTERFACES_KEY = "host.network.interfaces"
 
 # Storage parts created via the lineage path use one of these kinds, chosen
 # per-device by transport + rotational flag. The close-on-this-host filter
@@ -75,6 +80,28 @@ _STORAGE_PART_KINDS: tuple[PartKind, ...] = (
     PartKind.SSD,
     PartKind.HDD,
     PartKind.OTHER,
+)
+
+# Interface-name prefixes that mean "software construct, not a physical NIC."
+# Heuristic — the existing probe doesn't carry a PCI address. A future probe
+# version emitting one would let us replace this with a positive
+# "has-PCI-backing" test.
+_VIRTUAL_NIC_PREFIXES: tuple[str, ...] = (
+    "br",
+    "vmbr",
+    "docker",
+    "virbr",
+    "veth",
+    "tap",
+    "tun",
+    "wg",
+    "tailscale",
+    "cilium",
+    "cni",
+    "flannel",
+    "lxc",
+    "lxd",
+    "bond",
 )
 
 
@@ -170,8 +197,16 @@ _STORAGE_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.storage.total_disk_bytes", capability="total_disk_bytes"),
 )
 
+# Network: top-level scalars from host.network probe. Per-interface NIC
+# PhysicalPart rows are created by the lineage path (_reconcile_nic_lineage)
+# from host.network.interfaces.
+_NETWORK_RULES: tuple[HostProjectionRule, ...] = (
+    HostProjectionRule(key="host.network.interface_count", capability="network_interface_count"),
+    HostProjectionRule(key="host.network.interface_names", capability="network_interface_names"),
+)
+
 _HOST_RULES: tuple[HostProjectionRule, ...] = (
-    _IDENTITY_RULES + _CPU_RULES + _MEMORY_RULES + _STORAGE_RULES
+    _IDENTITY_RULES + _CPU_RULES + _MEMORY_RULES + _STORAGE_RULES + _NETWORK_RULES
 )
 
 
@@ -189,6 +224,10 @@ class ReconcileResult:
     # identity is the serial (DIMM/NIC) or WWN (storage) the part was keyed on.
     parts_upserted: int = 0
     parts_skipped_no_identity: int = 0
+    # Entries excluded by policy rather than missing identity — e.g. virtual
+    # network interfaces (docker0, br0, veth*). They have an identity (MAC) but
+    # aren't physical parts; conflating with no-identity would hide the reason.
+    parts_skipped_filtered: int = 0
     placements_opened: list[tuple[str | None, str]] = field(default_factory=list)
     placements_closed: list[tuple[str | None, str]] = field(default_factory=list)
 
@@ -197,6 +236,7 @@ class ReconcileResult:
         return bool(
             self.parts_upserted
             or self.parts_skipped_no_identity
+            or self.parts_skipped_filtered
             or self.placements_opened
             or self.placements_closed
         )
@@ -258,29 +298,26 @@ class Reconciler:
         dimm_summary = await self._reconcile_dimm_lineage(session, host_id, dimms_raw)
         storage_raw = await self._latest_observation_value(session, host_id, _STORAGE_DEVICES_KEY)
         storage_summary = await self._reconcile_storage_lineage(session, host_id, storage_raw)
+        nic_raw = await self._latest_observation_value(session, host_id, _INTERFACES_KEY)
+        nic_summary = await self._reconcile_nic_lineage(session, host_id, nic_raw)
 
-        lineage_seen = sum(1 for raw in (dimms_raw, storage_raw) if raw is not None)
+        lineage_seen = sum(1 for raw in (dimms_raw, storage_raw, nic_raw) if raw is not None)
         if latest or lineage_seen:
             now_ts = datetime.now(UTC)
             host.discovery_last_run = now_ts
             host.last_verified = now_ts
 
+        summaries = (dimm_summary, storage_summary, nic_summary)
         await session.flush()
         return ReconcileResult(
             host_id=host_id,
             observations_seen=len(latest) + lineage_seen,
             changes=changes,
-            parts_upserted=dimm_summary["parts_upserted"] + storage_summary["parts_upserted"],
-            parts_skipped_no_identity=(
-                dimm_summary["parts_skipped_no_identity"]
-                + storage_summary["parts_skipped_no_identity"]
-            ),
-            placements_opened=(
-                dimm_summary["placements_opened"] + storage_summary["placements_opened"]
-            ),
-            placements_closed=(
-                dimm_summary["placements_closed"] + storage_summary["placements_closed"]
-            ),
+            parts_upserted=sum(s["parts_upserted"] for s in summaries),
+            parts_skipped_no_identity=sum(s["parts_skipped_no_identity"] for s in summaries),
+            parts_skipped_filtered=sum(s.get("parts_skipped_filtered", 0) for s in summaries),
+            placements_opened=[p for s in summaries for p in s["placements_opened"]],
+            placements_closed=[p for s in summaries for p in s["placements_closed"]],
         )
 
     async def _latest_per_key(
@@ -665,6 +702,147 @@ class Reconciler:
         await session.flush()
         return part, True
 
+    async def _reconcile_nic_lineage(
+        self,
+        session: AsyncSession,
+        host_id: uuid.UUID,
+        interfaces_raw: Any,
+    ) -> dict[str, Any]:
+        """Project the latest ``host.network.interfaces`` observation onto rows.
+
+        Filtering: only ``link_type == "ether"`` entries with a non-virtual name
+        become PhysicalParts. Virtual interfaces (bridges, veth, docker, wg, …)
+        are counted in ``parts_skipped_filtered`` — they have a MAC but aren't
+        physical parts, and conflating with no-identity would hide the reason.
+        Interfaces with no MAC at all go to ``parts_skipped_no_identity``.
+
+        Slot label is the kernel interface name; a future probe version
+        emitting PCI addresses can switch to a more stable identifier.
+        """
+        result: dict[str, Any] = {
+            "parts_upserted": 0,
+            "parts_skipped_no_identity": 0,
+            "parts_skipped_filtered": 0,
+            "placements_opened": [],
+            "placements_closed": [],
+        }
+        if not isinstance(interfaces_raw, list):
+            return result
+
+        active: dict[tuple[uuid.UUID, str], str] = {}
+        for raw_entry in interfaces_raw:
+            if not isinstance(raw_entry, dict):
+                continue
+            if not _is_real_nic(raw_entry):
+                mac = raw_entry.get("mac")
+                if isinstance(mac, str) and mac:
+                    result["parts_skipped_filtered"] += 1
+                continue
+            name = raw_entry.get("name")
+            assert isinstance(name, str)  # _is_real_nic narrowed this
+            mac_norm = _normalize_mac(raw_entry.get("mac"))
+            if mac_norm is None:
+                result["parts_skipped_no_identity"] += 1
+                continue
+            part, created = await self._upsert_nic_part(session, mac_norm, raw_entry)
+            if created:
+                result["parts_upserted"] += 1
+            active[(part.id, name)] = mac_norm
+
+        host_open_stmt = (
+            select(Placement)
+            .join(PhysicalPart, Placement.part_id == PhysicalPart.id)
+            .where(
+                Placement.host_id == host_id,
+                Placement.to_date.is_(None),
+                PhysicalPart.kind == PartKind.NIC,
+            )
+        )
+        host_open_rows = (await session.execute(host_open_stmt)).scalars().all()
+        host_open_keys: set[tuple[uuid.UUID, str]] = set()
+        now_ts = datetime.now(UTC)
+        for p in host_open_rows:
+            key = (p.part_id, p.slot)
+            host_open_keys.add(key)
+            if key not in active:
+                p.to_date = now_ts
+                closing_part = await session.get(PhysicalPart, p.part_id)
+                result["placements_closed"].append(
+                    (closing_part.serial if closing_part is not None else None, p.slot)
+                )
+
+        for (part_id, slot), mac in active.items():
+            if (part_id, slot) in host_open_keys:
+                continue
+            await self._close_placements_elsewhere(
+                session, part_id, host_id, now_ts, result["placements_closed"]
+            )
+            session.add(
+                Placement(
+                    part_id=part_id,
+                    host_id=host_id,
+                    slot=slot,
+                    from_date=now_ts,
+                )
+            )
+            result["placements_opened"].append((mac, slot))
+
+        if result["placements_opened"] or result["placements_closed"]:
+            await session.flush()
+        return result
+
+    async def _upsert_nic_part(
+        self,
+        session: AsyncSession,
+        mac: str,
+        entry: dict[str, Any],
+    ) -> tuple[PhysicalPart, bool]:
+        """Find or create a NIC PhysicalPart keyed by MAC (stored in ``serial``).
+
+        NICs use only the ``serial`` column for identity — MAC is the natural
+        permanent ID; there's no WWN analogue. Speed lives in ``speed_mbps``;
+        MTU / link_type / master / addresses go into attributes.
+        """
+        existing = (
+            await session.execute(
+                select(PhysicalPart).where(
+                    PhysicalPart.kind == PartKind.NIC, PhysicalPart.serial == mac
+                )
+            )
+        ).scalar_one_or_none()
+
+        speed_mbps = entry.get("speed_mbps") if isinstance(entry.get("speed_mbps"), int) else None
+        mtu = entry.get("mtu") if isinstance(entry.get("mtu"), int) else None
+        link_type = entry.get("link_type") if isinstance(entry.get("link_type"), str) else None
+        master = entry.get("master") if isinstance(entry.get("master"), str) else None
+
+        extracted_attrs: dict[str, Any] = {}
+        if mtu is not None:
+            extracted_attrs["mtu"] = mtu
+        if link_type is not None:
+            extracted_attrs["link_type"] = link_type
+        if master is not None:
+            extracted_attrs["master"] = master
+
+        if existing is not None:
+            if existing.speed_mbps is None and speed_mbps is not None:
+                existing.speed_mbps = speed_mbps
+            if extracted_attrs:
+                merged = {**(existing.attributes or {}), **extracted_attrs}
+                if merged != (existing.attributes or {}):
+                    existing.attributes = merged
+            return existing, False
+
+        part = PhysicalPart(
+            kind=PartKind.NIC,
+            serial=mac,
+            speed_mbps=speed_mbps,
+            attributes=extracted_attrs,
+        )
+        session.add(part)
+        await session.flush()
+        return part, True
+
 
 def _storage_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
     """Return ``("wwid", wwn)`` or ``("serial", serial)`` for a storage entry.
@@ -726,6 +904,29 @@ def _enrich_storage_part(
         attrs_changed = True
     if attrs_changed:
         existing.attributes = updated_attrs
+
+
+def _is_real_nic(entry: dict[str, Any]) -> bool:
+    """Heuristic — return True for entries that look like physical NICs.
+
+    Drops loopback / non-ether link types and the common virtual-interface
+    name prefixes. The probe today doesn't expose PCI addresses; once it does,
+    this can be replaced with a positive "has-PCI-backing" check.
+    """
+    if entry.get("link_type") != "ether":
+        return False
+    name = entry.get("name")
+    if not isinstance(name, str) or not name:
+        return False
+    return not any(name.startswith(p) for p in _VIRTUAL_NIC_PREFIXES)
+
+
+def _normalize_mac(mac: Any) -> str | None:
+    """Lower-case + strip so case-only-different MACs merge to one identity."""
+    if not isinstance(mac, str):
+        return None
+    s = mac.strip().lower()
+    return s or None
 
 
 __all__ = ["HostProjectionRule", "ReconcileResult", "Reconciler", "normalize_arch"]

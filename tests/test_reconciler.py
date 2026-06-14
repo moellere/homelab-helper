@@ -1,11 +1,12 @@
 """Unit + replay tests for the Reconciler.
 
 Covers the host-row projection slices (``host.identity.*``, ``host.cpu.*``,
-``host.memory.*`` totals, ``host.storage.*`` scalars), the rule-registry
-invariants and ``normalize_arch`` transform, and the part-lineage slices —
-DIMMs via ``host.memory.dimms`` and storage devices via
-``host.storage.devices`` — including cross-host move cases and the
-cross-kind regression ensuring DIMM reconcile doesn't touch storage rows.
+``host.memory.*`` totals, ``host.storage.*`` scalars, ``host.network.*``
+scalars), the rule-registry invariants and ``normalize_arch`` transform, and
+the part-lineage slices — DIMMs (``host.memory.dimms``), storage devices
+(``host.storage.devices``), and NICs (``host.network.interfaces``) — with
+cross-host moves and cross-kind regressions ensuring one kind's reconcile
+never disturbs another's placements.
 
 The replay-style tests materialize Observation rows directly from a fixture
 dict (no probe runs, no SSH) and feed them through the reconciler — this is
@@ -1199,4 +1200,345 @@ async def test_storage_capability_scalars_project(sessionmaker) -> None:
         "capabilities.disk_count": 2,
         "capabilities.disk_names": ["nvme0n1", "sda"],
         "capabilities.total_disk_bytes": 1_500 * 1024**3,
+    }
+
+
+# ---------------------------------------------------------------------------
+# NIC PhysicalPart / Placement lineage
+# ---------------------------------------------------------------------------
+
+
+def _iface(
+    name: str,
+    *,
+    mac: str | None = "aa:bb:cc:dd:ee:ff",
+    link_type: str | None = "ether",
+    mtu: int | None = 1500,
+    speed_mbps: int | None = 1000,
+    operstate: str | None = "UP",
+    master: str | None = None,
+) -> dict[str, Any]:
+    """Build an interface dict matching the host.network probe contract."""
+    entry: dict[str, Any] = {"name": name, "addresses": []}
+    if mac is not None:
+        entry["mac"] = mac
+    if link_type is not None:
+        entry["link_type"] = link_type
+    if mtu is not None:
+        entry["mtu"] = mtu
+    if speed_mbps is not None:
+        entry["speed_mbps"] = speed_mbps
+    if operstate is not None:
+        entry["operstate"] = operstate
+    if master is not None:
+        entry["master"] = master
+    return entry
+
+
+async def test_first_nic_observation_creates_part_and_placement(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.network.interfaces": [
+                    _iface("enp1s0", mac="00:11:22:33:44:55"),
+                    _iface("enp2s0", mac="00:11:22:33:44:56", speed_mbps=2500),
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 2
+    assert result.parts_skipped_no_identity == 0
+    assert result.parts_skipped_filtered == 0
+    assert sorted(result.placements_opened) == [
+        ("00:11:22:33:44:55", "enp1s0"),
+        ("00:11:22:33:44:56", "enp2s0"),
+    ]
+
+    async with sessionmaker() as s:
+        parts = (
+            (await s.execute(select(PhysicalPart).where(PhysicalPart.kind == PartKind.NIC)))
+            .scalars()
+            .all()
+        )
+        by_mac = {p.serial: p for p in parts}
+        assert "00:11:22:33:44:55" in by_mac
+        assert by_mac["00:11:22:33:44:56"].speed_mbps == 2500
+        assert by_mac["00:11:22:33:44:55"].attributes.get("mtu") == 1500
+
+
+async def test_nic_mac_is_normalized_to_lowercase(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {"host.network.interfaces": [_iface("eth0", mac="AA:BB:CC:DD:EE:FF")]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        first = await Reconciler().reconcile_host(s, host.id)
+
+        # Same MAC, different case — must not duplicate.
+        run2 = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.network.interfaces": [_iface("eth0", mac="aa:bb:cc:dd:ee:ff")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        second = await Reconciler().reconcile_host(s, host.id)
+
+    assert first.parts_upserted == 1
+    assert second.parts_upserted == 0
+    assert not second.touched_lineage
+
+    async with sessionmaker() as s:
+        parts = (
+            (await s.execute(select(PhysicalPart).where(PhysicalPart.kind == PartKind.NIC)))
+            .scalars()
+            .all()
+        )
+        assert len(parts) == 1
+        assert parts[0].serial == "aa:bb:cc:dd:ee:ff"
+
+
+async def test_virtual_interfaces_are_filtered_not_no_identity(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.network.interfaces": [
+                    _iface("enp1s0", mac="aa:bb:cc:00:00:01"),  # real
+                    _iface("br0", mac="aa:bb:cc:00:00:02"),  # bridge
+                    _iface("docker0", mac="aa:bb:cc:00:00:03"),
+                    _iface("veth1234", mac="aa:bb:cc:00:00:04"),
+                    _iface("tailscale0", mac="aa:bb:cc:00:00:05"),
+                    _iface("wg0", mac="aa:bb:cc:00:00:06"),
+                    _iface("bond0", mac="aa:bb:cc:00:00:07"),
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 1
+    assert result.parts_skipped_no_identity == 0
+    assert result.parts_skipped_filtered == 6  # br0 docker0 veth1234 tailscale0 wg0 bond0
+    assert result.placements_opened == [("aa:bb:cc:00:00:01", "enp1s0")]
+
+
+async def test_loopback_and_other_link_types_are_filtered(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.network.interfaces": [
+                    _iface("enp1s0", mac="aa:bb:cc:00:00:01"),
+                    # link_type loopback — has a MAC (00:00:00:00:00:00) but
+                    # _is_real_nic returns False on link_type != ether.
+                    _iface("lo", mac="00:00:00:00:00:00", link_type="loopback"),
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 1
+    # Loopback skips via filter, not no-identity.
+    assert result.parts_skipped_filtered == 1
+
+
+async def test_nic_without_mac_is_skipped_no_identity(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.network.interfaces": [
+                    _iface("enp1s0", mac="aa:bb:cc:00:00:01"),
+                    _iface("enp2s0", mac=None),  # no MAC
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_upserted == 1
+    assert result.parts_skipped_no_identity == 1
+    assert result.parts_skipped_filtered == 0
+
+
+async def test_nic_lineage_is_idempotent(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.network.interfaces": [_iface("eth0", mac="aa:bb:cc:dd:ee:ff")]},
+        )
+
+        first = await Reconciler().reconcile_host(s, host.id)
+        second = await Reconciler().reconcile_host(s, host.id)
+
+    assert first.parts_upserted == 1
+    assert second.parts_upserted == 0
+    assert second.placements_opened == []
+    assert second.placements_closed == []
+
+
+async def test_nic_moves_to_different_host(sessionmaker) -> None:
+    """A whole NIC card moved between hosts — same MAC, new host."""
+    async with session_scope(sessionmaker) as s:
+        src = await _seed_host(s, hostname="bmax0")
+        dst = await _seed_host(s, hostname="bmax1")
+
+        run_src = await _seed_run(s, src.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run_src.id,
+            src.id,
+            {"host.network.interfaces": [_iface("enp1s0", mac="aa:bb:cc:dd:ee:ff")]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, src.id)
+
+        run_dst = await _seed_run(s, dst.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run_dst.id,
+            dst.id,
+            # Same MAC; new host may rename the slot.
+            {"host.network.interfaces": [_iface("eno1", mac="aa:bb:cc:dd:ee:ff")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        result = await Reconciler().reconcile_host(s, dst.id)
+
+    assert result.parts_upserted == 0
+    assert result.placements_opened == [("aa:bb:cc:dd:ee:ff", "eno1")]
+    assert result.placements_closed == [("aa:bb:cc:dd:ee:ff", "enp1s0")]
+
+
+async def test_nic_removed_closes_placement(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {
+                "host.network.interfaces": [
+                    _iface("enp1s0", mac="aa:bb:cc:00:00:01"),
+                    _iface("enp2s0", mac="aa:bb:cc:00:00:02"),
+                ],
+            },
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        run2 = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.network.interfaces": [_iface("enp1s0", mac="aa:bb:cc:00:00:01")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.placements_opened == []
+    assert result.placements_closed == [("aa:bb:cc:00:00:02", "enp2s0")]
+
+
+async def test_no_network_observation_does_not_close_nic_placements(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        nic = PhysicalPart(kind=PartKind.NIC, serial="aa:bb:cc:dd:ee:ff")
+        s.add(nic)
+        await s.flush()
+        s.add(Placement(part_id=nic.id, host_id=host.id, slot="enp1s0"))
+        await s.flush()
+
+        run = await _seed_run(s, host.id, probe_name="host.identity")
+        await _record_observations(s, run.id, host.id, {"host.identity.kernel": "6.8.0-49-generic"})
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.placements_closed == []
+    async with sessionmaker() as s:
+        open_p = await _open_placements(s, host.id)
+        assert len(open_p) == 1
+        assert open_p[0].slot == "enp1s0"
+
+
+async def test_storage_reconcile_does_not_touch_nic_placements(sessionmaker) -> None:
+    """Cross-kind regression: storage close-loop must not disturb NIC rows."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+
+        nic = PhysicalPart(kind=PartKind.NIC, serial="aa:bb:cc:dd:ee:ff")
+        s.add(nic)
+        await s.flush()
+        s.add(Placement(part_id=nic.id, host_id=host.id, slot="enp1s0"))
+        await s.flush()
+
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.storage.devices": [_disk("nvme0n1", wwn="wwn-aaa")]},
+        )
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.placements_closed == []
+    assert ("wwn-aaa", "/dev/nvme0n1") in result.placements_opened
+
+    async with sessionmaker() as s:
+        open_p = await _open_placements(s, host.id)
+        slots = {p.slot for p in open_p}
+        assert slots == {"enp1s0", "/dev/nvme0n1"}
+
+
+async def test_network_capability_scalars_project(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.network")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.network.interface_count": 3,
+                "host.network.interface_names": ["enp1s0", "br0", "docker0"],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.changes == {
+        "capabilities.network_interface_count": 3,
+        "capabilities.network_interface_names": ["enp1s0", "br0", "docker0"],
     }

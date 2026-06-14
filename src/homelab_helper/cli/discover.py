@@ -85,15 +85,16 @@ async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> No
     for field_name, value in result.changes.items():
         console.print(f"  [dim]+[/dim] {field_name} = {value!r}")
     if result.touched_lineage:
+        skip_bits: list[str] = []
+        if result.parts_skipped_no_identity:
+            skip_bits.append(f"{result.parts_skipped_no_identity} skipped (no identity)")
+        if result.parts_skipped_filtered:
+            skip_bits.append(f"{result.parts_skipped_filtered} skipped (virtual interface)")
         console.print(
             f"  [cyan]lineage[/cyan]: {result.parts_upserted} part(s) upserted, "
             f"{len(result.placements_opened)} placement(s) opened, "
             f"{len(result.placements_closed)} closed"
-            + (
-                f", {result.parts_skipped_no_identity} skipped (no identity)"
-                if result.parts_skipped_no_identity
-                else ""
-            )
+            + ("" if not skip_bits else ", " + ", ".join(skip_bits))
         )
         for serial, slot in result.placements_opened:
             console.print(f"  [dim]+ placement[/dim] {serial!r} @ {slot}")

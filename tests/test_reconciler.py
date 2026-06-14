@@ -1,12 +1,10 @@
 """Unit + replay tests for the Reconciler.
 
-Covers the host-row projection slices (``host.identity.*``, ``host.cpu.*``,
-``host.memory.*`` totals, ``host.storage.*`` scalars, ``host.network.*``
-scalars), the rule-registry invariants and ``normalize_arch`` transform, and
-the part-lineage slices — DIMMs (``host.memory.dimms``), storage devices
-(``host.storage.devices``), and NICs (``host.network.interfaces``) — with
-cross-host moves and cross-kind regressions ensuring one kind's reconcile
-never disturbs another's placements.
+Covers the host-row projection slices, the part-lineage slices (DIMM,
+storage, NIC) including cross-host moves and cross-kind isolation, and
+finding generation + auto-resolve — deterministic fingerprint dedup, per-
+category scoping so an absent observation never silently auto-resolves, and
+reopen-on-recurrence.
 
 The replay-style tests materialize Observation rows directly from a fixture
 dict (no probe runs, no SSH) and feed them through the reconciler — this is
@@ -24,7 +22,15 @@ import pytest
 from sqlalchemy import select
 
 from homelab_helper.db.base import Base
-from homelab_helper.db.enums import Architecture, IntentTargetType, PartKind, PrivilegeLevel
+from homelab_helper.db.enums import (
+    Architecture,
+    FindingKind,
+    FindingSeverity,
+    FindingStatus,
+    IntentTargetType,
+    PartKind,
+    PrivilegeLevel,
+)
 from homelab_helper.db.models import (
     DiscoveryRun,
     Host,
@@ -32,6 +38,7 @@ from homelab_helper.db.models import (
     PhysicalPart,
     Placement,
     Probe,
+    ReconciliationFinding,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.reconciler import HostProjectionRule, Reconciler, normalize_arch
@@ -1542,3 +1549,327 @@ async def test_network_capability_scalars_project(sessionmaker) -> None:
         "capabilities.network_interface_count": 3,
         "capabilities.network_interface_names": ["enp1s0", "br0", "docker0"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Finding generation with deterministic fingerprint dedup + auto-resolve
+# ---------------------------------------------------------------------------
+
+
+async def _open_findings(s) -> list[ReconciliationFinding]:
+    rows = (
+        (
+            await s.execute(
+                select(ReconciliationFinding).where(
+                    ReconciliationFinding.status == FindingStatus.OPEN
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows)
+
+
+async def test_dimm_without_serial_emits_inventory_gap_finding(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial=None)]},
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_skipped_no_identity == 1
+    assert len(result.findings_opened) == 1
+    assert len(result.findings_resolved) == 0
+
+    async with sessionmaker() as s:
+        findings = await _open_findings(s)
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.kind == FindingKind.INVENTORY_GAP
+        assert f.severity == FindingSeverity.LOW
+        assert "DIMM_A1" in f.title
+        # affected list carries both host scope and category marker.
+        targets = {(a["target_type"], a["target_id"]) for a in f.affected}
+        assert ("host", str(host.id)) in targets
+        assert ("inventory-category", "dimm") in targets
+
+
+async def test_finding_fingerprint_is_deterministic_and_dedups(sessionmaker) -> None:
+    """Re-running the same no-serial observation must not duplicate findings."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial=None)]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        first = await Reconciler().reconcile_host(s, host.id)
+
+        run2 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial=None)]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        second = await Reconciler().reconcile_host(s, host.id)
+
+    assert first.findings_opened == [first.findings_opened[0]]
+    assert second.findings_opened == []
+    assert second.findings_updated == first.findings_opened  # same fingerprint
+    assert second.findings_resolved == []
+
+    async with sessionmaker() as s:
+        all_findings = (await s.execute(select(ReconciliationFinding))).scalars().all()
+        assert len(all_findings) == 1  # no duplicate
+        assert all_findings[0].last_seen > all_findings[0].first_seen
+
+
+async def test_finding_auto_resolves_when_condition_clears(sessionmaker) -> None:
+    """DIMM first seen with no serial; later seen WITH serial → finding resolved."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial=None)]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        run2 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="NOW-HAS-SERIAL")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert len(result.findings_resolved) == 1
+    assert result.findings_opened == []
+
+    async with sessionmaker() as s:
+        findings = (await s.execute(select(ReconciliationFinding))).scalars().all()
+        assert len(findings) == 1  # the same row, now RESOLVED
+        assert findings[0].status == FindingStatus.RESOLVED
+        assert findings[0].resolved_at is not None
+
+
+async def test_finding_reopens_when_condition_recurs(sessionmaker) -> None:
+    """DIMM serial regression: gone → present → gone → present.
+
+    Probe runs sometimes regress on whether they read serial (sudo level
+    changed, dmidecode flaked, etc.). A finding that auto-resolved must be
+    able to flip back to OPEN when the gap recurs, not silently stay closed.
+    """
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+
+        async def _record(serial: str | None, when: datetime) -> None:
+            run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+            await _record_observations(
+                s,
+                run.id,
+                host.id,
+                {"host.memory.dimms": [_dimm("DIMM_A1", serial=serial)]},
+                recorded_at=when,
+            )
+
+        await _record(None, datetime(2026, 3, 1, tzinfo=UTC))
+        r1 = await Reconciler().reconcile_host(s, host.id)
+        assert len(r1.findings_opened) == 1
+        first_fp = r1.findings_opened[0]
+
+        await _record("ABC", datetime(2026, 4, 1, tzinfo=UTC))
+        r2 = await Reconciler().reconcile_host(s, host.id)
+        assert len(r2.findings_resolved) == 1
+
+        await _record(None, datetime(2026, 5, 1, tzinfo=UTC))
+        r3 = await Reconciler().reconcile_host(s, host.id)
+        assert r3.findings_opened == [first_fp]  # same fingerprint — reopened
+        assert r3.findings_resolved == []
+
+    async with sessionmaker() as s:
+        all_findings = (await s.execute(select(ReconciliationFinding))).scalars().all()
+        assert len(all_findings) == 1  # still one row, status OPEN
+        assert all_findings[0].status == FindingStatus.OPEN
+
+
+async def test_distinct_slots_get_distinct_fingerprints(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.memory.dimms": [
+                    _dimm("DIMM_A1", serial=None),
+                    _dimm("DIMM_A2", serial=None),
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert len(result.findings_opened) == 2
+    assert len(set(result.findings_opened)) == 2  # distinct fingerprints
+
+
+async def test_absent_observation_does_not_auto_resolve(sessionmaker) -> None:
+    """The critical safety property: if a category's observation is missing,
+    findings of that category MUST NOT be auto-resolved — we have no evidence
+    the condition is gone.
+    """
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run1 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial=None)]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        # Second reconcile: NO DIMM observation at all (different category).
+        run2 = await _seed_run(s, host.id, probe_name="host.identity")
+        await _record_observations(s, run2.id, host.id, {"host.identity.kernel": "6.8.0"})
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.findings_resolved == []  # absence is not evidence
+    async with sessionmaker() as s:
+        findings = await _open_findings(s)
+        assert len(findings) == 1  # still open
+
+
+async def test_storage_no_identity_emits_finding(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.storage.devices": [
+                    _disk("sda", wwn=None, serial=None),
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.parts_skipped_no_identity == 1
+    assert len(result.findings_opened) == 1
+    async with sessionmaker() as s:
+        findings = await _open_findings(s)
+        assert len(findings) == 1
+        assert "sda" in findings[0].title
+        assert ("inventory-category", "storage") in {
+            (a["target_type"], a["target_id"]) for a in findings[0].affected
+        }
+
+
+async def test_categories_are_independent_for_auto_resolve(sessionmaker) -> None:
+    """A DIMM observation in run N+1 must not auto-resolve a storage finding."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        # Run 1: storage device with no identity → storage finding.
+        run1 = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run1.id,
+            host.id,
+            {"host.storage.devices": [_disk("sda", wwn=None, serial=None)]},
+            recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        # Run 2: only a DIMM observation (no storage) — storage finding
+        # must stay open; the DIMM has a serial so no DIMM finding.
+        run2 = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run2.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial="GOOD")]},
+            recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.findings_resolved == []
+    async with sessionmaker() as s:
+        open_f = await _open_findings(s)
+        assert len(open_f) == 1
+        assert "sda" in open_f[0].title
+
+
+async def test_no_findings_when_everything_is_clean(sessionmaker) -> None:
+    """Baseline: a fully-identified probe batch produces no INVENTORY_GAP."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.memory.dimms": [_dimm("DIMM_A1", serial="GOOD")],
+                "host.storage.devices": [_disk("nvme0n1", wwn="wwn-good")],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.findings_opened == []
+    assert result.findings_resolved == []
+    assert not result.touched_findings
+    async with sessionmaker() as s:
+        assert len(await _open_findings(s)) == 0
+
+
+async def test_finding_description_refreshes_on_re_run(sessionmaker) -> None:
+    """If the human-facing wording changes (between code versions, say), an
+    existing finding's description gets refreshed without losing identity.
+    """
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory.dimms")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.memory.dimms": [_dimm("DIMM_A1", serial=None)]},
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+        # Mutate the description in-place to simulate a stale wording.
+        async with sessionmaker() as s2:
+            f = (await s2.execute(select(ReconciliationFinding))).scalar_one()
+            f.description = "stale wording from a previous code version"
+            await s2.commit()
+
+        await Reconciler().reconcile_host(s, host.id)
+
+    async with sessionmaker() as s:
+        f = (await s.execute(select(ReconciliationFinding))).scalar_one()
+        assert "stale wording" not in f.description
+        assert "DIMM" in f.description

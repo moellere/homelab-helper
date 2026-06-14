@@ -1,39 +1,41 @@
 """Reconciler — observation → inventory.
 
 This is the reconciler — what the architecture calls "the most important
-component." It covers two kinds of projection today:
+component." It runs three phases:
 
-**Host-row projection** (rule registry, capability bag + typed columns):
+1. **Host-row projection** (rule registry, capability bag + typed columns):
 
-- ``host.identity.*`` → the ``Host`` capability bag (kernel, OS, machine-id, …).
-- ``host.cpu.*`` → ``Host.arch`` (typed column, via a value transform) and the
-  capability bag (model, topology, cache, flags).
-- ``host.memory.*`` → the capability bag (RAM/swap/hugepage totals).
-- ``host.storage.*`` scalars → the capability bag (disk_count, disk_names,
-  total_disk_bytes).
-- ``host.network.*`` scalars → the capability bag (network_interface_count,
-  network_interface_names).
+   - ``host.identity.*`` → the ``Host`` capability bag.
+   - ``host.cpu.*`` → ``Host.arch`` via a value transform; rest into the bag.
+   - ``host.memory.*`` → the capability bag (RAM/swap/hugepage totals).
+   - ``host.storage.*`` scalars → the capability bag.
+   - ``host.network.*`` scalars → the capability bag.
 
-**Part-lineage projection** (first-class ``PhysicalPart`` + ``Placement`` rows):
+2. **Part-lineage projection** (first-class ``PhysicalPart`` + ``Placement``):
 
-- ``host.memory.dimms`` → DIMM ``PhysicalPart`` upsert by serial.
-- ``host.storage.devices`` → SSD/HDD/NVME ``PhysicalPart`` upsert by WWN
-  (preferred) or serial. Only top-level disks become parts; partitions, LVM,
-  RAID are ignored. Kind re-classifies on better evidence.
-- ``host.network.interfaces`` → NIC ``PhysicalPart`` upsert by lowercased MAC
-  (stored in the ``serial`` column). Virtual interfaces (bridges, veth, wg,
-  tailscale, bond, etc.) are filtered by name prefix and counted in
-  ``parts_skipped_filtered`` so a software interface with a MAC doesn't look
-  like a missing-identity probe failure.
+   - ``host.memory.dimms`` → DIMM upsert by serial.
+   - ``host.storage.devices`` → SSD/HDD/NVME upsert by WWN (preferred) or
+     serial. Only top-level disks become parts; partitions/LVM/RAID ignored.
+   - ``host.network.interfaces`` → NIC upsert by lowercased MAC (stored in
+     ``serial``). Virtual interfaces filtered by name prefix.
 
-Each lineage path uses append-only ``Placement`` open/close — the latest
-observation IS the current topology for its kind. Cross-host moves close the
-prior placement on the source host. The close-on-this-host scan is filtered
-by ``PartKind`` so reconciling one kind never disturbs another's placements,
-and absence of an observation short-circuits — never close placements just
-because the probe hasn't run yet.
+   Each lineage path uses append-only ``Placement`` open/close. Cross-host
+   moves close the prior placement on the source host. The close-on-this-host
+   scan is filtered by ``PartKind`` so one kind never disturbs another's
+   placements, and absence of an observation short-circuits — never close
+   placements just because the probe hasn't run yet.
 
-Future slices add the NetBox write path, then findings.
+3. **Finding generation + auto-resolve** (``ReconciliationFinding`` rows):
+
+   - Each part-lineage path emits an ``INVENTORY_GAP`` finding for parts that
+     lack stable identity (DIMM no serial, storage no WWN+serial, NIC no MAC).
+   - Fingerprints are deterministic per ``(kind, target, root-cause-token)``;
+     re-running an unchanged world updates ``last_seen`` and never duplicates.
+   - The auto-resolve pass closes findings whose underlying condition has
+     cleared — scoped per category so an absent observation does NOT silently
+     resolve findings of that category (the critical safety property).
+   - Resolved findings flip back to ``OPEN`` if the condition recurs, same
+     fingerprint preserved.
 
 Precedence rule today: **latest observation per (target, key) wins.** The
 Observation table is append-only, so the freshest row reflects the most
@@ -41,9 +43,9 @@ recent probe run. Multi-source precedence (kernel beats management-plane)
 arrives when the second source does.
 
 Idempotency: re-running the reconciler over the same observations is a
-no-op — the returned ``changes`` dict is empty, no part/placement rows
-are touched, and freshness markers (``discovery_last_run`` / ``last_verified``)
-bump silently.
+no-op — the returned ``changes`` dict is empty, no part/placement/finding
+rows are written, and freshness markers (``discovery_last_run`` /
+``last_verified``) bump silently.
 """
 
 from __future__ import annotations
@@ -54,8 +56,22 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from homelab_helper.db.enums import Architecture, IntentTargetType, PartKind
-from homelab_helper.db.models import Host, Observation, PhysicalPart, Placement
+from homelab_helper.db.enums import (
+    Architecture,
+    FindingKind,
+    FindingSeverity,
+    FindingStatus,
+    IntentTargetType,
+    PartKind,
+)
+from homelab_helper.db.models import (
+    Host,
+    Observation,
+    PhysicalPart,
+    Placement,
+    ReconciliationFinding,
+)
+from homelab_helper.engine.fingerprint import make_fingerprint
 
 if TYPE_CHECKING:
     import uuid
@@ -230,6 +246,12 @@ class ReconcileResult:
     parts_skipped_filtered: int = 0
     placements_opened: list[tuple[str | None, str]] = field(default_factory=list)
     placements_closed: list[tuple[str | None, str]] = field(default_factory=list)
+    # Finding activity, by fingerprint. Each list is disjoint for one run.
+    # Re-run of an unchanged world ⇒ findings_updated bumps last_seen, others
+    # stay empty (idempotent for the audit output, per AC4).
+    findings_opened: list[str] = field(default_factory=list)
+    findings_updated: list[str] = field(default_factory=list)
+    findings_resolved: list[str] = field(default_factory=list)
 
     @property
     def touched_lineage(self) -> bool:
@@ -240,6 +262,10 @@ class ReconcileResult:
             or self.placements_opened
             or self.placements_closed
         )
+
+    @property
+    def touched_findings(self) -> bool:
+        return bool(self.findings_opened or self.findings_resolved)
 
 
 class Reconciler:
@@ -293,13 +319,37 @@ class Reconciler:
         if new_caps != (host.capabilities or {}):
             host.capabilities = new_caps
 
+        # Per-run findings ledger. Lineage methods write into this; the
+        # auto-resolve pass at end-of-run uses it to close findings whose
+        # underlying condition is no longer present.
+        #
+        # categories_observed: which inventory-category observations landed
+        #   this run (e.g. {"dimm", "storage"}). Auto-resolve runs ONLY for
+        #   observed categories — an absent probe observation must not look
+        #   like "everything in that category is now resolved."
+        # active_fingerprints: category -> set of fingerprints emitted this
+        #   run for that category. Anything not in the active set for an
+        #   observed category transitions to RESOLVED.
+        ledger: dict[str, Any] = {
+            "active_fingerprints": {},
+            "categories_observed": set(),
+            "findings_opened": [],
+            "findings_updated": [],
+            "findings_resolved": [],
+        }
+
         # Phase 2: Part-lineage projection (PhysicalPart + Placement rows).
         dimms_raw = await self._latest_observation_value(session, host_id, _DIMMS_KEY)
-        dimm_summary = await self._reconcile_dimm_lineage(session, host_id, dimms_raw)
+        dimm_summary = await self._reconcile_dimm_lineage(session, host_id, dimms_raw, ledger)
         storage_raw = await self._latest_observation_value(session, host_id, _STORAGE_DEVICES_KEY)
-        storage_summary = await self._reconcile_storage_lineage(session, host_id, storage_raw)
+        storage_summary = await self._reconcile_storage_lineage(
+            session, host_id, storage_raw, ledger
+        )
         nic_raw = await self._latest_observation_value(session, host_id, _INTERFACES_KEY)
-        nic_summary = await self._reconcile_nic_lineage(session, host_id, nic_raw)
+        nic_summary = await self._reconcile_nic_lineage(session, host_id, nic_raw, ledger)
+
+        # Phase 3: Auto-resolve findings whose conditions are no longer present.
+        await self._auto_resolve_findings(session, host_id, ledger)
 
         lineage_seen = sum(1 for raw in (dimms_raw, storage_raw, nic_raw) if raw is not None)
         if latest or lineage_seen:
@@ -318,6 +368,9 @@ class Reconciler:
             parts_skipped_filtered=sum(s.get("parts_skipped_filtered", 0) for s in summaries),
             placements_opened=[p for s in summaries for p in s["placements_opened"]],
             placements_closed=[p for s in summaries for p in s["placements_closed"]],
+            findings_opened=ledger["findings_opened"],
+            findings_updated=ledger["findings_updated"],
+            findings_resolved=ledger["findings_resolved"],
         )
 
     async def _latest_per_key(
@@ -368,17 +421,18 @@ class Reconciler:
         session: AsyncSession,
         host_id: uuid.UUID,
         dimms_raw: Any,
+        ledger: dict[str, Any],
     ) -> dict[str, Any]:
         """Project the latest ``host.memory.dimms`` observation onto rows.
 
         ``dimms_raw`` is the observation value (list of slot dicts) or ``None``
         if no DIMM observation has ever landed for this host. ``None`` short-
         circuits: no-op (don't close placements just because the probe hasn't
-        run yet).
+        run yet, and don't auto-resolve DIMM findings without evidence).
 
         DIMMs missing a serial are counted in ``parts_skipped_no_identity`` and
-        otherwise ignored — without a stable identity we'd churn parts every
-        run. A future finding-generation slice will surface them.
+        each surfaces an ``INVENTORY_GAP`` finding (severity LOW) so the
+        operator sees the part-by-part identity gap rather than just a counter.
         """
         result: dict[str, Any] = {
             "parts_upserted": 0,
@@ -388,6 +442,8 @@ class Reconciler:
         }
         if not isinstance(dimms_raw, list):
             return result
+        ledger["categories_observed"].add("dimm")
+        ledger["active_fingerprints"].setdefault("dimm", set())
 
         # Build the active set of (part_id, slot) that should be open after
         # this reconcile, plus side-channel state for diffing.
@@ -401,6 +457,22 @@ class Reconciler:
                 continue
             if not isinstance(serial, str) or not serial:
                 result["parts_skipped_no_identity"] += 1
+                await self._emit_finding(
+                    session,
+                    host_id=host_id,
+                    category="dimm",
+                    root_cause_token=f"dimm:{slot}:no-serial",
+                    kind=FindingKind.INVENTORY_GAP,
+                    severity=FindingSeverity.LOW,
+                    title=f"DIMM in {slot} has no serial",
+                    description=(
+                        f"Probe reported a populated DIMM in slot {slot} but no "
+                        "serial was readable. Part lineage cannot track this "
+                        "DIMM across moves until a higher-privilege probe "
+                        "(dmidecode with sudo) supplies one."
+                    ),
+                    ledger=ledger,
+                )
                 continue
             part, created = await self._upsert_dimm_part(session, serial, raw_entry)
             if created:
@@ -540,6 +612,7 @@ class Reconciler:
         session: AsyncSession,
         host_id: uuid.UUID,
         devices_raw: Any,
+        ledger: dict[str, Any],
     ) -> dict[str, Any]:
         """Project the latest ``host.storage.devices`` observation onto rows.
 
@@ -547,7 +620,8 @@ class Reconciler:
         Partitions, LVM volumes, and RAID arrays are logical subdivisions of
         a disk, not first-class parts. Identity is **WWN preferred, serial
         fallback** — many USB enclosures forge serials but expose WWN. Devices
-        with neither are counted in ``parts_skipped_no_identity``.
+        with neither are counted in ``parts_skipped_no_identity`` and surface
+        an ``INVENTORY_GAP`` finding per device.
 
         The slot label is the kernel device path (``/dev/<name>``). Cross-host
         moves close the prior placement; intra-host moves (device renamed
@@ -561,6 +635,8 @@ class Reconciler:
         }
         if not isinstance(devices_raw, list):
             return result
+        ledger["categories_observed"].add("storage")
+        ledger["active_fingerprints"].setdefault("storage", set())
 
         # We only insert keyed identities (str), never None — narrow the
         # value type accordingly so the reporting loop type-checks.
@@ -577,6 +653,22 @@ class Reconciler:
             identity = _storage_identity(raw_entry)
             if identity is None:
                 result["parts_skipped_no_identity"] += 1
+                await self._emit_finding(
+                    session,
+                    host_id=host_id,
+                    category="storage",
+                    root_cause_token=f"storage:{slot}:no-identity",
+                    kind=FindingKind.INVENTORY_GAP,
+                    severity=FindingSeverity.LOW,
+                    title=f"Storage device {slot} has no stable identity",
+                    description=(
+                        f"Probe reported a disk at {slot} but neither WWN nor "
+                        "serial was readable. Part lineage cannot track this "
+                        "device across moves; USB enclosures and consumer "
+                        "drives are the typical cause."
+                    ),
+                    ledger=ledger,
+                )
                 continue
             identity_column, identity_value = identity
             part, created = await self._upsert_storage_part(
@@ -707,6 +799,7 @@ class Reconciler:
         session: AsyncSession,
         host_id: uuid.UUID,
         interfaces_raw: Any,
+        ledger: dict[str, Any],
     ) -> dict[str, Any]:
         """Project the latest ``host.network.interfaces`` observation onto rows.
 
@@ -714,7 +807,8 @@ class Reconciler:
         become PhysicalParts. Virtual interfaces (bridges, veth, docker, wg, …)
         are counted in ``parts_skipped_filtered`` — they have a MAC but aren't
         physical parts, and conflating with no-identity would hide the reason.
-        Interfaces with no MAC at all go to ``parts_skipped_no_identity``.
+        Real NICs missing a MAC (rare) hit ``parts_skipped_no_identity`` and
+        produce an ``INVENTORY_GAP`` finding.
 
         Slot label is the kernel interface name; a future probe version
         emitting PCI addresses can switch to a more stable identifier.
@@ -728,6 +822,8 @@ class Reconciler:
         }
         if not isinstance(interfaces_raw, list):
             return result
+        ledger["categories_observed"].add("nic")
+        ledger["active_fingerprints"].setdefault("nic", set())
 
         active: dict[tuple[uuid.UUID, str], str] = {}
         for raw_entry in interfaces_raw:
@@ -743,6 +839,20 @@ class Reconciler:
             mac_norm = _normalize_mac(raw_entry.get("mac"))
             if mac_norm is None:
                 result["parts_skipped_no_identity"] += 1
+                await self._emit_finding(
+                    session,
+                    host_id=host_id,
+                    category="nic",
+                    root_cause_token=f"nic:{name}:no-mac",
+                    kind=FindingKind.INVENTORY_GAP,
+                    severity=FindingSeverity.LOW,
+                    title=f"Network interface {name} has no MAC",
+                    description=(
+                        f"Probe reported an ether interface {name} but no MAC "
+                        "was readable. Part lineage cannot track this NIC."
+                    ),
+                    ledger=ledger,
+                )
                 continue
             part, created = await self._upsert_nic_part(session, mac_norm, raw_entry)
             if created:
@@ -842,6 +952,117 @@ class Reconciler:
         session.add(part)
         await session.flush()
         return part, True
+
+    async def _emit_finding(
+        self,
+        session: AsyncSession,
+        *,
+        host_id: uuid.UUID,
+        category: str,
+        root_cause_token: str,
+        kind: FindingKind,
+        severity: FindingSeverity,
+        title: str,
+        description: str,
+        ledger: dict[str, Any],
+    ) -> None:
+        """Upsert a ReconciliationFinding by deterministic fingerprint.
+
+        New conditions create a row with ``status=OPEN``. Re-encountering an
+        existing OPEN/ACKNOWLEDGED finding bumps ``last_seen`` and refreshes
+        the human-facing fields (title/description) in case the wording
+        changed between runs. A previously RESOLVED finding whose condition
+        recurs flips back to OPEN with ``first_seen`` reset to now.
+
+        ``category`` ("dimm" | "storage" | "nic") is encoded into the
+        ``affected`` list so the auto-resolve pass can scope correctly: only
+        findings of an observed category should ever be auto-closed.
+        """
+        fp = make_fingerprint(kind.value, "host", str(host_id), root_cause_token)
+        ledger["active_fingerprints"][category].add(fp)
+        affected: list[dict[str, str]] = [
+            {"target_type": "host", "target_id": str(host_id)},
+            {"target_type": "inventory-category", "target_id": category},
+        ]
+
+        existing = (
+            await session.execute(
+                select(ReconciliationFinding).where(ReconciliationFinding.fingerprint == fp)
+            )
+        ).scalar_one_or_none()
+        now_ts = datetime.now(UTC)
+
+        if existing is not None:
+            if existing.status == FindingStatus.RESOLVED:
+                existing.status = FindingStatus.OPEN
+                existing.resolved_at = None
+                existing.first_seen = now_ts
+                ledger["findings_opened"].append(fp)
+            else:
+                ledger["findings_updated"].append(fp)
+            existing.last_seen = now_ts
+            if existing.title != title:
+                existing.title = title
+            if existing.description != description:
+                existing.description = description
+            existing.affected = affected
+            return
+
+        session.add(
+            ReconciliationFinding(
+                kind=kind,
+                severity=severity,
+                fingerprint=fp,
+                title=title,
+                description=description,
+                affected=affected,
+                status=FindingStatus.OPEN,
+                first_seen=now_ts,
+                last_seen=now_ts,
+            )
+        )
+        ledger["findings_opened"].append(fp)
+
+    async def _auto_resolve_findings(
+        self,
+        session: AsyncSession,
+        host_id: uuid.UUID,
+        ledger: dict[str, Any],
+    ) -> None:
+        """Close findings whose underlying condition is no longer present.
+
+        Scoped per-category: only categories observed THIS run participate.
+        A finding tagged ``category=dimm`` won't be auto-resolved unless the
+        run actually saw a DIMM observation — otherwise an absent probe
+        observation would silently look like "everything's fine now."
+        """
+        observed_cats: set[str] = ledger["categories_observed"]
+        if not observed_cats:
+            return
+        active_by_cat: dict[str, set[str]] = ledger["active_fingerprints"]
+        now_ts = datetime.now(UTC)
+
+        stmt = select(ReconciliationFinding).where(
+            ReconciliationFinding.kind == FindingKind.INVENTORY_GAP,
+            ReconciliationFinding.status.in_([FindingStatus.OPEN, FindingStatus.ACKNOWLEDGED]),
+        )
+        for f in (await session.execute(stmt)).scalars().all():
+            host_match = False
+            category: str | None = None
+            for a in f.affected or []:
+                if a.get("target_type") == "host" and a.get("target_id") == str(host_id):
+                    host_match = True
+                elif a.get("target_type") == "inventory-category":
+                    category = a.get("target_id")
+            if not host_match or category is None:
+                continue
+            if category not in observed_cats:
+                continue  # no probe evidence this run — don't presume "gone"
+            if f.fingerprint in active_by_cat.get(category, set()):
+                continue  # still actively reported
+            f.status = FindingStatus.RESOLVED
+            f.resolved_at = now_ts
+            ledger["findings_resolved"].append(f.fingerprint)
 
 
 def _storage_identity(entry: dict[str, Any]) -> tuple[str, str] | None:

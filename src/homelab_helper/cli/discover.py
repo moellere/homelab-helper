@@ -100,6 +100,12 @@ async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> No
             console.print(f"  [dim]+ placement[/dim] {serial!r} @ {slot}")
         for serial, slot in result.placements_closed:
             console.print(f"  [dim]- placement[/dim] {serial!r} @ {slot}")
+    if result.touched_findings:
+        console.print(
+            f"  [cyan]findings[/cyan]: {len(result.findings_opened)} opened, "
+            f"{len(result.findings_resolved)} auto-resolved"
+            + (f", {len(result.findings_updated)} re-seen" if result.findings_updated else "")
+        )
 
 
 @discover_app.command(name="host")

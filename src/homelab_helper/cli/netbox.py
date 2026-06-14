@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import TYPE_CHECKING
 
 import httpx
 import typer
@@ -20,13 +21,18 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import select
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 from homelab_helper.adapters.netbox import (
     NetBoxAdapter,
     NetBoxAPIError,
     NetBoxConfig,
     NetBoxConfigError,
+    PartPlacement,
+    SyncInventoryResult,
 )
-from homelab_helper.db.models import Host
+from homelab_helper.db.models import Host, PhysicalPart, Placement
 from homelab_helper.db.session import make_engine, make_sessionmaker
 
 netbox_app = typer.Typer(
@@ -118,18 +124,77 @@ def netbox_bootstrap(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
+async def _current_placements(session: AsyncSession, host: Host) -> list[PartPlacement]:
+    """Read open Placement rows for ``host`` and project onto ``PartPlacement``."""
+    rows = (
+        await session.execute(
+            select(Placement, PhysicalPart)
+            .join(PhysicalPart, Placement.part_id == PhysicalPart.id)
+            .where(Placement.host_id == host.id, Placement.to_date.is_(None))
+            .order_by(Placement.slot)
+        )
+    ).all()
+    out: list[PartPlacement] = []
+    for placement, part in rows:
+        out.append(
+            PartPlacement(
+                slot=placement.slot,
+                part_kind=part.kind.value,
+                serial=part.serial,
+                wwid=part.wwid,
+                manufacturer=part.manufacturer,
+                model=part.model,
+                capacity_bytes=part.capacity_bytes,
+            )
+        )
+    return out
+
+
+def _print_inventory_result(result: SyncInventoryResult, *, dry_run: bool) -> None:
+    header = "[dim](dry run)[/dim] " if dry_run else ""
+    console.print(
+        f"{header}[bold]inventory[/bold]: "
+        f"[green]{len(result.created)}[/green] created, "
+        f"[yellow]{len(result.updated)}[/yellow] updated, "
+        f"[red]{len(result.deleted)}[/red] deleted, "
+        f"[dim]{len(result.unchanged)}[/dim] unchanged"
+    )
+    for slot in result.created:
+        console.print(f"  [green]+[/green] {slot}")
+    for slot in result.updated:
+        console.print(f"  [yellow]~[/yellow] {slot}")
+    for slot in result.deleted:
+        console.print(f"  [red]-[/red] {slot}")
+
+
 @netbox_app.command(name="sync-host")
 def netbox_sync_host(
     hostname: str = typer.Argument(..., help="Harness hostname (must exist locally)."),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Print the PATCH body without sending it to NetBox."
+        False, "--dry-run", help="Print what would happen without sending writes to NetBox."
+    ),
+    skip_fields: bool = typer.Option(
+        False, "--skip-fields", help="Skip the cf_* custom-field PATCH."
+    ),
+    skip_inventory: bool = typer.Option(
+        False, "--skip-inventory", help="Skip the InventoryItem placement sync."
     ),
 ) -> None:
-    """Push a harness Host row's CF values onto the matching NetBox Device.
+    """Push a harness Host row's CF values + part placements onto NetBox.
 
     Matches by ``Device.name == Host.hostname``. The harness never creates
     Devices — operator owns Device creation in NetBox first. Missing Devices
     are reported with a clear "create the Device, then re-run" message.
+
+    By default this runs two passes:
+
+    1. ``custom_fields`` PATCH on the Device (power policy, arch, capabilities…).
+    2. ``InventoryItem`` sync — current open ``Placement`` rows are mirrored
+       under the Device. Items with ``discovered=True`` not in the harness's
+       active set are deleted; new placements create; matching slots with
+       diverged fields update.
+
+    ``--skip-fields`` / ``--skip-inventory`` constrain either pass.
     """
 
     async def _go() -> int:
@@ -144,35 +209,69 @@ def netbox_sync_host(
                     console.print(f"[red]no harness Host named {hostname!r}[/red]")
                     return 2
 
+                placements = await _current_placements(session, host)
+
                 adapter = _load_adapter()
                 try:
-                    try:
-                        result = await adapter.sync_host(host, dry_run=dry_run)
-                    except NetBoxAPIError as exc:
-                        console.print(f"[red]NetBox API error:[/red] {exc}")
-                        return 1
+                    return await _run_sync_passes(
+                        adapter,
+                        host,
+                        placements,
+                        skip_fields=skip_fields,
+                        skip_inventory=skip_inventory,
+                        dry_run=dry_run,
+                    )
                 finally:
                     await adapter.aclose()
         finally:
             await db_engine.dispose()
 
-        if not result.found:
-            console.print(
-                f"[yellow]skipped:[/yellow] {result.skipped_reason}. "
-                "Create the Device in NetBox first, then re-run."
-            )
-            return 0
+    raise typer.Exit(code=asyncio.run(_go()))
 
-        header = "[dim](dry run)[/dim] " if dry_run else ""
+
+async def _run_sync_passes(
+    adapter: NetBoxAdapter,
+    host: Host,
+    placements: list[PartPlacement],
+    *,
+    skip_fields: bool,
+    skip_inventory: bool,
+    dry_run: bool,
+) -> int:
+    """Lookup → optional CF PATCH → optional inventory sync. Returns exit code."""
+    try:
+        device = await adapter.get_device_by_name(host.hostname)
+    except NetBoxAPIError as exc:
+        console.print(f"[red]NetBox API error:[/red] {exc}")
+        return 1
+    if device is None:
         console.print(
-            f"{header}[green]synced[/green] {hostname} → NetBox Device #{result.device_id}"
+            f"[yellow]skipped:[/yellow] no NetBox Device named {host.hostname!r}. "
+            "Create the Device in NetBox first, then re-run."
         )
+        return 0
+    device_id = device["id"]
+    header = "[dim](dry run)[/dim] " if dry_run else ""
+
+    if not skip_fields:
+        try:
+            result = await adapter.sync_host(host, dry_run=dry_run)
+        except NetBoxAPIError as exc:
+            console.print(f"[red]NetBox API error:[/red] {exc}")
+            return 1
+        console.print(f"{header}[green]synced[/green] {host.hostname} → NetBox Device #{device_id}")
         table = Table(show_header=True, header_style="bold")
         table.add_column("custom field", no_wrap=True)
         table.add_column("value", overflow="fold")
         for k, v in result.patch.get("custom_fields", {}).items():
             table.add_row(k, repr(v))
         console.print(table)
-        return 0
 
-    raise typer.Exit(code=asyncio.run(_go()))
+    if not skip_inventory:
+        try:
+            inv_result = await adapter.sync_inventory_items(device_id, placements, dry_run=dry_run)
+        except NetBoxAPIError as exc:
+            console.print(f"[red]NetBox API error:[/red] {exc}")
+            return 1
+        _print_inventory_result(inv_result, dry_run=dry_run)
+    return 0

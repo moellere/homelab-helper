@@ -537,3 +537,262 @@ async def test_api_error_handles_non_json_body() -> None:
     finally:
         await adapter.aclose()
     assert "Bad Gateway" in excinfo.value.detail
+
+
+# ---------------------------------------------------------------------------
+# InventoryItem sync
+# ---------------------------------------------------------------------------
+
+
+from homelab_helper.adapters.netbox import (  # noqa: E402
+    PartPlacement,
+    _build_inventory_payload,
+    _format_bytes,
+    _inventory_matches,
+)
+
+
+def _dimm(slot: str = "DIMM_A1", serial: str = "DIMM-AAA") -> PartPlacement:
+    return PartPlacement(
+        slot=slot,
+        part_kind="dimm",
+        serial=serial,
+        manufacturer="Crucial",
+        model="CT16G4SFRA32A",
+        capacity_bytes=16 * 1024**3,
+    )
+
+
+def _ssd(slot: str = "/dev/nvme0n1", wwid: str = "nvme.wwn-aaa") -> PartPlacement:
+    return PartPlacement(
+        slot=slot,
+        part_kind="nvme",
+        serial=None,
+        wwid=wwid,
+        manufacturer="Samsung",
+        model="SSD 980 1TB",
+        capacity_bytes=1000 * 1024**3,
+    )
+
+
+class _InventoryServer:
+    """Minimal NetBox InventoryItem state machine for MockTransport handlers."""
+
+    def __init__(
+        self,
+        *,
+        device_id: int = 99,
+        initial: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.device_id = device_id
+        self.next_id = 1000
+        self.items: dict[int, dict[str, Any]] = {}
+        for it in initial or []:
+            self.items[it["id"]] = it
+
+    def list(self) -> list[dict[str, Any]]:
+        return list(self.items.values())
+
+    def handler(self) -> Callable[[httpx.Request], httpx.Response]:
+        import json as _json
+
+        def h(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path == "/api/dcim/inventory-items/":
+                return httpx.Response(
+                    200,
+                    json={
+                        "count": len(self.items),
+                        "next": None,
+                        "previous": None,
+                        "results": self.list(),
+                    },
+                )
+            if request.method == "POST" and request.url.path == "/api/dcim/inventory-items/":
+                payload = _json.loads(request.content)
+                new_id = self.next_id
+                self.next_id += 1
+                row = {**payload, "id": new_id}
+                self.items[new_id] = row
+                return httpx.Response(201, json=row)
+            if request.method == "PATCH" and request.url.path.startswith(
+                "/api/dcim/inventory-items/"
+            ):
+                item_id = int(request.url.path.rstrip("/").rsplit("/", 1)[-1])
+                payload = _json.loads(request.content)
+                self.items[item_id].update(payload)
+                return httpx.Response(200, json=self.items[item_id])
+            if request.method == "DELETE" and request.url.path.startswith(
+                "/api/dcim/inventory-items/"
+            ):
+                item_id = int(request.url.path.rstrip("/").rsplit("/", 1)[-1])
+                self.items.pop(item_id, None)
+                return httpx.Response(204)
+            return httpx.Response(404, json={"detail": "not found"})
+
+        return h
+
+
+# --- payload + helpers ----
+
+
+def test_build_inventory_payload_dimm() -> None:
+    payload = _build_inventory_payload(_dimm(), device_id=42)
+    assert payload["device"] == 42
+    assert payload["name"] == "DIMM_A1"
+    assert payload["serial"] == "DIMM-AAA"
+    assert payload["part_id"] == "Crucial CT16G4SFRA32A"
+    assert "DIMM" in payload["description"]
+    assert payload["discovered"] is True
+
+
+def test_build_inventory_payload_storage_prefers_wwid() -> None:
+    payload = _build_inventory_payload(_ssd(), device_id=42)
+    assert payload["serial"] == "nvme.wwn-aaa"
+    assert "NVME" in payload["description"]
+
+
+def test_build_inventory_payload_truncates_long_fields() -> None:
+    p = PartPlacement(
+        slot="x",
+        part_kind="dimm",
+        serial="S" * 80,
+        manufacturer="M" * 30,
+        model="N" * 30,
+    )
+    payload = _build_inventory_payload(p, device_id=1)
+    assert len(payload["serial"]) <= 50
+    assert len(payload["part_id"]) <= 50
+
+
+def test_inventory_matches_treats_missing_keys_as_empty() -> None:
+    existing = {
+        "name": "DIMM_A1",
+        "serial": "AAA",
+        "part_id": "X",
+        "description": "DIMM 16 GB",
+        "discovered": True,
+    }
+    desired = {
+        "name": "DIMM_A1",
+        "serial": "AAA",
+        "part_id": "X",
+        "description": "DIMM 16 GB",
+        "discovered": True,
+    }
+    assert _inventory_matches(existing, desired)
+    desired["serial"] = "BBB"
+    assert not _inventory_matches(existing, desired)
+
+
+def test_format_bytes_humanizes() -> None:
+    assert _format_bytes(16 * 1024**3) == "16 GB"
+    assert _format_bytes(1024**4) == "1 TB"
+    assert _format_bytes(500) == "500 B"
+
+
+# --- sync_inventory_items orchestration ----
+
+
+async def test_sync_inventory_creates_missing_items() -> None:
+    server = _InventoryServer()
+    adapter = _make_mock_adapter(server.handler())
+    try:
+        result = await adapter.sync_inventory_items(99, [_dimm(), _ssd()])
+    finally:
+        await adapter.aclose()
+
+    assert sorted(result.created) == ["/dev/nvme0n1", "DIMM_A1"]
+    assert result.deleted == []
+    assert result.updated == []
+    assert len(server.items) == 2
+
+
+async def test_sync_inventory_is_idempotent_when_nothing_changes() -> None:
+    # Pre-seed the server with what the harness would create.
+    seeded = [
+        {"id": 1, **_build_inventory_payload(_dimm(), device_id=99)},
+        {"id": 2, **_build_inventory_payload(_ssd(), device_id=99)},
+    ]
+    server = _InventoryServer(initial=seeded)
+    adapter = _make_mock_adapter(server.handler())
+    try:
+        result = await adapter.sync_inventory_items(99, [_dimm(), _ssd()])
+    finally:
+        await adapter.aclose()
+
+    assert result.created == []
+    assert result.updated == []
+    assert result.deleted == []
+    assert sorted(result.unchanged) == ["/dev/nvme0n1", "DIMM_A1"]
+
+
+async def test_sync_inventory_updates_when_fields_diverge() -> None:
+    # Existing item has a stale serial.
+    stale = {
+        "id": 7,
+        **_build_inventory_payload(_dimm(serial="OLD-SERIAL"), device_id=99),
+    }
+    server = _InventoryServer(initial=[stale])
+    adapter = _make_mock_adapter(server.handler())
+    try:
+        result = await adapter.sync_inventory_items(99, [_dimm(serial="NEW-SERIAL")])
+    finally:
+        await adapter.aclose()
+
+    assert result.updated == ["DIMM_A1"]
+    assert result.created == []
+    assert server.items[7]["serial"] == "NEW-SERIAL"
+
+
+async def test_sync_inventory_deletes_items_no_longer_in_harness() -> None:
+    seeded = [
+        {"id": 1, **_build_inventory_payload(_dimm(), device_id=99)},
+        {"id": 2, **_build_inventory_payload(_ssd(), device_id=99)},
+    ]
+    server = _InventoryServer(initial=seeded)
+    adapter = _make_mock_adapter(server.handler())
+    try:
+        # Harness now says only the DIMM is placed; the SSD was removed.
+        result = await adapter.sync_inventory_items(99, [_dimm()])
+    finally:
+        await adapter.aclose()
+
+    assert result.deleted == ["/dev/nvme0n1"]
+    assert 2 not in server.items
+    assert 1 in server.items  # DIMM survived
+
+
+async def test_sync_inventory_dry_run_makes_no_writes() -> None:
+    server = _InventoryServer()
+    adapter = _make_mock_adapter(server.handler())
+    try:
+        result = await adapter.sync_inventory_items(99, [_dimm()], dry_run=True)
+    finally:
+        await adapter.aclose()
+
+    assert result.created == ["DIMM_A1"]
+    # Nothing actually persisted on the mock server.
+    assert server.items == {}
+
+
+async def test_sync_inventory_lists_only_discovered_items() -> None:
+    """The list query MUST pass ``discovered=true`` so human items aren't reaped."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/dcim/inventory-items/":
+            captured["params"] = dict(request.url.params)
+            return httpx.Response(
+                200,
+                json={"count": 0, "next": None, "previous": None, "results": []},
+            )
+        return httpx.Response(201, json={"id": 1})
+
+    adapter = _make_mock_adapter(handler)
+    try:
+        await adapter.sync_inventory_items(99, [_dimm()])
+    finally:
+        await adapter.aclose()
+
+    assert captured["params"]["discovered"] == "true"
+    assert captured["params"]["device_id"] == "99"

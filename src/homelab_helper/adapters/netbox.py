@@ -207,6 +207,37 @@ class SyncHostResult:
     skipped_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class PartPlacement:
+    """Caller-supplied view of one current ``Placement`` joined with its part.
+
+    The adapter never queries the harness DB; the CLI assembles these from
+    ``Placement.to_date IS NULL`` rows. Fields that don't apply for a given
+    part kind (e.g. ``capacity_bytes`` on a NIC) are simply ``None``.
+    """
+
+    slot: str
+    part_kind: str  # "dimm" | "ssd" | "hdd" | "nvme" | "nic" | "other"
+    serial: str | None = None
+    wwid: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    capacity_bytes: int | None = None
+
+
+@dataclass
+class SyncInventoryResult:
+    device_id: int
+    created: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+
+    @property
+    def changed(self) -> int:
+        return len(self.created) + len(self.updated) + len(self.deleted)
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
@@ -371,6 +402,89 @@ class NetBoxAdapter:
                 result.created.append(spec.name)
         return result
 
+    # ----------------------------------------------------------- inventory items
+
+    async def list_inventory_items(
+        self, device_id: int, *, discovered_only: bool = True
+    ) -> list[dict[str, Any]]:
+        """Return all InventoryItems on ``device_id``.
+
+        ``discovered_only`` filters to items the harness created (so a human-
+        edited inventory item isn't accidentally diffed away by sync).
+        """
+        params: dict[str, Any] = {"device_id": device_id, "limit": 100}
+        if discovered_only:
+            params["discovered"] = "true"
+        return await self._paginate("/api/dcim/inventory-items/", params=params)
+
+    async def create_inventory_item(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            await self._request("POST", "/api/dcim/inventory-items/", json=payload),
+        )
+
+    async def update_inventory_item(self, item_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            await self._request("PATCH", f"/api/dcim/inventory-items/{item_id}/", json=patch),
+        )
+
+    async def delete_inventory_item(self, item_id: int) -> None:
+        await self._request("DELETE", f"/api/dcim/inventory-items/{item_id}/")
+
+    async def sync_inventory_items(
+        self,
+        device_id: int,
+        placements: list[PartPlacement],
+        *,
+        dry_run: bool = False,
+    ) -> SyncInventoryResult:
+        """Diff ``placements`` against the Device's current discovered items.
+
+        The slot label is the diff key (unique within a Device, stable across
+        runs). Items missing from ``placements`` are deleted; new placements
+        are created; matching slots whose fields differ are PATCHed.
+
+        Only touches items with ``discovered=True`` — human-entered items are
+        invisible to this sync, so an operator's manual InventoryItem doesn't
+        get reaped by a probe run.
+        """
+        result = SyncInventoryResult(device_id=device_id)
+        desired: dict[str, dict[str, Any]] = {}
+        for p in placements:
+            desired[p.slot] = _build_inventory_payload(p, device_id)
+
+        existing_rows = await self.list_inventory_items(device_id, discovered_only=True)
+        existing: dict[str, dict[str, Any]] = {
+            row["name"]: row for row in existing_rows if isinstance(row.get("name"), str)
+        }
+
+        # Create + update pass.
+        for slot, payload in desired.items():
+            existing_row = existing.get(slot)
+            if existing_row is None:
+                if not dry_run:
+                    await self.create_inventory_item(payload)
+                result.created.append(slot)
+                continue
+            if _inventory_matches(existing_row, payload):
+                result.unchanged.append(slot)
+                continue
+            if not dry_run:
+                await self.update_inventory_item(existing_row["id"], payload)
+            result.updated.append(slot)
+
+        # Delete pass — anything left in `existing` that the harness no longer
+        # claims gets removed.
+        for slot, row in existing.items():
+            if slot in desired:
+                continue
+            if not dry_run:
+                await self.delete_inventory_item(row["id"])
+            result.deleted.append(slot)
+
+        return result
+
     # ----------------------------------------------------------- host sync
 
     async def sync_host(self, host: Host, *, dry_run: bool = False) -> SyncHostResult:
@@ -420,6 +534,82 @@ def _build_host_cf_patch(host: Host) -> dict[str, Any]:
     return patch
 
 
+# Compared fields when deciding whether an existing InventoryItem matches what
+# we would send. NetBox echoes some fields as nested objects (manufacturer is
+# {"id": N, "name": "X"} on GET, int on POST), so the comparator normalizes.
+_INVENTORY_COMPARED_FIELDS: tuple[str, ...] = (
+    "name",
+    "part_id",
+    "serial",
+    "description",
+    "discovered",
+)
+
+
+def _build_inventory_payload(p: PartPlacement, device_id: int) -> dict[str, Any]:
+    """Build the InventoryItem JSON body for one placement.
+
+    Field choices:
+
+    - ``name`` is the slot label (``DIMM_A1`` / ``/dev/nvme0n1`` / ``enp1s0``).
+      Unique within Device; serves as the diff key.
+    - ``serial`` is the harness's identity-of-record for the part.
+    - ``part_id`` carries manufacturer + model as a single human-readable
+      string, since we don't bind to NetBox's Manufacturer FK in this slice
+      (that needs a Manufacturer lookup/create dance — follow-up).
+    - ``description`` carries the kind + capacity so the inventory tab in
+      NetBox is at-a-glance useful.
+    - ``discovered: True`` marks this as harness-owned so future sync runs
+      won't touch human-entered items.
+    """
+    parts: list[str] = []
+    if p.manufacturer:
+        parts.append(p.manufacturer)
+    if p.model:
+        parts.append(p.model)
+    part_id = " ".join(parts) if parts else ""
+    # NetBox caps part_id at 50 chars; truncate cleanly so the diff is stable.
+    if len(part_id) > _NETBOX_PART_ID_MAX:
+        part_id = part_id[: _NETBOX_PART_ID_MAX - 1] + "…"
+
+    serial = (p.serial or p.wwid or "") or ""
+    if len(serial) > _NETBOX_SERIAL_MAX:
+        serial = serial[: _NETBOX_SERIAL_MAX - 1] + "…"
+
+    description_bits: list[str] = [p.part_kind.upper()]
+    if p.capacity_bytes is not None:
+        description_bits.append(_format_bytes(p.capacity_bytes))
+    description = " ".join(description_bits)
+
+    return {
+        "device": device_id,
+        "name": p.slot,
+        "part_id": part_id,
+        "serial": serial,
+        "description": description,
+        "discovered": True,
+    }
+
+
+def _inventory_matches(existing: dict[str, Any], desired: dict[str, Any]) -> bool:
+    """True when every compared field already matches what we'd PATCH to."""
+    for key in _INVENTORY_COMPARED_FIELDS:
+        if (existing.get(key) or "") != (desired.get(key) or ""):
+            return False
+    return True
+
+
+def _format_bytes(n: int) -> str:
+    for boundary, unit in ((1024**4, "TB"), (1024**3, "GB"), (1024**2, "MB"), (1024, "KB")):
+        if n >= boundary:
+            return f"{n / boundary:.0f} {unit}"
+    return f"{n} B"
+
+
+_NETBOX_PART_ID_MAX = 50
+_NETBOX_SERIAL_MAX = 50
+
+
 def _extract_detail(response: httpx.Response) -> str:
     try:
         payload = response.json()
@@ -446,5 +636,7 @@ __all__ = [
     "NetBoxAdapter",
     "NetBoxConfig",
     "NetBoxConfigError",
+    "PartPlacement",
     "SyncHostResult",
+    "SyncInventoryResult",
 ]

@@ -27,6 +27,7 @@ from homelab_helper.cli.db import db_app
 from homelab_helper.cli.discover import discover_app
 from homelab_helper.cli.findings import findings_app
 from homelab_helper.cli.host import host_app
+from homelab_helper.cli.netbox import netbox_app
 from homelab_helper.cli.probes import probes_app
 
 app = typer.Typer(name="helper", no_args_is_help=True, add_completion=False)
@@ -36,6 +37,7 @@ app.add_typer(findings_app)
 app.add_typer(host_app)
 app.add_typer(audit_app, name="audit")
 app.add_typer(assert_app)
+app.add_typer(netbox_app)
 app.add_typer(probes_app)
 
 console = Console()

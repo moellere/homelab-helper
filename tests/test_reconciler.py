@@ -1,11 +1,11 @@
 """Unit + replay tests for the Reconciler.
 
-Covers the ``host.identity.*`` and ``host.cpu.*`` slices, plus the rule
-registry invariants and the ``normalize_arch`` transform. The replay-style
-tests materialize Observation rows directly from a fixture dict (no probe
-runs, no SSH) and feed them through the reconciler — this is the seed of
-the dorktool replay-test fixture; it lives in-process today and will migrate
-to a YAML fixture loader once the dorktool integration lands.
+Covers the ``host.identity.*``, ``host.cpu.*``, and ``host.memory.*`` slices,
+plus the rule registry invariants and the ``normalize_arch`` transform. The
+replay-style tests materialize Observation rows directly from a fixture dict
+(no probe runs, no SSH) and feed them through the reconciler — this is the
+seed of the dorktool replay-test fixture; it lives in-process today and will
+migrate to a YAML fixture loader once the dorktool integration lands.
 """
 
 from __future__ import annotations
@@ -188,8 +188,8 @@ async def test_unknown_keys_are_ignored(sessionmaker) -> None:
             {
                 "host.identity.kernel": "6.8.0-49-generic",
                 # Future-slice keys the reconciler doesn't yet know about.
-                "host.memory.total_bytes": 16 * 1024**3,
                 "host.storage.devices[0].model": "Samsung 980",
+                "host.network.interfaces[0].mac": "aa:bb:cc:dd:ee:ff",
             },
         )
 
@@ -431,4 +431,104 @@ async def test_identity_and_cpu_reconcile_together(sessionmaker) -> None:
         "arch": Architecture.ARM64,
         "capabilities.cpu_model": "Cortex-A76",
         "capabilities.cpu_cores": 4,
+    }
+
+
+# ---------------------------------------------------------------------------
+# host.memory slice (totals only; DIMM lineage is a separate slice)
+# ---------------------------------------------------------------------------
+
+
+async def test_memory_totals_project_into_capabilities(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.memory.mem_total_bytes": 16 * 1024**3,
+                "host.memory.mem_available_bytes": 12 * 1024**3,
+                "host.memory.mem_free_bytes": 6 * 1024**3,
+                "host.memory.swap_total_bytes": 8 * 1024**3,
+                "host.memory.swap_free_bytes": 8 * 1024**3,
+                "host.memory.hugepages_total": 0,
+                "host.memory.hugepages_free": 0,
+                "host.memory.hugepagesize_bytes": 2 * 1024**2,
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.observations_seen == 8
+    assert result.changes == {
+        "capabilities.mem_total_bytes": 16 * 1024**3,
+        "capabilities.mem_available_bytes": 12 * 1024**3,
+        "capabilities.mem_free_bytes": 6 * 1024**3,
+        "capabilities.swap_total_bytes": 8 * 1024**3,
+        "capabilities.swap_free_bytes": 8 * 1024**3,
+        "capabilities.hugepages_total": 0,
+        "capabilities.hugepages_free": 0,
+        "capabilities.hugepagesize_bytes": 2 * 1024**2,
+    }
+
+
+async def test_memory_zero_values_round_trip_cleanly(sessionmaker) -> None:
+    """Hugepage counts are routinely 0 — that's a real value, not 'no observation'.
+
+    Idempotency must hold when the observed value is falsy: a second reconcile
+    pass should report zero changes, not re-emit the zero as a new delta.
+    """
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory")
+        await _record_observations(s, run.id, host.id, {"host.memory.hugepages_total": 0})
+
+        first = await Reconciler().reconcile_host(s, host.id)
+        second = await Reconciler().reconcile_host(s, host.id)
+
+    assert first.changes == {"capabilities.hugepages_total": 0}
+    assert second.changes == {}
+
+
+async def test_all_three_namespaces_reconcile_in_one_call(sessionmaker) -> None:
+    """A full warm probe batch hits identity + cpu + memory; reconcile applies all."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s, hostname="bmax0")
+
+        identity_run = await _seed_run(s, host.id, probe_name="host.identity")
+        await _record_observations(
+            s,
+            identity_run.id,
+            host.id,
+            {"host.identity.kernel": "6.8.0-49-generic"},
+        )
+        cpu_run = await _seed_run(s, host.id, probe_name="host.cpu")
+        await _record_observations(
+            s,
+            cpu_run.id,
+            host.id,
+            {"host.cpu.architecture": "x86_64", "host.cpu.cores": 6},
+        )
+        mem_run = await _seed_run(s, host.id, probe_name="host.memory")
+        await _record_observations(
+            s,
+            mem_run.id,
+            host.id,
+            {
+                "host.memory.mem_total_bytes": 32 * 1024**3,
+                "host.memory.swap_total_bytes": 4 * 1024**3,
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.observations_seen == 5
+    assert result.changes == {
+        "capabilities.kernel": "6.8.0-49-generic",
+        "arch": Architecture.AMD64,
+        "capabilities.cpu_cores": 6,
+        "capabilities.mem_total_bytes": 32 * 1024**3,
+        "capabilities.swap_total_bytes": 4 * 1024**3,
     }

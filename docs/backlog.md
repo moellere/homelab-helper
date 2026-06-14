@@ -43,7 +43,8 @@ The rest of Phase 1, and all of Phase 6, is below.
   - [x] Replay-style test pattern (in-process fixtures); migrates to YAML when dorktool fixture lands
   - [x] `transform` hook on `HostProjectionRule` (raw observation value → typed column domain) + `normalize_arch` mapper
   - [x] `host.cpu.*` slice: `host.cpu.architecture` → `Host.arch` (typed); model, vendor, sockets, cores, threads, threads_per_core, freq, cache, flags, interesting_flags → capabilities (`cpu_*` keys)
-  - [ ] `host.memory.*` slice + DIMM `PhysicalPart` / `Placement` lineage (open/close, append-only)
+  - [x] `host.memory.*` slice (totals only): mem/swap/hugepage totals from `/proc/meminfo` → capabilities. DIMM-level keys land with the lineage slice below as first-class rows, not capabilities.
+  - [ ] DIMM `PhysicalPart` / `Placement` lineage (the dmidecode-driven probe + open/close placements, append-only history; serial-keyed upsert; replay tests walking a DIMM through a host-to-host move)
   - [ ] `host.storage.*` slice + storage device `PhysicalPart` / `Placement` lineage
   - [ ] `host.network.*` slice + NIC `PhysicalPart` / `Placement` lineage
   - [ ] Multi-source precedence rules: kernel beats management-plane, verified beats inferred (lands with first non-SSH source)

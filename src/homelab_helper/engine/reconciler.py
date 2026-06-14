@@ -1,16 +1,19 @@
 """Reconciler — observation → inventory.
 
 This is the reconciler — what the architecture calls "the most important
-component." It currently covers two namespaces:
+component." It currently covers three namespaces:
 
 - ``host.identity.*`` → the ``Host`` capability bag (kernel, OS, machine-id, …).
 - ``host.cpu.*`` → ``Host.arch`` (typed column, via a value transform) and the
   capability bag (model, topology, cache, flags).
+- ``host.memory.*`` → the capability bag (RAM/swap/hugepage totals from
+  ``/proc/meminfo``). DIMM-level inventory arrives with the lineage slice as
+  first-class ``PhysicalPart`` / ``Placement`` rows, not capabilities.
 
-Future slices add ``host.memory.*``, ``host.storage.*``, ``host.network.*``,
-then part lineage (PhysicalPart/Placement), then the NetBox write path, then
-findings. The shape here is deliberately easy to extend by appending rules; no
-other code changes when a new key lands.
+Future slices add ``host.storage.*``, ``host.network.*``, then part lineage
+(PhysicalPart/Placement), then the NetBox write path, then findings. The shape
+here is deliberately easy to extend by appending rules; no other code changes
+when a new key lands.
 
 Precedence rule in this slice: **latest observation per (target, key) wins.**
 The Observation table is append-only, so the freshest row reflects the most
@@ -110,7 +113,22 @@ _CPU_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.cpu.interesting_flags", capability="cpu_interesting_flags"),
 )
 
-_HOST_RULES: tuple[HostProjectionRule, ...] = _IDENTITY_RULES + _CPU_RULES
+# Memory: RAM/swap/hugepage totals from /proc/meminfo. DIMM-level inventory
+# (slots, vendors, per-DIMM size) needs dmidecode + sudo and will land with
+# the PhysicalPart/Placement lineage slice — *those* keys exit the capability
+# bag and become first-class rows, not capabilities.
+_MEMORY_RULES: tuple[HostProjectionRule, ...] = (
+    HostProjectionRule(key="host.memory.mem_total_bytes", capability="mem_total_bytes"),
+    HostProjectionRule(key="host.memory.mem_available_bytes", capability="mem_available_bytes"),
+    HostProjectionRule(key="host.memory.mem_free_bytes", capability="mem_free_bytes"),
+    HostProjectionRule(key="host.memory.swap_total_bytes", capability="swap_total_bytes"),
+    HostProjectionRule(key="host.memory.swap_free_bytes", capability="swap_free_bytes"),
+    HostProjectionRule(key="host.memory.hugepages_total", capability="hugepages_total"),
+    HostProjectionRule(key="host.memory.hugepages_free", capability="hugepages_free"),
+    HostProjectionRule(key="host.memory.hugepagesize_bytes", capability="hugepagesize_bytes"),
+)
+
+_HOST_RULES: tuple[HostProjectionRule, ...] = _IDENTITY_RULES + _CPU_RULES + _MEMORY_RULES
 
 
 @dataclass

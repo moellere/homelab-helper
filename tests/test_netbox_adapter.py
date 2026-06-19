@@ -60,11 +60,11 @@ def _make_mock_adapter(
     )
 
 
-def _host(hostname: str = "bmax0", **overrides: Any) -> Host:
+def _host(hostname: str = "node0", **overrides: Any) -> Host:
     """Build a Host *instance* (not persisted) with sensible defaults."""
     defaults: dict[str, Any] = {
         "hostname": hostname,
-        "primary_ip": "10.250.6.20",
+        "primary_ip": "10.0.6.20",
         "arch": Architecture.AMD64,
         "power_policy": PowerPolicy.ALWAYS_ON,
         "expected_power_state": PowerState.ON,
@@ -167,23 +167,23 @@ async def test_health_check_propagates_api_error() -> None:
 async def test_get_device_by_name_returns_match() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/dcim/devices/"
-        assert request.url.params.get("name") == "bmax0"
+        assert request.url.params.get("name") == "node0"
         return httpx.Response(
             200,
             json={
                 "count": 1,
                 "next": None,
                 "previous": None,
-                "results": [{"id": 42, "name": "bmax0"}],
+                "results": [{"id": 42, "name": "node0"}],
             },
         )
 
     adapter = _make_mock_adapter(handler)
     try:
-        device = await adapter.get_device_by_name("bmax0")
+        device = await adapter.get_device_by_name("node0")
     finally:
         await adapter.aclose()
-    assert device == {"id": 42, "name": "bmax0"}
+    assert device == {"id": 42, "name": "node0"}
 
 
 async def test_get_device_by_name_returns_none_when_absent() -> None:
@@ -210,14 +210,14 @@ async def test_get_device_by_name_filters_case_insensitive_matches() -> None:
                 "previous": None,
                 "results": [
                     {"id": 1, "name": "BMAX0"},
-                    {"id": 2, "name": "bmax0"},
+                    {"id": 2, "name": "node0"},
                 ],
             },
         )
 
     adapter = _make_mock_adapter(handler)
     try:
-        device = await adapter.get_device_by_name("bmax0")
+        device = await adapter.get_device_by_name("node0")
     finally:
         await adapter.aclose()
     assert device is not None
@@ -231,7 +231,7 @@ async def test_update_device_sends_patch() -> None:
         seen["method"] = request.method
         seen["path"] = request.url.path
         seen["body"] = request.content
-        return httpx.Response(200, json={"id": 7, "name": "bmax0"})
+        return httpx.Response(200, json={"id": 7, "name": "node0"})
 
     adapter = _make_mock_adapter(handler)
     try:
@@ -432,7 +432,7 @@ async def test_sync_host_sends_patch_for_existing_device() -> None:
                     "count": 1,
                     "next": None,
                     "previous": None,
-                    "results": [{"id": 42, "name": "bmax0"}],
+                    "results": [{"id": 42, "name": "node0"}],
                 },
             )
         if request.method == "PATCH":
@@ -440,12 +440,12 @@ async def test_sync_host_sends_patch_for_existing_device() -> None:
 
             seen["path"] = request.url.path
             seen["body"] = _json.loads(request.content)
-            return httpx.Response(200, json={"id": 42, "name": "bmax0"})
+            return httpx.Response(200, json={"id": 42, "name": "node0"})
         return httpx.Response(404)
 
     adapter = _make_mock_adapter(handler)
     try:
-        result = await adapter.sync_host(_host("bmax0"))
+        result = await adapter.sync_host(_host("node0"))
     finally:
         await adapter.aclose()
 
@@ -472,14 +472,14 @@ async def test_sync_host_dry_run_does_not_patch() -> None:
                     "count": 1,
                     "next": None,
                     "previous": None,
-                    "results": [{"id": 1, "name": "bmax0"}],
+                    "results": [{"id": 1, "name": "node0"}],
                 },
             )
         return httpx.Response(200, json={"id": 1})
 
     adapter = _make_mock_adapter(handler)
     try:
-        result = await adapter.sync_host(_host("bmax0"), dry_run=True)
+        result = await adapter.sync_host(_host("node0"), dry_run=True)
     finally:
         await adapter.aclose()
 

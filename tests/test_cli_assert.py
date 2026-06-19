@@ -45,7 +45,7 @@ async def assert_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     sm = make_sessionmaker(engine)
 
     async with session_scope(sm) as s:
-        host = Host(hostname="bmax0", primary_ip="10.250.6.20")
+        host = Host(hostname="node0", primary_ip="10.0.6.20")
         s.add(host)
         await s.flush()
 
@@ -88,10 +88,10 @@ async def assert_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
         s.add(
             ConfigurationAssertion(
-                name="bmax0.cores_eq_8",
+                name="node0.cores_eq_8",
                 scope=AssertionScope.HOST,
                 scope_target=str(host.id),
-                description="bmax0 must report exactly 8 CPU cores",
+                description="node0 must report exactly 8 CPU cores",
                 kind=AssertionKind.OBSERVATION_PREDICATE,
                 verifier_spec=_spec(key="host.cpu.cores", value=8),
                 severity_on_fail=FindingSeverity.MEDIUM,
@@ -99,10 +99,10 @@ async def assert_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         )
         s.add(
             ConfigurationAssertion(
-                name="bmax0.os_is_debian",
+                name="node0.os_is_debian",
                 scope=AssertionScope.HOST,
                 scope_target=str(host.id),
-                description="bmax0 should be running Debian (not Ubuntu)",
+                description="node0 should be running Debian (not Ubuntu)",
                 kind=AssertionKind.OBSERVATION_PREDICATE,
                 verifier_spec=_spec(key="host.identity.os_id", value="debian"),
                 severity_on_fail=FindingSeverity.LOW,
@@ -113,10 +113,10 @@ async def assert_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         # than fabricating a comparison against None).
         s.add(
             ConfigurationAssertion(
-                name="bmax0.mem_at_least_1gb",
+                name="node0.mem_at_least_1gb",
                 scope=AssertionScope.HOST,
                 scope_target=str(host.id),
-                description="bmax0 must report at least 1 GiB RAM",
+                description="node0 must report at least 1 GiB RAM",
                 kind=AssertionKind.OBSERVATION_PREDICATE,
                 verifier_spec=_spec(
                     key="host.memory.mem_total_bytes",
@@ -133,16 +133,16 @@ async def assert_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 def test_assert_list_shows_assertions(assert_db_url: str) -> None:
     # Rich truncates long names under CliRunner's narrow virtual terminal,
-    # so match on the shared "bmax0." prefix + footer count rather than the
+    # so match on the shared "node0." prefix + footer count rather than the
     # full assertion names (which would otherwise be the cleaner assertion).
     result = runner.invoke(app, ["assert", "list"])
     assert result.exit_code == 0
-    assert "bmax0." in result.stdout
+    assert "node0." in result.stdout
     assert "3 assertion(s)" in result.stdout
 
 
 def test_assert_show_displays_definition(assert_db_url: str) -> None:
-    result = runner.invoke(app, ["assert", "show", "bmax0.cores_eq_8"])
+    result = runner.invoke(app, ["assert", "show", "node0.cores_eq_8"])
     assert result.exit_code == 0
     assert "host.cpu.cores" in result.stdout
     assert "no runs yet" in result.stdout.lower()
@@ -155,13 +155,13 @@ def test_assert_show_unknown_errors(assert_db_url: str) -> None:
 
 
 def test_assert_run_single_pass(assert_db_url: str) -> None:
-    result = runner.invoke(app, ["assert", "run", "--name", "bmax0.cores_eq_8"])
+    result = runner.invoke(app, ["assert", "run", "--name", "node0.cores_eq_8"])
     assert result.exit_code == 0
     assert "pass" in result.stdout.lower()
 
 
 def test_assert_run_single_fail_exits_nonzero(assert_db_url: str) -> None:
-    result = runner.invoke(app, ["assert", "run", "--name", "bmax0.os_is_debian"])
+    result = runner.invoke(app, ["assert", "run", "--name", "node0.os_is_debian"])
     assert result.exit_code == 1
     assert "fail" in result.stdout.lower()
     assert "opened" in result.stdout.lower()
@@ -186,15 +186,15 @@ def test_assert_run_requires_name_or_all(assert_db_url: str) -> None:
 
 
 def test_assert_run_name_and_all_conflict(assert_db_url: str) -> None:
-    result = runner.invoke(app, ["assert", "run", "--name", "bmax0.cores_eq_8", "--all"])
+    result = runner.invoke(app, ["assert", "run", "--name", "node0.cores_eq_8", "--all"])
     assert result.exit_code == 2
     assert "mutually exclusive" in (result.stdout + result.stderr).lower()
 
 
 def test_assert_show_after_run_includes_latest_evidence(assert_db_url: str) -> None:
     # Run the FAILing assertion so there's a run with evidence.
-    runner.invoke(app, ["assert", "run", "--name", "bmax0.os_is_debian"])
-    result = runner.invoke(app, ["assert", "show", "bmax0.os_is_debian"])
+    runner.invoke(app, ["assert", "run", "--name", "node0.os_is_debian"])
+    result = runner.invoke(app, ["assert", "show", "node0.os_is_debian"])
     assert result.exit_code == 0
     assert "latest run" in result.stdout.lower()
     # The observed value (ubuntu) should appear in the evidence section.
@@ -202,7 +202,7 @@ def test_assert_show_after_run_includes_latest_evidence(assert_db_url: str) -> N
 
 
 def test_assert_run_failure_shows_up_in_findings_list(assert_db_url: str) -> None:
-    runner.invoke(app, ["assert", "run", "--name", "bmax0.os_is_debian"])
+    runner.invoke(app, ["assert", "run", "--name", "node0.os_is_debian"])
     # The failing assertion should now have an open CONFIG_DRIFT finding.
     listed = runner.invoke(app, ["findings", "list"])
     assert listed.exit_code == 0
@@ -212,11 +212,11 @@ def test_assert_run_failure_shows_up_in_findings_list(assert_db_url: str) -> Non
 def test_assert_run_pass_after_fail_resolves_finding(assert_db_url: str) -> None:
     """End-to-end finding lifecycle through the CLI."""
     # First run: FAIL → open
-    r1 = runner.invoke(app, ["assert", "run", "--name", "bmax0.os_is_debian"])
+    r1 = runner.invoke(app, ["assert", "run", "--name", "node0.os_is_debian"])
     assert "opened" in r1.stdout.lower()
 
     # Second run with same data: still FAIL → "still failing"
-    r2 = runner.invoke(app, ["assert", "run", "--name", "bmax0.os_is_debian"])
+    r2 = runner.invoke(app, ["assert", "run", "--name", "node0.os_is_debian"])
     assert "still failing" in r2.stdout.lower()
 
 
@@ -228,7 +228,7 @@ def test_assert_list_with_all_includes_disabled(assert_db_url: str, tmp_path: Pa
     db_path = tmp_path / "assert.db"
     con = sqlite3.connect(db_path)
     con.execute(
-        "UPDATE configuration_assertion SET enabled = 0 WHERE name = 'bmax0.mem_at_least_1gb'"
+        "UPDATE configuration_assertion SET enabled = 0 WHERE name = 'node0.mem_at_least_1gb'"
     )
     con.commit()
     con.close()
@@ -244,17 +244,17 @@ def test_assert_list_with_all_includes_disabled(assert_db_url: str, tmp_path: Pa
 _LIB_YAML_BMAX0 = """
 version: 1
 assertions:
-  - name: bmax0.from_library.cores_at_least_4
-    host: bmax0
-    description: bmax0 must report >= 4 cores (loaded from library)
+  - name: node0.from_library.cores_at_least_4
+    host: node0
+    description: node0 must report >= 4 cores (loaded from library)
     severity_on_fail: low
     verifier_spec:
       key: host.cpu.cores
       predicate: gte
       value: 4
-  - name: bmax0.from_library.os_supported
-    host: bmax0
-    description: bmax0 OS should be Ubuntu/Debian
+  - name: node0.from_library.os_supported
+    host: node0
+    description: node0 OS should be Ubuntu/Debian
     severity_on_fail: low
     verifier_spec:
       key: host.identity.os_id

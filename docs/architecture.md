@@ -169,7 +169,7 @@ The agent is its own small product. Versioning and protocol compatibility with h
 ### Cold discovery
 
 ```
-User: `helper discover network 10.250.6.0/23`
+User: `helper discover network 10.0.6.0/23`
   │
   ▼
 CLI → HTTP API → Scheduler
@@ -199,7 +199,7 @@ User sees list of discovered hosts; can run warm discovery on each
 ### Warm discovery
 
 ```
-User: `helper discover host bmax0 --user root --key ~/.ssh/homelab`
+User: `helper discover host node0 --user root --key ~/.ssh/homelab`
   │
   ▼
 CLI → HTTP API → ProbeRunner
@@ -229,7 +229,7 @@ User sees host page with full inventory, capabilities, current findings
 ### Continuous reconciliation (Phase 2+)
 
 ```
-helper-agent on bmax3 (every 5 min):
+helper-agent on node3 (every 5 min):
   │
   ▼
 Runs local probe bundle, gets fresh observations
@@ -281,7 +281,7 @@ User drills into a Finding; can mark acknowledged/resolved or accept a Proposal
 
 ## Deployment topology
 
-### Single-host development (your laptop, or one of the bmax)
+### Single-host development (your laptop, or one of the node)
 
 ```
 ┌───────────────────────────────────────────────────┐
@@ -463,7 +463,7 @@ User asked for `strict-local` but the requested task needs Frontier capability a
 | Cables chokepoints only | NetBox cable model lightly used; topology queries traverse only modeled cables. NetworkPath abstraction (P5) consumes this graph. |
 | Ollama default | LLMRouter ships with OllamaBackend pre-configured. First-run experience auto-detects local Ollama or prompts to install. |
 | L1 default, L2 gated | ProposalManager exists from day one; the Executor lands in Phase 6 behind the trust gradient (`decide()`). Action manifest schema is part of ProposalLog from day one, so L2 is a wire-up. Phases 1–5 keep every cell pinned to `PROPOSE`. |
-| Inventory MVP | Phase 1 boundary is "discovery + inventory + day-one audit produces the 11 findings against dorktool." Everything else is Phase 2+. |
+| Inventory MVP | Phase 1 boundary is "discovery + inventory + day-one audit produces the 11 findings against example." Everything else is Phase 2+. |
 
 ## What's deliberately not in this architecture document
 

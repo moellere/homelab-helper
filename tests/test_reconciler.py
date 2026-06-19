@@ -8,8 +8,8 @@ reopen-on-recurrence.
 
 The replay-style tests materialize Observation rows directly from a fixture
 dict (no probe runs, no SSH) and feed them through the reconciler — this is
-the seed of the dorktool replay-test fixture; it lives in-process today and
-will migrate to a YAML fixture loader once the dorktool integration lands.
+the seed of the example replay-test fixture; it lives in-process today and
+will migrate to a YAML fixture loader once the example integration lands.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ def sessionmaker(engine):
     return make_sessionmaker(engine)
 
 
-async def _seed_host(s, hostname: str = "bmax-test") -> Host:
-    h = Host(hostname=hostname, primary_ip="10.250.6.99")
+async def _seed_host(s, hostname: str = "node-test") -> Host:
+    h = Host(hostname=hostname, primary_ip="10.0.6.99")
     s.add(h)
     await s.flush()
     return h
@@ -127,7 +127,7 @@ async def test_projects_identity_observations_into_capabilities(sessionmaker) ->
             run.id,
             host.id,
             {
-                "host.identity.hostname": "bmax-test",
+                "host.identity.hostname": "node-test",
                 "host.identity.kernel": "6.8.0-49-generic",
                 "host.identity.machine_id": "abc123def456",
                 "host.identity.os_id": "ubuntu",
@@ -140,7 +140,7 @@ async def test_projects_identity_observations_into_capabilities(sessionmaker) ->
 
     assert result.observations_seen == 6
     assert result.changes == {
-        "capabilities.observed_hostname": "bmax-test",
+        "capabilities.observed_hostname": "node-test",
         "capabilities.kernel": "6.8.0-49-generic",
         "capabilities.machine_id": "abc123def456",
         "capabilities.os_id": "ubuntu",
@@ -265,7 +265,7 @@ async def test_replay_two_runs_promotes_to_latest_state(sessionmaker) -> None:
     fields that actually changed.
     """
     async with session_scope(sessionmaker) as s:
-        host = await _seed_host(s, hostname="bmax2")
+        host = await _seed_host(s, hostname="node2")
 
         run1 = await _seed_run(s, host.id)
         t1 = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
@@ -274,7 +274,7 @@ async def test_replay_two_runs_promotes_to_latest_state(sessionmaker) -> None:
             run1.id,
             host.id,
             {
-                "host.identity.hostname": "bmax2",
+                "host.identity.hostname": "node2",
                 "host.identity.kernel": "6.5.0-21-generic",
                 "host.identity.os_id": "ubuntu",
                 "host.identity.os_pretty_name": "Ubuntu 22.04.4 LTS",
@@ -293,7 +293,7 @@ async def test_replay_two_runs_promotes_to_latest_state(sessionmaker) -> None:
             run2.id,
             host.id,
             {
-                "host.identity.hostname": "bmax2",
+                "host.identity.hostname": "node2",
                 "host.identity.kernel": "6.8.0-49-generic",
                 "host.identity.os_id": "ubuntu",
                 "host.identity.os_pretty_name": "Ubuntu 24.04.1 LTS",
@@ -326,7 +326,7 @@ async def test_replay_two_runs_promotes_to_latest_state(sessionmaker) -> None:
         ("aarch64", Architecture.ARM64),
         ("arm64", Architecture.ARM64),
         ("arm", Architecture.ARM),
-        ("armv7l", Architecture.ARM),
+        ("armv?l", Architecture.ARM),
         ("riscv64", Architecture.OTHER),
         ("", Architecture.OTHER),
     ],
@@ -345,7 +345,7 @@ async def test_cpu_projection_sets_typed_arch_and_capability_bag(sessionmaker) -
             host.id,
             {
                 "host.cpu.architecture": "x86_64",
-                "host.cpu.model": "Intel(R) Core(TM) i5-8260U",
+                "host.cpu.model": "Example CPU",
                 "host.cpu.vendor": "GenuineIntel",
                 "host.cpu.sockets": 1,
                 "host.cpu.cores": 4,
@@ -369,7 +369,7 @@ async def test_cpu_projection_sets_typed_arch_and_capability_bag(sessionmaker) -
     assert result.changes["arch"] == Architecture.AMD64
     assert "capabilities.arch" not in result.changes
     # Spot-check a few capability projections.
-    assert result.changes["capabilities.cpu_model"] == "Intel(R) Core(TM) i5-8260U"
+    assert result.changes["capabilities.cpu_model"] == "Example CPU"
     assert result.changes["capabilities.cpu_cores"] == 4
     assert result.changes["capabilities.cpu_threads"] == 8
     assert result.changes["capabilities.cpu_l3_bytes"] == 6_291_456
@@ -515,7 +515,7 @@ async def test_memory_zero_values_round_trip_cleanly(sessionmaker) -> None:
 async def test_all_three_namespaces_reconcile_in_one_call(sessionmaker) -> None:
     """A full warm probe batch hits identity + cpu + memory; reconcile applies all."""
     async with session_scope(sessionmaker) as s:
-        host = await _seed_host(s, hostname="bmax0")
+        host = await _seed_host(s, hostname="node0")
 
         identity_run = await _seed_run(s, host.id, probe_name="host.identity")
         await _record_observations(
@@ -741,8 +741,8 @@ async def test_dimm_moves_to_different_slot_same_host(sessionmaker) -> None:
 async def test_dimm_moves_to_different_host(sessionmaker) -> None:
     """The lineage case the schema doc names — a DIMM crosses hosts."""
     async with session_scope(sessionmaker) as s:
-        src = await _seed_host(s, hostname="bmax0")
-        dst = await _seed_host(s, hostname="bmax1")
+        src = await _seed_host(s, hostname="node0")
+        dst = await _seed_host(s, hostname="node1")
 
         run_src = await _seed_run(s, src.id, probe_name="host.memory.dimms")
         await _record_observations(
@@ -983,8 +983,8 @@ async def test_storage_lineage_is_idempotent(sessionmaker) -> None:
 
 async def test_storage_disk_moves_to_different_host(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
-        src = await _seed_host(s, hostname="bmax0")
-        dst = await _seed_host(s, hostname="bmax1")
+        src = await _seed_host(s, hostname="node0")
+        dst = await _seed_host(s, hostname="node1")
 
         run_src = await _seed_run(s, src.id, probe_name="host.storage")
         await _record_observations(
@@ -1035,6 +1035,62 @@ async def test_storage_falls_back_to_serial_when_wwn_missing(sessionmaker) -> No
             await s.execute(select(PhysicalPart).where(PhysicalPart.serial == "serial-only"))
         ).scalar_one()
         assert part.wwid is None  # nothing to record
+
+
+async def test_forged_wwn_collision_keys_by_serial_and_flags(sessionmaker) -> None:
+    """Distinct drives sharing a forged WWN stay distinct, with a finding each.
+
+    Models the cp USB SSDs: identical ``naa.5000000000000099`` WWN, unique
+    serials. Without the guard the reconciler would merge all three into one
+    part and bounce its placement between hosts. With it, each drive is its own
+    part keyed by serial, and every collider past the first raises a
+    STORAGE_PROVENANCE_DELTA finding.
+    """
+    forged = "naa.5000000000000099"
+    serials = ["SN0001", "SN0002", "SN0003"]
+    async with session_scope(sessionmaker) as s:
+        for i, serial in enumerate(serials):
+            host = await _seed_host(s, hostname=f"cp{i + 1}")
+            run = await _seed_run(s, host.id, probe_name="host.storage")
+            await _record_observations(
+                s,
+                run.id,
+                host.id,
+                {
+                    "host.storage.devices": [
+                        _disk("sda", wwn=forged, serial=serial, transport="usb")
+                    ]
+                },
+            )
+            result = await Reconciler().reconcile_host(s, host.id)
+            # No placement ever closes — the drives don't "move".
+            assert result.placements_closed == []
+
+    async with sessionmaker() as s:
+        parts = (
+            (await s.execute(select(PhysicalPart).where(PhysicalPart.kind != PartKind.DIMM)))
+            .scalars()
+            .all()
+        )
+        # Three distinct parts, one per serial — not one shared part.
+        assert sorted(p.serial for p in parts) == sorted(serials)
+        # Exactly one part owns the forged WWN (the first); the others are
+        # serial-only so future WWN lookups stay unambiguous.
+        assert [p.serial for p in parts if p.wwid == forged] == ["SN0001"]
+        assert {p.wwid for p in parts if p.serial in ("SN0002", "SN0003")} == {None}
+
+        # Each of the three hosts keeps its own open placement (no bouncing).
+        open_placements = (
+            (await s.execute(select(Placement).where(Placement.to_date.is_(None)))).scalars().all()
+        )
+        assert len(open_placements) == 3
+        assert len({pl.host_id for pl in open_placements}) == 3
+
+        findings = await _open_findings(s)
+        collisions = [f for f in findings if f.kind == FindingKind.STORAGE_PROVENANCE_DELTA]
+        # Two colliders (cp2, cp3); cp1 established the WWN, so it isn't flagged.
+        assert len(collisions) == 2
+        assert all(forged in f.title for f in collisions)
 
 
 async def test_storage_disk_without_identity_is_skipped(sessionmaker) -> None:
@@ -1418,8 +1474,8 @@ async def test_nic_lineage_is_idempotent(sessionmaker) -> None:
 async def test_nic_moves_to_different_host(sessionmaker) -> None:
     """A whole NIC card moved between hosts — same MAC, new host."""
     async with session_scope(sessionmaker) as s:
-        src = await _seed_host(s, hostname="bmax0")
-        dst = await _seed_host(s, hostname="bmax1")
+        src = await _seed_host(s, hostname="node0")
+        dst = await _seed_host(s, hostname="node1")
 
         run_src = await _seed_run(s, src.id, probe_name="host.network")
         await _record_observations(

@@ -1,7 +1,7 @@
 """PhysicalPart — first-class identity for parts that survive moves.
 
 Serial-keyed where possible; identity-only where not. See the schema doc's
-"reconciler needs a best-effort identity merge" note for the pi-cp USB-SSD
+"reconciler needs a best-effort identity merge" note for the cp USB-SSD
 case where serials are reused or garbage.
 """
 

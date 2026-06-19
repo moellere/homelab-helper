@@ -49,12 +49,12 @@ async def seeded_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
     async with session_scope(sm) as s:
         host_a = Host(
-            hostname="bmax0",
-            primary_ip="10.250.6.20",
+            hostname="node0",
+            primary_ip="10.0.6.20",
             arch=Architecture.AMD64,
             capabilities={"kernel": "6.8.0-49-generic", "cpu_cores": 6},
         )
-        host_b = Host(hostname="bmax1", primary_ip="10.250.6.21", arch=Architecture.AMD64)
+        host_b = Host(hostname="node1", primary_ip="10.0.6.21", arch=Architecture.AMD64)
         s.add_all([host_a, host_b])
         await s.flush()
 
@@ -154,7 +154,7 @@ def test_findings_list_filters_by_severity(seeded_db_url: str) -> None:
 
 
 def test_findings_list_filters_by_host(seeded_db_url: str) -> None:
-    # bmax1 only has the resolved storage finding — with default open filter
+    # node1 only has the resolved storage finding — with default open filter
     # there's nothing for it.
     result = runner.invoke(app, ["findings", "list", "--host", "nonexistent-uuid"])
     assert result.exit_code == 0
@@ -227,10 +227,10 @@ def test_findings_suppress_bad_date_is_rejected(seeded_db_url: str) -> None:
 
 
 def test_host_show_emits_identity_capabilities_parts_findings(seeded_db_url: str) -> None:
-    result = runner.invoke(app, ["host", "show", "bmax0"])
+    result = runner.invoke(app, ["host", "show", "node0"])
     assert result.exit_code == 0
-    assert "bmax0" in result.stdout
-    assert "10.250.6.20" in result.stdout
+    assert "node0" in result.stdout
+    assert "10.0.6.20" in result.stdout
     assert "amd64" in result.stdout
     # capability bag rendered
     assert "kernel" in result.stdout
@@ -248,10 +248,10 @@ def test_host_show_unknown_hostname_errors(seeded_db_url: str) -> None:
 
 
 def test_host_show_bare_host_with_no_capabilities_or_parts(seeded_db_url: str) -> None:
-    """bmax1 has no capabilities, no placements, no open findings."""
-    result = runner.invoke(app, ["host", "show", "bmax1"])
+    """node1 has no capabilities, no placements, no open findings."""
+    result = runner.invoke(app, ["host", "show", "node1"])
     assert result.exit_code == 0
-    assert "bmax1" in result.stdout
+    assert "node1" in result.stdout
     assert "no capabilities" in result.stdout.lower()
     assert "no current part placements" in result.stdout.lower()
     assert "no open findings" in result.stdout.lower()

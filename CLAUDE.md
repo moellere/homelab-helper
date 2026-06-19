@@ -27,7 +27,7 @@ src/homelab_helper/
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint
 └── probes/         host.* + network.* plugins; register via entry points
 tests/              pytest, asyncio_mode = "auto"
-fixtures/           operator-editable YAML (assertion library, future dorktool)
+fixtures/           operator-editable YAML (assertion library, future example)
 alembic/            migrations
 ```
 
@@ -192,7 +192,7 @@ Remaining backlog items at the top of `docs/backlog.md`:
 - Interfaces / IPs / VLANs / Prefixes / Clusters / VMs / Services CRUD on
   NetBoxAdapter
 - `helper config` CLI verb
-- dorktool replayable integration fixture (`fixtures/dorktool.yaml`)
+- example replayable integration fixture (`fixtures/example.yaml`)
 - Python 3.13 matrix in CI (optional)
 - Per-assertion arch/role filters in the YAML loader (for cluster-aware
   starter packs)

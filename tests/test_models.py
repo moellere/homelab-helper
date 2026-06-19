@@ -75,8 +75,8 @@ async def test_full_object_graph_round_trips(sessionmaker) -> None:
     """Insert one of each model and verify all rows persist + foreign keys hold."""
     async with session_scope(sessionmaker) as s:
         h = Host(
-            hostname="bmax0",
-            primary_ip="10.250.6.20",
+            hostname="node0",
+            primary_ip="10.0.6.20",
             arch=Architecture.AMD64,
             capabilities={"cpu_cores": 4, "cpu_threads": 8},
         )
@@ -128,16 +128,16 @@ async def test_full_object_graph_round_trips(sessionmaker) -> None:
             Observation(
                 run_id=run.id,
                 key="host.cpu.model",
-                value="Intel i5-8260U",
+                value="Example CPU",
                 target_type=IntentTargetType.HOST,
                 target_id=str(h.id),
             )
         )
 
         assertion = ConfigurationAssertion(
-            name="covomv.br6.mac_pinned",
+            name="nas0.br6.mac_pinned",
             scope=AssertionScope.HOST,
-            scope_target="covomv",
+            scope_target="nas0",
             description="bridge MAC must match NIC MAC",
             kind=AssertionKind.SSH_COMMAND,
             verifier_spec={"command": "ip link show br6"},
@@ -152,9 +152,9 @@ async def test_full_object_graph_round_trips(sessionmaker) -> None:
             kind=FindingKind.CEPH_BOTTLENECK,
             severity=FindingSeverity.HIGH,
             fingerprint="abc123def4567890",
-            title="bmax0 ceph link",
-            description="bmax0 has 1 GbE while peers have 2.5 GbE",
-            affected=[{"target_type": "host", "target_id": "bmax0"}],
+            title="node0 ceph link",
+            description="node0 has 1 GbE while peers have 2.5 GbE",
+            affected=[{"target_type": "host", "target_id": "node0"}],
         )
         s.add(finding)
         await s.flush()
@@ -162,7 +162,7 @@ async def test_full_object_graph_round_trips(sessionmaker) -> None:
         s.add(
             ProposalLog(
                 finding_id=finding.id,
-                title="Add USB 2.5GbE NIC to bmax0",
+                title="Add USB 2.5GbE NIC to node0",
                 artifact={"kind": "shopping-list", "items": ["USB 2.5GbE NIC"]},
                 blast_radius="single-host",
             )
@@ -190,8 +190,8 @@ async def test_full_object_graph_round_trips(sessionmaker) -> None:
 async def test_placement_history_is_append_only(sessionmaker) -> None:
     """Closing a placement is a to_date write, not a delete."""
     async with session_scope(sessionmaker) as s:
-        h1 = Host(hostname="bmax4")
-        h2 = Host(hostname="bmax1")
+        h1 = Host(hostname="node4")
+        h2 = Host(hostname="node1")
         part = PhysicalPart(kind=PartKind.DIMM, serial="MIGRATED-DIMM")
         s.add_all([h1, h2, part])
         await s.flush()
@@ -207,7 +207,7 @@ async def test_placement_history_is_append_only(sessionmaker) -> None:
         existing = (await s.execute(select(Placement))).scalar_one()
         existing.to_date = datetime.now(UTC)
         # Reload host ids
-        h2 = (await s.execute(select(Host).where(Host.hostname == "bmax1"))).scalar_one()
+        h2 = (await s.execute(select(Host).where(Host.hostname == "node1"))).scalar_one()
         part = (await s.execute(select(PhysicalPart))).scalar_one()
         s.add(Placement(part_id=part.id, host_id=h2.id, slot="DIMM_A1"))
 

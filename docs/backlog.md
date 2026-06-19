@@ -40,7 +40,7 @@ The rest of Phase 1, and all of Phase 6, is below.
   - [x] Latest-observation-per-key precedence (single-source; multi-source lands with non-SSH probes)
   - [x] Host-field idempotency: re-run is a no-op (returns empty deltas)
   - [x] CLI wiring: `helper discover host` invokes the reconciler after the probe batch
-  - [x] Replay-style test pattern (in-process fixtures); migrates to YAML when dorktool fixture lands
+  - [x] Replay-style test pattern (in-process fixtures); migrates to YAML when example fixture lands
   - [x] `transform` hook on `HostProjectionRule` (raw observation value → typed column domain) + `normalize_arch` mapper
   - [x] `host.cpu.*` slice: `host.cpu.architecture` → `Host.arch` (typed); model, vendor, sockets, cores, threads, threads_per_core, freq, cache, flags, interesting_flags → capabilities (`cpu_*` keys)
   - [x] `host.memory.*` slice (totals only): mem/swap/hugepage totals from `/proc/meminfo` → capabilities. DIMM-level keys land with the lineage slice below as first-class rows, not capabilities.
@@ -68,7 +68,85 @@ The rest of Phase 1, and all of Phase 6, is below.
   - [x] `helper findings list|show|ack|resolve|suppress` — fingerprint-prefix matching everywhere; status/severity/kind/host filters on list
   - [x] `helper host show <name>` — identity + capabilities (grouped by prefix) + current placements + open findings table
   - [ ] `helper config`
-- [ ] **dorktool integration fixture** — `fixtures/dorktool.yaml` loading the real lab; replayable, CI-friendly; the day-one audit runs as an integration test producing the 11–16 findings. _Unblocks the AC3/AC4 demonstration._
+- [ ] **Replayable lab fixture** — capture a fleet's observations (hosts +
+  observations + parts + placements) into YAML the reconciler can replay
+  offline, so the day-one audit runs as a CI integration test with no live SSH.
+  Needs a loader (none yet). Proposed schema mirrors the in-process replay
+  fixture in `tests/test_reconciler.py` (`{version, hosts: [{hostname,
+  primary_ip, observations: [{key, value}]}]}`); the loader seeds Host rows +
+  Observations, then runs the reconciler. The generic committed assertion
+  library is `fixtures/assertion-library-starter.yaml`; operators bind it to
+  their own hostnames in a local (un-committed) copy. _Unblocks AC3/AC4 as an
+  automated test._
+
+### Discovery sources & probes (landed)
+
+- [x] **Talos adapter** (`adapters/talos.py` + `probes/talos/host.py` +
+  `helper discover talos`) — `talosctl`-subprocess adapter (injectable runner
+  for tests) + a `talos.host` probe that pulls COSI resources (`nodename`,
+  `systeminformation`, `disks`, `links`, `addresses`) plus `/proc/cpuinfo` &
+  `/proc/meminfo` reads and `version`, projecting them onto the canonical
+  `host.*` keys so the reconciler/assertions/audit consume Talos nodes with no
+  downstream change. Physical-NIC filtering is positive (link `kind` empty +
+  real `busPath`), avoiding the SSH path's name-prefix heuristic. First non-SSH
+  source — also unblocks reconciler **multi-source precedence**.
+- [x] **`host.smart` probe** (`probes/host/smart.py`) — per-drive S.M.A.R.T. via
+  `smartctl -a -j` over kernel-ssh (root; `sudo -n` when not root). Emits
+  `host.smart.devices` (health, power-on hours, temperature, reallocated/pending
+  sectors, CRC errors, NVMe wear), `host.smart.health_all_passed`,
+  `host.smart.unhealthy_devices`; WWN in lsblk `0x…` form to cross-reference
+  storage parts. Graceful-skips when smartctl is absent, so it's safe in the
+  default host-probe set. Chosen over an OMV JSON-RPC adapter (vendor-specific,
+  needs API creds) and an MCP path (can't run in the headless probe pipeline).
+- [x] **Network-scan importer** (`engine/scan_import.py` + `helper discover
+  import <csv> [--dry-run]`) — ingest an external host-scan CSV
+  (`ip,hostname,os_class,os_detail,ssh_banner,ttl,mac,nic_vendor`) into Host
+  rows; classify by scan signature (full OpenSSH → deep-probeable;
+  embedded/dropbear/IoT/no-banner → agentless; Windows → agentless-for-now) and
+  raise a `DISCOVERY_AGENTLESS_NEEDED` (INFO) finding per unprobeable host.
+  Existing hosts match by primary_ip or short hostname and are enriched, not
+  clobbered. Idempotent.
+- [x] **Deep-probe records coverage** — `helper discover host`/`talos` set
+  `Host.discovery_source = KERNEL_PROBE` on a successful run; the importer treats
+  probed hosts (incl. Talos nodes with no SSH banner) as covered and
+  auto-resolves stale agentless findings.
+- [x] **`_resolve_host` matches by primary_ip too** — a probe run passing a short
+  name no longer duplicates a row another source created under an FQDN at the
+  same IP. Regression test `tests/test_cli_resolve_host.py`.
+
+### Reconciler / assertions (landed)
+
+- [x] **Forged-WWN collision guard** — `Reconciler._resolve_storage_identity` +
+  `_guard_forged_wwn`: when a storage WWN is already owned by a part with a
+  *different* serial, the WWN is forged (some USB/SATA enclosures report a
+  constant WWN) — re-key the device by its unique serial (recovered from the
+  by-id symlink) and raise a `STORAGE_PROVENANCE_DELTA` (MEDIUM) finding instead
+  of merging distinct drives into one "moving" part. First-created part wins WWN
+  ownership (deterministic via uuid7/`created_at`); re-runs stable. Test
+  `test_forged_wwn_collision_keys_by_serial_and_flags`.
+- [x] **SMART-health assertion pattern** — a `<host>.smart_all_healthy` (HIGH)
+  check using `host.smart.health_all_passed eq true` turns a failed SMART status
+  into a finding via the existing assertion engine.
+
+### Known gaps (found during validation)
+
+- [ ] **NIC virtual-interface filter** misses some hypervisor firewall interfaces
+  (e.g. Proxmox `fwbr*`/`fwln*`/`fwpr*`), which leak through as spurious NIC
+  parts. Add those prefixes to the host.network reconciler heuristic, or switch
+  to a positive PCI-backing test.
+- [ ] **DIMM no-identity is silent** — DIMMs skipped for a missing serial
+  (meminfo-only probe) produce no finding, unlike storage no-identity. Emit an
+  `INVENTORY_GAP` for skipped DIMMs, or land the dmidecode probe (P2).
+- [ ] **Per-assertion arch filter** — scope capability assertions (`aes`, `avx2`,
+  memory floors) by architecture so ARM nodes aren't failed by design; needed
+  before binding the assertion library to a mixed-arch fleet.
+- [ ] **`host.raid` / `host.shares` probes** — mdraid composition
+  (`/proc/mdstat` + `mdadm --detail`) so the reconciler models an array as a
+  volume over its member parts; NFS/SMB share enumeration.
+- [ ] **`talos.host` CPU/DIMM depth** — SMBIOS `processors`/`memorymodules` can
+  be sparse (cores/flags come from `/proc/cpuinfo`); DIMM lineage isn't
+  populated without a per-module serial.
+
 
 ### P2 — strengthens, doesn't block
 

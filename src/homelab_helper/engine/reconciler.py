@@ -623,6 +623,14 @@ class Reconciler:
         with neither are counted in ``parts_skipped_no_identity`` and surface
         an ``INVENTORY_GAP`` finding per device.
 
+        Forged-WWN guard: some enclosures invert the trade-off and expose a
+        *constant* WWN across distinct drives while still carrying a unique
+        serial (the cp USB SSDs all report ``naa.5000000000000099``). When a
+        WWN is already owned by a part with a different serial,
+        :meth:`_resolve_storage_identity` re-keys the device by serial so the
+        drives stay distinct, and a ``STORAGE_PROVENANCE_DELTA`` finding is
+        raised instead of silently merging three disks into one.
+
         The slot label is the kernel device path (``/dev/<name>``). Cross-host
         moves close the prior placement; intra-host moves (device renamed
         because PCI scan order changed) close the old slot and open the new.
@@ -670,9 +678,20 @@ class Reconciler:
                     ledger=ledger,
                 )
                 continue
-            identity_column, identity_value = identity
+            identity_column, identity_value, collision_wwn = await self._resolve_storage_identity(
+                session, raw_entry, identity
+            )
+            entry_for_upsert = await self._guard_forged_wwn(
+                session,
+                host_id=host_id,
+                slot=slot,
+                entry=raw_entry,
+                serial=identity_value,
+                collision_wwn=collision_wwn,
+                ledger=ledger,
+            )
             part, created = await self._upsert_storage_part(
-                session, identity_column, identity_value, raw_entry
+                session, identity_column, identity_value, entry_for_upsert
             )
             if created:
                 result["parts_upserted"] += 1
@@ -793,6 +812,88 @@ class Reconciler:
         session.add(part)
         await session.flush()
         return part, True
+
+    async def _guard_forged_wwn(
+        self,
+        session: AsyncSession,
+        *,
+        host_id: uuid.UUID,
+        slot: str,
+        entry: dict[str, Any],
+        serial: str,
+        collision_wwn: str | None,
+        ledger: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Raise a provenance finding for a forged WWN and strip it from ``entry``.
+
+        Passthrough when ``collision_wwn`` is ``None``. Otherwise emit a
+        ``STORAGE_PROVENANCE_DELTA`` finding and return a copy of ``entry`` with
+        the ``wwn`` key removed, so the forged WWN never lands on the
+        serial-keyed part (which would make later WWN lookups ambiguous).
+        """
+        if collision_wwn is None:
+            return entry
+        await self._emit_finding(
+            session,
+            host_id=host_id,
+            category="storage",
+            root_cause_token=f"storage:{serial}:wwn-collision:{collision_wwn}",
+            kind=FindingKind.STORAGE_PROVENANCE_DELTA,
+            severity=FindingSeverity.MEDIUM,
+            title=f"Storage device {slot} shares forged WWN {collision_wwn}",
+            description=(
+                f"Disk at {slot} reports WWN {collision_wwn}, already claimed by a "
+                "different drive (distinct serial). USB/SATA enclosures commonly "
+                "forge a constant WWN; without serial disambiguation the reconciler "
+                "would merge these physically-distinct drives into one part and "
+                f"model it as a single disk moving between hosts. Keyed by serial "
+                f"{serial} instead."
+            ),
+            ledger=ledger,
+        )
+        return {k: v for k, v in entry.items() if k != "wwn"}
+
+    async def _resolve_storage_identity(
+        self,
+        session: AsyncSession,
+        entry: dict[str, Any],
+        identity: tuple[str, str],
+    ) -> tuple[str, str, str | None]:
+        """Disambiguate a forged WWN via serial.
+
+        Returns ``(identity_column, identity_value, collision_wwn)``. The
+        WWN-preferred ``identity`` passes through unchanged with
+        ``collision_wwn=None`` in the normal case. But when the entry is
+        WWN-keyed *and* carries a serial, and that WWN is already owned by an
+        earlier part with a *different* serial, the WWN is forged: re-key by
+        serial (so each physical drive becomes its own part) and return the
+        offending WWN so the caller raises a ``STORAGE_PROVENANCE_DELTA``
+        finding. First-created part wins ownership of the WWN (deterministic via
+        the time-ordered ``uuid7`` id + ``created_at``), so re-runs are stable.
+        """
+        column, value = identity
+        if column != "wwid":
+            return column, value, None
+        serial = entry.get("serial")
+        if not (isinstance(serial, str) and serial):
+            return column, value, None  # no serial — can't disambiguate, keep WWN
+        owner = (
+            (
+                await session.execute(
+                    select(PhysicalPart)
+                    .where(
+                        PhysicalPart.kind.in_(_STORAGE_PART_KINDS),
+                        PhysicalPart.wwid == value,
+                    )
+                    .order_by(PhysicalPart.created_at, PhysicalPart.id)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if owner is not None and owner.serial and owner.serial != serial:
+            return "serial", serial, value
+        return column, value, None
 
     async def _reconcile_nic_lineage(
         self,

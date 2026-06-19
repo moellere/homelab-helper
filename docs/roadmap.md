@@ -11,7 +11,7 @@ Three rules that shape every phase below.
 
 **1. Each phase produces a usable system on its own.** Not a milestone in a partially-built product; a thing you'd actually run. If you stopped after Phase 1, what you have is a discovery-and-audit tool that's already valuable on its own. If you stopped after Phase 2, you have a continuous-monitoring tool with assertion verification. And so on. This forces clean abstractions and prevents the framework from being held hostage by future phases.
 
-**2. Acceptance criteria are demoable, not aspirational.** Every phase has at least one criterion that ends with "...against the dorktool.com lab." Real artifacts, real tests, no "we'll know it's done when it feels right."
+**2. Acceptance criteria are demoable, not aspirational.** Every phase has at least one criterion that ends with "...against the example.lan lab." Real artifacts, real tests, no "we'll know it's done when it feels right."
 
 **3. L2 (execution) is the final phase, gated by the trust gradient.** Five phases get to a fully useful read-only system: discovery, continuous monitoring, multi-source coordination, conversational layer, planning. Phase 6 adds the executor — but every prior phase is independently complete, and L2 is opt-in: the framework never applies a change until the operator raises the trust floor for that specific class of action. The propose-only system (Phases 1–5) is the product for everyone who never opts in. L2 is committed to the roadmap, but deliberately last and deliberately gated.
 
@@ -58,7 +58,7 @@ The foundation. After this phase, the framework can scan a network, deep-probe L
 - Build the reconciler with current-state inventory maintenance.
 - Build the assertion engine for one-shot verifier runs.
 - Ship the CLI as the primary interface.
-- Produce the day-one audit against the dorktool lab.
+- Produce the day-one audit against the example lab.
 
 ### Deliverables
 
@@ -75,13 +75,13 @@ The foundation. After this phase, the framework can scan a network, deep-probe L
 | FingerprintGenerator | Deterministic fingerprints for finding dedup. |
 | CLI: `helper discover network`, `helper discover host`, `helper audit`, `helper findings`, `helper host show`, `helper config` | Primary interaction surface. |
 | NetBox bootstrap routine | Creates the harness's custom fields in NetBox on first run. |
-| Test fixtures: dorktool lab as integration test | Replayable; CI-friendly. |
+| Test fixtures: example lab as integration test | Replayable; CI-friendly. |
 
 ### Acceptance criteria
 
-1. **`helper discover network 10.250.0.0/16`** populates the harness DB and NetBox with discovered hosts, fingerprints recognized services (Proxmox, Cockpit, K8s API, web servers), and produces `INVENTORY_GAP` findings for unidentified hosts.
-2. **`helper discover host bmax3`** with valid SSH credentials completes the warm probe suite in under 30 seconds, populates `Host.capabilities`, creates `PhysicalPart` and `Placement` rows for every DIMM and storage device, and updates NetBox Device + InventoryItems accordingly.
-3. **`helper audit`** against the populated dorktool lab produces the eleven day-one findings from the modeling walkthrough, plus the new ones added in the gap-fill update (CONFIG-DRIFT-CONFIRMED for bmax0 e1000e, STRAY-CONFIG for WAN2, LEGACY-WORKLOAD for the esphome-worker LXCs, UNKNOWN-WORKLOAD for the stopped bmax2 VMs). At least eleven findings; ideally all sixteen.
+1. **`helper discover network 10.0.0.0/16`** populates the harness DB and NetBox with discovered hosts, fingerprints recognized services (Proxmox, Cockpit, K8s API, web servers), and produces `INVENTORY_GAP` findings for unidentified hosts.
+2. **`helper discover host node3`** with valid SSH credentials completes the warm probe suite in under 30 seconds, populates `Host.capabilities`, creates `PhysicalPart` and `Placement` rows for every DIMM and storage device, and updates NetBox Device + InventoryItems accordingly.
+3. **`helper audit`** against the populated example lab produces the eleven day-one findings from the modeling walkthrough, plus the new ones added in the gap-fill update (CONFIG-DRIFT-CONFIRMED for node0 e1000e, STRAY-CONFIG for WAN2, LEGACY-WORKLOAD for the esphome-worker LXCs, UNKNOWN-WORKLOAD for the stopped node2 VMs). At least eleven findings; ideally all sixteen.
 4. **Re-running discovery against the same lab does not duplicate inventory** — fingerprint dedup works, placements close out cleanly when parts move, findings update `last_seen` rather than creating new rows.
 5. **Probe plugin SDK passes the "write a probe in 50 lines" test**: writing a new probe (e.g. `host.systemd-units`) takes a single file under 50 lines of Python plus a Pydantic output schema.
 
@@ -125,11 +125,11 @@ The shift from "discovery is something I trigger" to "the framework knows my lab
 
 ### Acceptance criteria
 
-1. **helper-agent installs on bmax3 and three Pis** without manual surgery, runs for **7 days unattended**, posts observations every 5 minutes, never crashes.
-2. **Deliberately break one ConfigurationAssertion** (e.g. disable the e1000e service on bmax1) — within **15 minutes**, a `CONFIG_DRIFT` finding appears with the correct fingerprint and evidence.
-3. **`operational_intent`-tagged stopped VMs produce no finding.** Stop `claude-server` on bmax2 with intent `stopped-by-design`; no `UNKNOWN_WORKLOAD` finding. Stop a different VM without intent; finding appears.
-4. **Power-policy-aware probing**: bmax4 and bmax5 (WoL workers) probed during their expected-off windows produces no finding for unreachability. Probe runs are skipped or rerouted as designed.
-5. **The bmax0 e1000e drift gets confirmed automatically** when the verifier runs against the gap-filled inventory — `CONFIG_DRIFT_CONFIRMED` finding generated without manual intervention.
+1. **helper-agent installs on node3 and three Pis** without manual surgery, runs for **7 days unattended**, posts observations every 5 minutes, never crashes.
+2. **Deliberately break one ConfigurationAssertion** (e.g. disable the e1000e service on node1) — within **15 minutes**, a `CONFIG_DRIFT` finding appears with the correct fingerprint and evidence.
+3. **`operational_intent`-tagged stopped VMs produce no finding.** Stop `claude-server` on node2 with intent `stopped-by-design`; no `UNKNOWN_WORKLOAD` finding. Stop a different VM without intent; finding appears.
+4. **Power-policy-aware probing**: node4 and node5 (WoL workers) probed during their expected-off windows produces no finding for unreachability. Probe runs are skipped or rerouted as designed.
+5. **The node0 e1000e drift gets confirmed automatically** when the verifier runs against the gap-filled inventory — `CONFIG_DRIFT_CONFIRMED` finding generated without manual intervention.
 6. **Re-running Phase 1's `helper audit` after Phase 2's agents are deployed** — same set of findings, but now with `last_seen` updating continuously and `confidence` reflecting real freshness.
 
 ### Effort
@@ -144,7 +144,7 @@ With Phase 2 you have **a continuous lab-monitoring tool with drift detection an
 
 ## Phase 3 — Multi-Source Coordination
 
-The architecture's premise (multi-source SoT, not single SoT) only matters once you actually have multiple sources. This phase adds the adapters that make the dorktool lab's full complexity visible.
+The architecture's premise (multi-source SoT, not single SoT) only matters once you actually have multiple sources. This phase adds the adapters that make the example lab's full complexity visible.
 
 ### Goals
 
@@ -169,12 +169,12 @@ The architecture's premise (multi-source SoT, not single SoT) only matters once 
 
 ### Acceptance criteria
 
-1. **Each adapter passes its smoke test against a real instance** — `helper adapter test proxmox` succeeds against the dorktool Proxmox cluster, returns expected observations.
-2. **`helper view service home-assistant`** returns a complete record: NetBox Service entry, hosting VM (bmax0:105), K8s state (n/a — it's a Proxmox VM), UniFi internal DNS record, Cloudflare external DNS record, ArgoCD app status (n/a), recent observations.
+1. **Each adapter passes its smoke test against a real instance** — `helper adapter test proxmox` succeeds against the example Proxmox cluster, returns expected observations.
+2. **`helper view service home-assistant`** returns a complete record: NetBox Service entry, hosting VM (node0:105), K8s state (n/a — it's a Proxmox VM), UniFi internal DNS record, Cloudflare external DNS record, ArgoCD app status (n/a), recent observations.
 3. **DNS split-brain visible**: querying any service produces both internal and external endpoint rows with the correct resolvers.
 4. **Git-vs-cluster drift produces findings**: introduce a manual change to a K8s resource that ArgoCD manages, finding appears identifying the divergence.
-5. **Ceph health surfaced**: `helper view storage ceph` shows OSD weights, near-full warnings, replication lag, and (still) the bmax0 1 GbE bottleneck finding now with confirming Ceph-side evidence.
-6. **The bmax0 Ceph bottleneck finding gets richer**: instead of "bmax0 has 1 GbE and the others have 2.5 GbE," it's "bmax0 has 1 GbE and the others have 2.5 GbE *and Ceph backend traffic is currently averaging X MB/s with peaks Y, capped near bmax0's link saturation*."
+5. **Ceph health surfaced**: `helper view storage ceph` shows OSD weights, near-full warnings, replication lag, and (still) the node0 1 GbE bottleneck finding now with confirming Ceph-side evidence.
+6. **The node0 Ceph bottleneck finding gets richer**: instead of "node0 has 1 GbE and the others have 2.5 GbE," it's "node0 has 1 GbE and the others have 2.5 GbE *and Ceph backend traffic is currently averaging X MB/s with peaks Y, capped near node0's link saturation*."
 
 ### Effort
 
@@ -219,7 +219,7 @@ The agent layer. Adds the LLM router, narration, conversational discovery, and t
 1. **`helper chat` with default config invokes Ollama** and answers a basic question ("what hosts do I have?") correctly.
 2. **"What's wrong with my Ceph cluster?"** produces a narrated answer citing the CEPH_BOTTLENECK finding, explaining the 1 GbE/2.5 GbE asymmetry, and listing the four candidate mitigations from the day-one report.
 3. **Conversational Discovery Agent successfully populates a new host** via chat: user says "I just added a new mini-PC," agent walks through identity + IP + role + credentials, populates harness DB, kicks off warm discovery.
-4. **MCP server: Claude Code can drive a discovery run** by saying "discover the host at 10.250.6.27" — calls the right tools, results land in NetBox.
+4. **MCP server: Claude Code can drive a discovery run** by saying "discover the host at 10.0.6.27" — calls the right tools, results land in NetBox.
 5. **Strict-local privacy mode**: configure `privacy=strict-local`, ask a question that needs Frontier capability — router refuses cleanly with a clear message.
 6. **Skill profile demonstrably updates**: after chatting about ZFS and Ceph and Kubernetes, the skill profile reflects "storage: intermediate; container-orchestration: advanced" without the user setting these manually.
 
@@ -263,9 +263,9 @@ The framework starts producing recommendations, not just observations. The plann
 
 1. **WorkloadProfile library has ≥50 entries** covering top homelab services.
 2. **"If I add Immich, where should it run?"** returns a placement recommendation with reasoning — including arch constraints (amd64 only), RAM headroom, ML-tagging GPU optionality, storage proximity to media.
-3. **`helper plan rebalance`** against the dorktool lab returns at least three candidate plans with tradeoffs narrated by the planner agent, e.g. "rebalance Proxmox storage with current hardware," "rebalance with one DIMM move," "rebalance with one part purchase."
+3. **`helper plan rebalance`** against the example lab returns at least three candidate plans with tradeoffs narrated by the planner agent, e.g. "rebalance Proxmox storage with current hardware," "rebalance with one DIMM move," "rebalance with one part purchase."
 4. **The Ceph bottleneck recommendation** produces the four candidate mitigations from the day-one report (CRUSH reweight, USB 2.5GbE add, OSD relocate, accept) — *generated by the framework, not hardcoded*.
-5. **Reconfiguration reasoner flags the bmax2 surplus**: 24 GB of RAM, two stopped VMs, an i5-8500T — would propose either spinning the VMs back up, moving the DIMMs to a more-loaded host, or accepting capacity reserve as the intent.
+5. **Reconfiguration reasoner flags the node2 surplus**: 24 GB of RAM, two stopped VMs, an Example CPU — would propose either spinning the VMs back up, moving the DIMMs to a more-loaded host, or accepting capacity reserve as the intent.
 6. **NetworkPath correctly characterizes the Wyola↔Covington case**: planner refuses to place a Ceph-replicated workload across the VPN, explains why (latency + reliability inheritance from worst link in path).
 
 ### Effort
@@ -309,7 +309,7 @@ The framework gains the ability to apply the changes it has been proposing — b
 2. **Grant `CONFIRM` on `containers/restart/single-host`**: approving a proposed container restart actually executes it and records a receipt carrying the captured rollback state.
 3. **A reversible + low-blast cell auto-promotes to `AUTONOMOUS`** after N clean approvals; a subsequent matching action runs unattended with a receipt; **one bad outcome demotes the cell** to `PROPOSE` and flags probation.
 4. **An action with no verified rollback never auto-executes** — it degrades to `CONFIRM` — *unless* an elevation window is open over its cell.
-5. **An `ElevationWindow` over `storage` on bmax2** lets autonomous runs cross the reversibility floor for 60 minutes, captures best-effort snapshots, tags every receipt with the window id, then auto-expires; **the kill switch halts it on demand**.
+5. **An `ElevationWindow` over `storage` on node2** lets autonomous runs cross the reversibility floor for 60 minutes, captures best-effort snapshots, tags every receipt with the window id, then auto-expires; **the kill switch halts it on demand**.
 6. **The `secrets` domain and a `TrustBoundary`-marked host reject every override and window** — only a policy-config edit changes them.
 
 ### Effort
@@ -361,7 +361,7 @@ A docs site (mkdocs-material or similar) starts in Phase 1 and grows with each p
 
 ### Test fixtures
 
-- Phase 1: dorktool lab as integration test fixture. Replayable, CI-friendly.
+- Phase 1: example lab as integration test fixture. Replayable, CI-friendly.
 - Phase 2: synthetic continuous-mode scenarios (drift injection, intent transitions).
 - Phase 3: mock external APIs (Proxmox, K8s) for adapter testing without a real homelab.
 - Phase 5: workload-placement scenarios with known-correct answers.

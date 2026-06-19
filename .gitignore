@@ -73,3 +73,7 @@ desktop.ini
 scratch/
 notebooks/*.ipynb_checkpoints/
 TODO.local.md
+
+# Local-only: real-fleet artifacts for validation/use, never pushed
+# (the committed generic library is fixtures/assertion-library-starter.yaml)
+local/

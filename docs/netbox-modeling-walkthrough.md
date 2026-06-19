@@ -1,8 +1,8 @@
-# NetBox modeling walkthrough — dorktool.com homelab
+# NetBox modeling walkthrough — example.lan homelab
 
 ## Approach
 
-The exercise: take the dorktool.com lab as you've described it and figure out what gets modeled where. The output is three lists — *what NetBox handles cleanly, what NetBox handles only with custom fields, what doesn't go in NetBox at all* — and from those three lists, the data-model surface of the harness falls out.
+The exercise: take the example.lan lab as you've described it and figure out what gets modeled where. The output is three lists — *what NetBox handles cleanly, what NetBox handles only with custom fields, what doesn't go in NetBox at all* — and from those three lists, the data-model surface of the harness falls out.
 
 Architectural premise (revisited from earlier in the conversation): NetBox is **the source of truth for physical and L2/L3 inventory**. It is **not** the source of truth for K8s state, Ceph state, ArgoCD-managed config, UniFi runtime config, or anything below the filesystem. The harness *coordinates* across those sources via adapters. Every time we hit something that doesn't fit in NetBox below, we're not finding a bug in NetBox — we're finding an adapter the harness needs.
 
@@ -23,7 +23,7 @@ Site: Wyola
   status: active
   facility: remote-home
 
-Tenant: dorktool.com   # optional, only one tenant — skip if it adds noise
+Tenant: example.lan   # optional, only one tenant — skip if it adds noise
 ```
 
 ### VLAN Group, VLANs, Prefixes
@@ -31,10 +31,10 @@ Tenant: dorktool.com   # optional, only one tenant — skip if it adds noise
 NetBox wants a `VLANGroup` to scope the VLAN namespace so VID collisions are detected. One group for the controller's L2 domain at Covington.
 
 ```
-VLANGroup: dorktool-covington
+VLANGroup: example-covington
   scope: Site=Covington
 
-VLANs (all in dorktool-covington):
+VLANs (all in example-covington):
   vid=1   name=Primary    role=mgmt
   vid=4   name=DorkIOT    role=iot
   vid=6   name=Kubernet   role=compute
@@ -42,11 +42,11 @@ VLANs (all in dorktool-covington):
   vid=10  name=CovVMs     role=vm-network
 
 Prefixes:
-  10.250.0.0/23  VLAN=Primary   role=mgmt           site=Covington
-  10.250.4.0/23  VLAN=DorkIOT   role=iot            site=Covington
-  10.250.6.0/23  VLAN=Kubernet  role=compute        site=Covington
-  10.250.8.0/24  VLAN=CovGuest  role=guest          site=Covington
-  10.250.10.0/24 VLAN=CovVMs    role=vm-network     site=Covington
+  10.0.0.0/23  VLAN=Primary   role=mgmt           site=Covington
+  10.0.4.0/23  VLAN=DorkIOT   role=iot            site=Covington
+  10.0.6.0/23  VLAN=Kubernet  role=compute        site=Covington
+  10.0.8.0/24  VLAN=CovGuest  role=guest          site=Covington
+  10.0.10.0/24 VLAN=CovVMs    role=vm-network     site=Covington
 ```
 
 VLAN 6 as a contiguous /23 just works — NetBox doesn't care that it spans two `/24`-shaped halves.
@@ -54,10 +54,10 @@ VLAN 6 as a contiguous /23 just works — NetBox doesn't care that it spans two 
 ### Inter-site VPN (NetBox 4.x Tunnels)
 
 ```
-TunnelGroup: dorktool-vpn
+TunnelGroup: example-vpn
 
 Tunnel: wyola-site-vpn
-  group: dorktool-vpn
+  group: example-vpn
   encapsulation: ipsec-transport   # or whatever UniFi actually uses
   status: active
   terminations:
@@ -71,14 +71,14 @@ WAN2 is a separate `Circuit` whose status reflects the long-running outage — s
 
 ```
 Manufacturers:
-  Beelink, RaspberryPiFoundation, Ubiquiti, MikroTik, Generic-MiniPC
+  ExampleVendor, RaspberryPiFoundation, Ubiquiti, MikroTik, Generic-MiniPC
 
 DeviceTypes:
-  Beelink_MiniPC_Gen-A    (placeholder — bmax1/2/3 specifics TBD)
-  Beelink_S12_i5-8260U    (bmax0)
-  Generic_MiniPC_i5-6500T (bmax4/5/6 — likely a specific Beelink/Minisforum SKU)
-  Beelink_NAS_Variant     (covomv)
-  RaspberryPi_4B          (pi-cp1/2/3, garageupspi)
+  ExampleVendor_MiniPC_Gen-A    (placeholder — node1/2/3 specifics TBD)
+  ExampleBox    (node0)
+  Generic_MiniPC_i5-6500T (node4/5/6 — likely a specific ExampleVendor/Minisforum SKU)
+  ExampleVendor_NAS_Variant     (nas0)
+  RaspberryPi_4B          (cp1/2/3, edgepi1)
   UDM_Pro_(UDMA6A8)       (Covington gateway)
   USW_Pro_Max_16_PoE      (dorkcore)
   USW_24_PoE_2.5G         (usw25office)
@@ -102,18 +102,18 @@ Eighteen-ish named devices. Listed with the fields that matter for downstream re
 
 ```
 Compute (Site=Covington):
-  bmax0     role=proxmox-node           primary_ip=10.250.6.20/23
-  bmax1     role=proxmox-node           primary_ip=10.250.6.21/23
-  bmax2     role=proxmox-node           primary_ip=10.250.6.22/23
-  bmax3     role=proxmox-node           primary_ip=10.250.6.23/23
-  bmax4     role=k8s-worker-wol         primary_ip=10.250.6.24/23
-  bmax5     role=k8s-worker-wol         primary_ip=10.250.6.25/23
-  bmax6     role=k8s-worker             primary_ip=10.250.6.26/23
-  pi-cp1    role=k8s-control-plane      primary_ip=10.250.6.17/23
-  pi-cp2    role=k8s-control-plane      primary_ip=10.250.6.18/23
-  pi-cp3    role=k8s-control-plane      primary_ip=10.250.6.19/23
-  garageupspi role=usb-ip-server        primary_ip=10.250.0.53/23
-  covomv    role=nas                    primary_ip=10.250.0.29/23   # see interface note
+  node0     role=proxmox-node           primary_ip=10.0.6.20/23
+  node1     role=proxmox-node           primary_ip=10.0.6.21/23
+  node2     role=proxmox-node           primary_ip=10.0.6.22/23
+  node3     role=proxmox-node           primary_ip=10.0.6.23/23
+  node4     role=k8s-worker-wol         primary_ip=10.0.6.24/23
+  node5     role=k8s-worker-wol         primary_ip=10.0.6.25/23
+  node6     role=k8s-worker             primary_ip=10.0.6.26/23
+  cp1    role=k8s-control-plane      primary_ip=10.0.6.17/23
+  cp2    role=k8s-control-plane      primary_ip=10.0.6.18/23
+  cp3    role=k8s-control-plane      primary_ip=10.0.6.19/23
+  edgepi1 role=usb-ip-server        primary_ip=10.0.0.53/23
+  nas0    role=nas                    primary_ip=10.0.0.29/23   # see interface note
 
 Network (Site=Covington):
   Covington   role=gateway              (UDM-class)
@@ -134,17 +134,17 @@ Network (Site=Wyola):
 
 ### Interfaces on key devices
 
-The bmax/Pi interface set is minimal. covomv is the tricky one:
+The node/Pi interface set is minimal. nas0 is the tricky one:
 
 ```
-covomv interfaces:
+nas0 interfaces:
   lan0   type=1000base-t       mac=<realtek-mac>    mode=access(vlan=1)
-         ip=10.250.0.29/23
+         ip=10.0.0.29/23
   lan6   type=10gbase-t        mac=<aquantia-mac>   mode=tagged(vlans=[6])
   br6    type=bridge           mac=<aquantia-mac>   # MUST equal lan6.mac
          bridge_members=[lan6]
          mode=access(vlan=6)
-         ip=10.250.6.29/23
+         ip=10.0.6.29/23
 ```
 
 NetBox can express the bridge relationship and the MAC values, but the *invariant* (`br6.mac == lan6.mac`) lives elsewhere — see config assertions.
@@ -158,12 +158,12 @@ ClusterType: kubernetes
 Cluster: dorkprox
   type: proxmox-ve
   site: Covington
-  members: bmax0, bmax1, bmax2, bmax3
+  members: node0, node1, node2, node3
 
 Cluster: dorkk8s
   type: kubernetes
   site: Covington
-  members: pi-cp1, pi-cp2, pi-cp3, bmax4, bmax5, bmax6
+  members: cp1, cp2, cp3, node4, node5, node6
 
 VirtualMachines (cluster=dorkprox):
   pbs              # raw-passthrough to sda1 — see bend #5
@@ -182,19 +182,19 @@ Top-of-mind services attached to whichever Device or VM serves them publicly:
 ```
 Service(name=home-assistant,     device=<ha-vm>,            port=8123/tcp)
 Service(name=authentik,          device=<authentik-pod>,    port=9000/tcp)
-Service(name=frigate,            device=covomv,             port=5000/tcp)
+Service(name=frigate,            device=nas0,             port=5000/tcp)
 Service(name=n8n,                device=<n8n-pod>,          port=5678/tcp)
 Service(name=grafana,            device=<grafana-pod>,      port=3000/tcp)
 Service(name=prometheus,         device=<prom-pod>,         port=9090/tcp)
 Service(name=loki,               device=<loki-pod>,         port=3100/tcp)
 Service(name=uptime-kuma,        device=<uk-pod>,           port=3001/tcp)
-Service(name=minio,              device=covomv,             port=9000/tcp)
+Service(name=minio,              device=nas0,             port=9000/tcp)
 Service(name=guacamole,          device=<guac-pod>,         port=8080/tcp)
 Service(name=nuclio,             device=<nuclio-pod>,       port=8070/tcp)
 Service(name=pbs,                device=pbs-vm,             port=8007/tcp)
-Service(name=nfs,                device=covomv,             port=2049/tcp)
-Service(name=smb,                device=covomv,             port=445/tcp)
-Service(name=tftp-pxe,           device=covomv,             port=69/udp)
+Service(name=nfs,                device=nas0,             port=2049/tcp)
+Service(name=smb,                device=nas0,             port=445/tcp)
+Service(name=tftp-pxe,           device=nas0,             port=69/udp)
 ```
 
 The K8s-hosted services don't have stable "host" — they live on whatever pod the scheduler picked. Pointing them at a logical `VirtualMachine(name=<service>-workload)` and letting the K8s adapter keep `local_context_data` current is the cleanest pattern. Trying to keep `Service.device` pointing at the actual pod-host is a losing battle.
@@ -221,7 +221,7 @@ Ten places, in rough order of architectural significance.
 
 ### 1. Parts with history (DIMMs, SSDs that migrated)
 
-NetBox represents sub-components as `InventoryItem` records owned by a `Device`. There is no first-class identity that survives a move. When bmax4's 2×16 GB DIMMs went into bmax1, the NetBox-native operation is *delete from bmax4, create on bmax1*. Lineage gone. Same with the Pi SSDs → md0.
+NetBox represents sub-components as `InventoryItem` records owned by a `Device`. There is no first-class identity that survives a move. When node4's 2×16 GB DIMMs went into node1, the NetBox-native operation is *delete from node4, create on node1*. Lineage gone. Same with the Pi SSDs → md0.
 
 The fix is not a NetBox plugin. It's its own data model in the harness:
 
@@ -249,9 +249,9 @@ class Placement:
 
 NetBox holds *current* placements only — as `InventoryItem`s — and the harness keeps the full history. Reconciler updates NetBox when a part appears/disappears.
 
-This model handles your lineage knot natively: the three SSDs in `covomv.md0` have `Placement` rows whose previous entries point at pi-cp1/2/3.
+This model handles your lineage knot natively: the three SSDs in `nas0.md0` have `Placement` rows whose previous entries point at cp1/2/3.
 
-### 2. Expected-power-off (bmax4 and bmax5)
+### 2. Expected-power-off (node4 and node5)
 
 NetBox's `Device.status` has values like `active`, `planned`, `staged`, `decommissioning`, `offline`. None of them mean "intentionally asleep, will wake on demand." Adding a custom status is possible but conflates intent with state.
 
@@ -272,7 +272,7 @@ The discovery scheduler reads `power_policy` before pinging. The reconciler trea
 
 Pattern: any field whose canonical home is somewhere else gets stamped with `cf_source = "k8s" | "proxmox" | "unifi" | "kernel-probe" | "user"`. NetBox is read-mostly for those fields; writes happen at the source.
 
-### 4. MAC-pinned bridge invariant (covomv.br6)
+### 4. MAC-pinned bridge invariant (nas0.br6)
 
 NetBox stores `br6.mac_address` and `lan6.mac_address` as independent fields. Nothing enforces that they match, and the lab's correct operation requires it.
 
@@ -281,14 +281,14 @@ This is a `ConfigurationAssertion`:
 ```python
 ConfigurationAssertion(
   id=...,
-  host="covomv",
+  host="nas0",
   description="br6 bridge MAC must equal lan6 NIC MAC",
   rationale="DHCP reservation matches against bridge MAC; mismatch returns wrong IP",
   verifier_kind="ssh",
   verifier_command="ip link show br6 | awk '/link\\/ether/{print $2}' | "
                    "cmp -s - <(ip link show lan6 | awk '/link\\/ether/{print $2}')",
   expected_exit_code=0,
-  artifact_link="ansible/roles/covomv-network/templates/br6.j2",
+  artifact_link="ansible/roles/nas0-network/templates/br6.j2",
   last_verified=...,
   severity="high"
 )
@@ -296,10 +296,10 @@ ConfigurationAssertion(
 
 The harness runs the verifier on a schedule. If it fails, that's drift, and it goes into the reconciliation findings.
 
-### 5. Raw-passthrough partition (covomv.sda1 → PBS VM)
+### 5. Raw-passthrough partition (nas0.sda1 → PBS VM)
 
 NetBox can model:
-- `covomv.sda` as an `InventoryItem`
+- `nas0.sda` as an `InventoryItem`
 - `pbs-vm` as a `VirtualMachine`
 - A `VirtualDisk` on `pbs-vm`
 
@@ -307,18 +307,18 @@ What it can't model is "the storage backing that VirtualDisk is *this specific p
 
 Two reasonable options:
 
-- *Cheap:* custom field `VirtualDisk.cf_backing_block_device = "covomv:/dev/disk/by-partlabel/proxmox-bs"`. Free-text, the planner parses it.
+- *Cheap:* custom field `VirtualDisk.cf_backing_block_device = "nas0:/dev/disk/by-partlabel/proxmox-bs"`. Free-text, the planner parses it.
 - *Better:* a harness object `StorageBacking(virtual_disk, host, block_device, mode=raw|qcow2|nfs|...)` that the harness owns and updates from Proxmox API.
 
 The planner needs the second one if it's going to reason about "if I migrate pbs-vm, where does its storage have to go" — which is exactly the kind of question this lab's planner should answer.
 
-### 6. RAID-of-harvested-disks (covomv.md0)
+### 6. RAID-of-harvested-disks (nas0.md0)
 
 NetBox doesn't model software RAID arrays as relationships between sub-components of a single device. You can shove md0 into an `InventoryItem` with a description and lose the structure, or you can let the harness own it:
 
 ```python
 StorageVolume(
-  host="covomv",
+  host="nas0",
   name="md0",
   kind="mdadm-raid5",
   capacity_bytes=894 * GiB,
@@ -327,7 +327,7 @@ StorageVolume(
 )
 ```
 
-Combined with `PhysicalPart` + `Placement` history, you get the lineage knot for free: query `members[*].placement_history` and you see they used to live in pi-cp1/2/3.
+Combined with `PhysicalPart` + `Placement` history, you get the lineage knot for free: query `members[*].placement_history` and you see they used to live in cp1/2/3.
 
 ### 7. DNS split-brain
 
@@ -469,7 +469,7 @@ Most of these we've discussed in prior turns; bundling them here for completenes
 | ArgoCD + Git | declared application state (the 46 apps) | feed planner with "what should be running"; diff vs K8s API for drift |
 | UniFi controller | DNS records, DHCP leases, switch port config, VLAN assignments | populate internal DNS endpoints; verify cable terminations |
 | Cloudflare API | external DNS, ACME state | populate external endpoints; check cert expiry |
-| Kernel probes (SSH) | actual storage layout, RAID state, NIC offloads, SMART | ground truth that beats every management-plane DB (see covomv lesson) |
+| Kernel probes (SSH) | actual storage layout, RAID state, NIC offloads, SMART | ground truth that beats every management-plane DB (see nas0 lesson) |
 | ZFS/mdadm/LVM commands | array health, scrub state, resync progress | flowed in via kernel probes |
 | `dmidecode` | DIMM slot topology, board, BIOS | the only reliable source for memory layout |
 
@@ -483,18 +483,18 @@ What the harness produces from the inventory above on its first full run, withou
 
 ```
 [HIGH] CEPH-BOTTLENECK
-  bmax0 has the largest RAM allocation (64 GB) in the Proxmox cluster but
+  node0 has the largest RAM allocation (64 GB) in the Proxmox cluster but
   the lowest NIC speed (1 GbE). All other cluster members have ≥2.5 GbE.
   Ceph replication is bounded by the slowest peer.
   Options:
-    (a) Reweight CRUSH map to reduce bmax0's primary-OSD share.
+    (a) Reweight CRUSH map to reduce node0's primary-OSD share.
     (b) Add USB 2.5GbE NIC (~$25) dedicated to Ceph backend.
-    (c) Move OSD off bmax0; use as compute-only.
+    (c) Move OSD off node0; use as compute-only.
     (d) Accept the cap, document it.
 
 [HIGH] CONFIG-DRIFT-UNKNOWN
-  e1000e TX-hang workaround deployed on bmax1, bmax2, bmax3 (Intel I219-V).
-  bmax0 has the same NIC; workaround status unknown. Verify.
+  e1000e TX-hang workaround deployed on node1, node2, node3 (Intel I219-V).
+  node0 has the same NIC; workaround status unknown. Verify.
 
 [HIGH] OUTAGE-STALE
   Circuit "WAN2" has been status=offline for ≥60 days (since March 2026).
@@ -509,7 +509,7 @@ What the harness produces from the inventory above on its first full run, withou
   entire homelab is partitioned. Consider direct dorkcore→gateway uplink.
 
 [MEDIUM] INVENTORY-GAP
-  CPU model unknown for bmax1, bmax2, bmax3. Will be filled by next
+  CPU model unknown for node1, node2, node3. Will be filled by next
   credentialed discovery run; flagged for visibility.
 
 [MEDIUM] DISCOVERY-AGENTLESS-NEEDED
@@ -525,9 +525,9 @@ What the harness produces from the inventory above on its first full run, withou
 
 [LOW] PROVENANCE-PARTIAL
   PhysicalPart placements reconstructed from operator notes:
-    - bmax1.dimm_a/b: from bmax4 (verified by operator)
-    - bmax2.dimm_a:   from bmax5 (verified by operator)
-    - covomv.md0.member[0..2]: from pi-cp1/2/3 (verified by operator)
+    - node1.dimm_a/b: from node4 (verified by operator)
+    - node2.dimm_a:   from node5 (verified by operator)
+    - nas0.md0.member[0..2]: from cp1/2/3 (verified by operator)
   Earlier history unknown. Treat pre-current placement as low-confidence.
 ```
 
@@ -539,13 +539,13 @@ That's eight findings without an LLM in the loop. Add the LLM and you get readab
 
 Things the user-supplied data didn't pin down. Each gets filled by either discovery or a quick operator answer:
 
-1. **bmax1/2/3 CPU models** — first SSH probe resolves.
-2. **bmax0 e1000e workaround status** — first SSH probe resolves; this is a HIGH finding until verified.
+1. **node1/2/3 CPU models** — first SSH probe resolves.
+2. **node0 e1000e workaround status** — first SSH probe resolves; this is a HIGH finding until verified.
 3. **WAN2 outage status** — operator-only: is it being fixed, or should the harness recommend decommissioning?
-4. **pi-cp1/2/3 replacement USB SSD models/capacities** — discovery fills.
+4. **cp1/2/3 replacement USB SSD models/capacities** — discovery fills.
 5. **Specific AP models** (U6 Pro / U7 Pro / mesh variants) — UniFi adapter fills.
 6. **Mikrotik PTP radio model + firmware** — operator entry; no live source.
-7. **Are pi-cp1/2/3 Pi 4B 4GB or 8GB?** — listed as 4GB but worth confirming via probe.
+7. **Are cp1/2/3 Pi 4B 4GB or 8GB?** — listed as 4GB but worth confirming via probe.
 8. **Proxmox VM list beyond PBS** — Proxmox API fills.
 9. **Other ConfigurationAssertions in your head** — the 11 in §5 of the inventory are an excellent start, but there are almost certainly more captured only in shell history. A "tell me about this host" conversational extraction agent is one of the highest-value pieces of the eventual UI.
 

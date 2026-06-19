@@ -11,9 +11,9 @@ YAML schema (version 1)::
 
     version: 1
     assertions:
-      - name: bmax0.has_cpu_observation
-        host: bmax0                  # optional — sets scope=host, scope_target=<uuid>
-        description: bmax0 should have been observed by host.cpu
+      - name: node0.has_cpu_observation
+        host: node0                  # optional — sets scope=host, scope_target=<uuid>
+        description: node0 should have been observed by host.cpu
         rationale: Probe coverage gap means downstream planners run on stale info
         severity_on_fail: medium     # default: medium
         kind: observation-predicate  # default: observation-predicate

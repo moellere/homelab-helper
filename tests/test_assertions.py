@@ -51,8 +51,8 @@ def sessionmaker(engine):
     return make_sessionmaker(engine)
 
 
-async def _seed_host(s, hostname: str = "bmax0") -> Host:
-    h = Host(hostname=hostname, primary_ip="10.250.6.20")
+async def _seed_host(s, hostname: str = "node0") -> Host:
+    h = Host(hostname=hostname, primary_ip="10.0.6.20")
     s.add(h)
     await s.flush()
     return h
@@ -128,7 +128,7 @@ async def test_observation_predicate_passes_when_observed_matches(sessionmaker) 
     async with session_scope(sessionmaker) as s:
         host = await _seed_host(s)
         await _seed_observation(s, host, "host.cpu.cores", 8)
-        a = _make_assertion("bmax0.cores_eq_8", host, spec={"key": "host.cpu.cores", "value": 8})
+        a = _make_assertion("node0.cores_eq_8", host, spec={"key": "host.cpu.cores", "value": 8})
         s.add(a)
         await s.flush()
 
@@ -142,7 +142,7 @@ async def test_observation_predicate_fails_when_observed_differs(sessionmaker) -
     async with session_scope(sessionmaker) as s:
         host = await _seed_host(s)
         await _seed_observation(s, host, "host.cpu.cores", 4)
-        a = _make_assertion("bmax0.cores_eq_8", host, spec={"key": "host.cpu.cores", "value": 8})
+        a = _make_assertion("node0.cores_eq_8", host, spec={"key": "host.cpu.cores", "value": 8})
         s.add(a)
         await s.flush()
 

@@ -64,7 +64,7 @@ def patch_adapter(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 async def db_url_with_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Seed a file-backed SQLite with one host (bmax0)."""
+    """Seed a file-backed SQLite with one host (node0)."""
     db_path = tmp_path / "netbox.db"
     url = f"sqlite+aiosqlite:///{db_path}"
     monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
@@ -75,8 +75,8 @@ async def db_url_with_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> s
     async with session_scope(sm) as s:
         s.add(
             Host(
-                hostname="bmax0",
-                primary_ip="10.250.6.20",
+                hostname="node0",
+                primary_ip="10.0.6.20",
                 arch=Architecture.AMD64,
                 power_policy=PowerPolicy.ALWAYS_ON,
                 expected_power_state=PowerState.ON,
@@ -213,7 +213,7 @@ def test_netbox_sync_host_patches_existing_device(db_url_with_host: str, patch_a
                     "count": 1,
                     "next": None,
                     "previous": None,
-                    "results": [{"id": 99, "name": "bmax0"}],
+                    "results": [{"id": 99, "name": "node0"}],
                 },
             )
         if request.method == "PATCH":
@@ -221,12 +221,12 @@ def test_netbox_sync_host_patches_existing_device(db_url_with_host: str, patch_a
 
             seen["path"] = request.url.path
             seen["body"] = _json.loads(request.content)
-            return httpx.Response(200, json={"id": 99, "name": "bmax0"})
+            return httpx.Response(200, json={"id": 99, "name": "node0"})
         return httpx.Response(404)
 
     patch_adapter(handler)
     # --skip-inventory keeps this test focused on the CF push.
-    result = runner.invoke(app, ["netbox", "sync-host", "bmax0", "--skip-inventory"])
+    result = runner.invoke(app, ["netbox", "sync-host", "node0", "--skip-inventory"])
     assert result.exit_code == 0
     assert "synced" in result.stdout.lower()
     assert seen["path"] == "/api/dcim/devices/99/"
@@ -238,7 +238,7 @@ def test_netbox_sync_host_skips_when_device_missing(db_url_with_host: str, patch
         return httpx.Response(200, json={"count": 0, "next": None, "previous": None, "results": []})
 
     patch_adapter(handler)
-    result = runner.invoke(app, ["netbox", "sync-host", "bmax0"])
+    result = runner.invoke(app, ["netbox", "sync-host", "node0"])
     assert result.exit_code == 0  # tolerant, not an error
     assert "skipped" in result.stdout.lower()
     assert "Create the Device" in result.stdout
@@ -269,13 +269,13 @@ def test_netbox_sync_host_dry_run_does_not_patch(db_url_with_host: str, patch_ad
                     "count": 1,
                     "next": None,
                     "previous": None,
-                    "results": [{"id": 1, "name": "bmax0"}],
+                    "results": [{"id": 1, "name": "node0"}],
                 },
             )
         return httpx.Response(200, json={"id": 1})
 
     patch_adapter(handler)
-    result = runner.invoke(app, ["netbox", "sync-host", "bmax0", "--dry-run"])
+    result = runner.invoke(app, ["netbox", "sync-host", "node0", "--dry-run"])
     assert result.exit_code == 0
     assert "dry run" in result.stdout.lower()
     assert "PATCH" not in methods
@@ -313,7 +313,7 @@ def test_top_level_help_lists_netbox() -> None:
 
 @pytest.fixture
 async def db_url_with_host_and_dimm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Seed bmax0 with one open DIMM placement."""
+    """Seed node0 with one open DIMM placement."""
     db_path = tmp_path / "netbox-inv.db"
     url = f"sqlite+aiosqlite:///{db_path}"
     monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
@@ -322,7 +322,7 @@ async def db_url_with_host_and_dimm(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         await conn.run_sync(Base.metadata.create_all)
     sm = make_sessionmaker(engine)
     async with session_scope(sm) as s:
-        host = Host(hostname="bmax0", primary_ip="10.250.6.20")
+        host = Host(hostname="node0", primary_ip="10.0.6.20")
         s.add(host)
         await s.flush()
         part = PhysicalPart(
@@ -354,7 +354,7 @@ def test_sync_host_runs_both_passes_by_default(
                     "count": 1,
                     "next": None,
                     "previous": None,
-                    "results": [{"id": 7, "name": "bmax0"}],
+                    "results": [{"id": 7, "name": "node0"}],
                 },
             )
         if request.method == "PATCH" and path.startswith("/api/dcim/devices/"):
@@ -369,7 +369,7 @@ def test_sync_host_runs_both_passes_by_default(
         return httpx.Response(404)
 
     patch_adapter(handler)
-    result = runner.invoke(app, ["netbox", "sync-host", "bmax0"])
+    result = runner.invoke(app, ["netbox", "sync-host", "node0"])
     assert result.exit_code == 0
     # Both passes ran: a PATCH on the device + a POST on inventory-items.
     assert "PATCH" in seen_methods
@@ -390,13 +390,13 @@ def test_sync_host_skip_inventory(db_url_with_host_and_dimm: str, patch_adapter)
                     "count": 1,
                     "next": None,
                     "previous": None,
-                    "results": [{"id": 7, "name": "bmax0"}],
+                    "results": [{"id": 7, "name": "node0"}],
                 },
             )
         return httpx.Response(200, json={"id": 7})
 
     patch_adapter(handler)
-    result = runner.invoke(app, ["netbox", "sync-host", "bmax0", "--skip-inventory"])
+    result = runner.invoke(app, ["netbox", "sync-host", "node0", "--skip-inventory"])
     assert result.exit_code == 0
     # Should never hit the inventory-items endpoint.
     assert all("inventory-items" not in p for p in seen_paths)
@@ -414,7 +414,7 @@ def test_sync_host_skip_fields(db_url_with_host_and_dimm: str, patch_adapter) ->
                     "count": 1,
                     "next": None,
                     "previous": None,
-                    "results": [{"id": 7, "name": "bmax0"}],
+                    "results": [{"id": 7, "name": "node0"}],
                 },
             )
         if request.method == "GET" and request.url.path == "/api/dcim/inventory-items/":
@@ -427,7 +427,7 @@ def test_sync_host_skip_fields(db_url_with_host_and_dimm: str, patch_adapter) ->
         return httpx.Response(404)
 
     patch_adapter(handler)
-    result = runner.invoke(app, ["netbox", "sync-host", "bmax0", "--skip-fields"])
+    result = runner.invoke(app, ["netbox", "sync-host", "node0", "--skip-fields"])
     assert result.exit_code == 0
     # No Device PATCH was issued.
     assert not any(m == "PATCH" and p.startswith("/api/dcim/devices/") for m, p in methods)
@@ -447,7 +447,7 @@ def test_sync_host_dry_run_makes_no_writes(db_url_with_host_and_dimm: str, patch
                     "count": 1,
                     "next": None,
                     "previous": None,
-                    "results": [{"id": 7, "name": "bmax0"}],
+                    "results": [{"id": 7, "name": "node0"}],
                 },
             )
         if request.method == "GET" and request.url.path == "/api/dcim/inventory-items/":
@@ -458,7 +458,7 @@ def test_sync_host_dry_run_makes_no_writes(db_url_with_host_and_dimm: str, patch
         return httpx.Response(404)
 
     patch_adapter(handler)
-    result = runner.invoke(app, ["netbox", "sync-host", "bmax0", "--dry-run"])
+    result = runner.invoke(app, ["netbox", "sync-host", "node0", "--dry-run"])
     assert result.exit_code == 0
     assert "dry run" in result.stdout.lower()
     # No writes — neither device PATCH nor inventory POST.

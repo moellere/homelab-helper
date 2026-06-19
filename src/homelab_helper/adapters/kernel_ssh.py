@@ -5,7 +5,7 @@ Sessions are context-managed:
 .. code-block:: python
 
     adapter = KernelSSHAdapter()
-    async with adapter.session(host="bmax3", user="root", key_path=Path("~/.ssh/id_ed25519")) as ssh:
+    async with adapter.session(host="node3", user="root", key_path=Path("~/.ssh/id_ed25519")) as ssh:
         result = await ssh.run("hostname")
         os_release = await ssh.cat("/etc/os-release")
 
@@ -16,7 +16,7 @@ without opening or closing per-call:
 
 .. code-block:: python
 
-    async with adapter.shared_session("bmax3", user="root", key_path=...):
+    async with adapter.shared_session("node3", user="root", key_path=...):
         for probe in batch:
             await probe.run(...)        # each probe's adapter.session() reuses the same conn
 

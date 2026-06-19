@@ -10,20 +10,29 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
 from rich.table import Table
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
+from homelab_helper.adapters.talos import TalosAdapter
 from homelab_helper.cli._probe_sync import sync_probes_sync
+from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.reconciler import Reconciler
 from homelab_helper.engine.runner import ProbeRunner
+from homelab_helper.engine.scan_import import (
+    ProbeStrategy,
+    ScanImporter,
+    classify,
+    parse_scan_csv,
+)
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
 from homelab_helper.probes.network.fingerprint import NetworkFingerprintProbe
 from homelab_helper.probes.network.subnet_scan import NetworkSubnetScanProbe
@@ -50,10 +59,20 @@ def _database_url() -> str:
 
 
 async def _resolve_host(session: AsyncSession, name: str, primary_ip: str | None) -> Host:
-    """Find an existing Host by hostname; create one if missing."""
+    """Find an existing Host by hostname *or* primary_ip; create one if missing.
+
+    Matching by IP as well as name keeps a probe run (which may pass a short
+    name) from duplicating a row another source created under a different label
+    — e.g. the scan importer storing an FQDN. First-created row wins on ties.
+    """
+    conditions = [Host.hostname == name]
+    if primary_ip:
+        conditions.append(Host.primary_ip == primary_ip)
     existing: Host | None = (
-        await session.execute(select(Host).where(Host.hostname == name))
-    ).scalar_one_or_none()
+        (await session.execute(select(Host).where(or_(*conditions)).order_by(Host.created_at)))
+        .scalars()
+        .first()
+    )
     if existing is not None:
         if primary_ip and not existing.primary_ip:
             existing.primary_ip = primary_ip
@@ -76,6 +95,12 @@ def _resolve_probes(filter_names: list[str] | None) -> list[type[Probe]]:
             chosen.append(available[n])
         return chosen
     return [cls for cls in available.values() if "host" in cls.target_kinds]
+
+
+def _mark_kernel_probed(host: Host, observations: int) -> None:
+    """Flag a directly-probed host so the scan importer treats it as covered."""
+    if observations > 0:
+        host.discovery_source = DiscoverySource.KERNEL_PROBE
 
 
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
@@ -203,6 +228,8 @@ def discover_host(
                     console.print(f"[red]could not establish SSH session:[/red] {exc}")
                     failures += 1
 
+                _mark_kernel_probed(host, total_observations)
+
                 # Reconcile from whatever observations landed (partial runs are
                 # worth applying). reconcile_host is idempotent.
                 await _reconcile_and_report(session, host.id)
@@ -217,6 +244,154 @@ def discover_host(
 
     exit_code = asyncio.run(_go())
     raise typer.Exit(code=exit_code)
+
+
+@discover_app.command(name="talos")
+def discover_talos(
+    name: str = typer.Argument(..., help="Node name (NetBox/DB hostname) of the Talos node."),
+    node: str | None = typer.Option(
+        None, "--node", "-N", help="Talos API endpoint/IP. Defaults to NAME."
+    ),
+    talosconfig: Path | None = typer.Option(
+        None, "--talosconfig", help="Path to a talosconfig (default: talosctl's own).", exists=False
+    ),
+    probe_names: list[str] | None = typer.Option(
+        None, "--probe", help="Restrict to these probe names. Default: every talos probe."
+    ),
+    no_sync: bool = typer.Option(False, "--no-sync", help="Skip the probe-entry-point sync."),
+) -> None:
+    """Discover a Talos Linux node over the machine API (no SSH)."""
+    if not no_sync:
+        console.print("[dim]syncing probe entry points...[/dim]")
+        sync_probes_sync(_database_url())
+
+    available = discover_probes()
+    if probe_names:
+        probe_classes: list[type[Probe]] = []
+        for n in probe_names:
+            if n not in available:
+                console.print(f"[red]unknown probe:[/red] {n}")
+                raise typer.Exit(code=2)
+            probe_classes.append(available[n])
+    else:
+        probe_classes = [cls for cls in available.values() if "talos" in cls.target_kinds]
+    if not probe_classes:
+        console.print("[red]error:[/red] no talos probes matched the filter.")
+        raise typer.Exit(code=2)
+
+    talos_adapter = TalosAdapter(talosconfig=str(talosconfig) if talosconfig else None)
+    runner = ProbeRunner(AdapterRegistry({"talos": talos_adapter}))
+
+    async def _go() -> int:
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            total_observations = 0
+            failures = 0
+            async with session_scope(sm) as session:
+                host = await _resolve_host(session, name, node)
+                api_node = node or host.primary_ip or host.hostname or name
+
+                ok, err = await talos_adapter.health_check(api_node)
+                if not ok:
+                    console.print(f"[red]talos node {api_node} unreachable:[/red] {err}")
+                    failures += 1
+                else:
+                    target = ProbeTarget(
+                        kind="talos",
+                        host_id=str(host.id),
+                        hostname=host.hostname,
+                        primary_ip=host.primary_ip or api_node,
+                    )
+                    for cls in probe_classes:
+                        probe = cls()
+                        console.print(f"[cyan]→ {probe.name}[/cyan] v{probe.version}")
+                        _run_row, result = await runner.run(
+                            probe, target, session, host_id=host.id, triggered_by="manual"
+                        )
+                        if result.success:
+                            n = len(result.observations)
+                            total_observations += n
+                            console.print(f"  [green]ok[/green] - {n} observation(s)")
+                        else:
+                            failures += 1
+                            console.print(f"  [red]failed[/red] - {result.error}")
+
+                    _mark_kernel_probed(host, total_observations)
+
+                await _reconcile_and_report(session, host.id)
+
+            console.print(
+                f"\nrun complete: [bold]{total_observations}[/bold] observation(s), "
+                f"[bold]{failures}[/bold] failure(s)"
+            )
+            return 0 if failures == 0 else 1
+        finally:
+            await engine.dispose()
+
+    exit_code = asyncio.run(_go())
+    raise typer.Exit(code=exit_code)
+
+
+@discover_app.command(name="import")
+def discover_import(
+    csv_path: Path = typer.Argument(..., help="Path to a host-scan CSV.", exists=True),
+    source_label: str = typer.Option(
+        "network-scan", "--source", help="Provenance label stored on imported hosts."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Parse + classify and print the plan without writing."
+    ),
+) -> None:
+    """Ingest an external host-scan CSV: upsert hosts + agentless coverage findings."""
+    rows = parse_scan_csv(csv_path.read_text())
+    if not rows:
+        console.print("[yellow]no rows parsed from CSV[/yellow]")
+        raise typer.Exit(code=1)
+
+    by_strategy: dict[ProbeStrategy, int] = {}
+    for r in rows:
+        s = classify(r)
+        by_strategy[s] = by_strategy.get(s, 0) + 1
+
+    table = Table(title=f"scan import: {len(rows)} host(s)")
+    table.add_column("strategy")
+    table.add_column("count", justify="right")
+    for strat in ProbeStrategy:
+        table.add_row(strat.value, str(by_strategy.get(strat, 0)))
+    console.print(table)
+
+    if dry_run:
+        console.print("[dim]dry-run — no rows written.[/dim]")
+        ssh_pending = [r for r in rows if classify(r) is ProbeStrategy.SSH]
+        console.print(
+            f"[cyan]{len(ssh_pending)}[/cyan] SSH-probeable host(s) ready for deep probe."
+        )
+        return
+
+    async def _go() -> int:
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                result = await ScanImporter().import_rows(
+                    session, rows, when=datetime.now(UTC), source_label=source_label
+                )
+            console.print(
+                f"\n[green]imported[/green]: {result.hosts_created} host(s) created, "
+                f"{result.hosts_updated} updated"
+            )
+            console.print(
+                f"[cyan]agentless findings[/cyan]: {len(result.findings_opened)} opened, "
+                f"{len(result.findings_reseen)} re-seen, "
+                f"{len(result.findings_resolved)} resolved (now deep-probed), "
+                f"{result.already_probed_skipped} covered hosts skipped"
+            )
+            return 0
+        finally:
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
 
 
 @discover_app.command(name="show")
@@ -279,7 +454,7 @@ def _parse_ports(raw: str | None) -> tuple[int, ...] | None:
 
 @discover_app.command(name="network")
 def discover_network(
-    cidr: str = typer.Argument(..., help="Network range to scan, e.g. 10.250.6.0/24."),
+    cidr: str = typer.Argument(..., help="Network range to scan, e.g. 10.0.6.0/24."),
     ports: str | None = typer.Option(
         None,
         "--ports",

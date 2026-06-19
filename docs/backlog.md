@@ -55,7 +55,9 @@ The rest of Phase 1, and all of Phase 6, is below.
 ### P1 — needed for the acceptance criteria
 
 - [x] **NetBoxAdapter — first slice** (`adapters/netbox.py`): httpx-based async client; Device CRUD (list / get-by-name / update); custom-field CRUD (list / create); pagination; `Authorization: Token` auth; config via `HOMELAB_HELPER_NETBOX_URL` + `HOMELAB_HELPER_NETBOX_TOKEN` env vars; structured `NetBoxAPIError` carrying status + method + path. `sync_host(host)` PATCHes a Device's custom fields by hostname match (won't create Devices — schema doc invariant: NetBox owns canonical inventory facts, harness owns CF values). _Unblocks AC1/AC2's NetBox push (partial — Device CF surface only)._
-  - [ ] Interfaces / IPs / VLANs / Prefixes / Clusters / VMs / Services CRUD
+  - [x] **Clusters + VirtualMachines CRUD** + `sync_cluster_vms` (Phase-3
+    virtualization slice; create+update only, never reaps operator VMs)
+  - [ ] Interfaces / IPs / VLANs / Prefixes / Services CRUD
   - [x] **InventoryItem CRUD + reconciler write path**: list / create / update / delete via `/api/dcim/inventory-items/`; `sync_inventory_items(device_id, placements)` diffs against existing `discovered=True` items (slot label = diff key) and applies create/update/delete. `helper netbox sync-host` now runs both passes by default (`--skip-fields` / `--skip-inventory` for either alone). Human-edited InventoryItems are invisible to the sync because the list query passes `discovered=true` — sync never reaps an operator's hand-entered row.
   - [ ] `NETBOX_DIVERGENCE` finding on hand-edit conflict (skip write, never overwrite)
 - [x] **NetBox bootstrap** — `bootstrap_custom_fields()` adapter method + `helper netbox bootstrap [--dry-run]` CLI verb. Idempotent: lists existing CFs first, creates only what's missing; re-running after upstream NetBox upgrades is safe. Ships 10 Device CFs (power policy/state, discovery source/last-run, last-verified, capabilities, arch, hypervisor type, idle/max power draw). Schema doc open-question #4 resolved in favour of bootstrap.
@@ -83,6 +85,15 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Discovery sources & probes (landed)
 
+- [x] **Proxmox adapter** (`adapters/proxmox.py` + `helper discover proxmox`) —
+  first management-plane source (Phase 3): read-only Proxmox VE REST client
+  (API-token auth, injectable for tests), reads cluster status + VM/LXC + node +
+  storage. `helper discover proxmox [--netbox-sync [--dry-run]]` displays the
+  cluster's guests and optionally proposes them into an existing NetBox cluster
+  via `sync_cluster_vms`. Read-only at L1 (no mutate methods). Validation note:
+  parser shapes grounded against a live cluster via `pvesh`; the HTTP path needs
+  an API token to exercise live (mocked in tests). _Down-payment on Phase-3
+  multi-source precedence — kernel-probe vs management-plane for the same host._
 - [x] **Talos adapter** (`adapters/talos.py` + `probes/talos/host.py` +
   `helper discover talos`) — `talosctl`-subprocess adapter (injectable runner
   for tests) + a `talos.host` probe that pulls COSI resources (`nodename`,

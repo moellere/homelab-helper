@@ -25,6 +25,7 @@ from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
 from homelab_helper.engine.reconciler import Reconciler
 from homelab_helper.engine.runner import ProbeRunner
 from homelab_helper.engine.scan_import import (
@@ -387,6 +388,35 @@ def discover_import(
                 f"{len(result.findings_resolved)} resolved (now deep-probed), "
                 f"{result.already_probed_skipped} covered hosts skipped"
             )
+            return 0
+        finally:
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="replay")
+def discover_replay(
+    fixture: Path = typer.Argument(..., help="Path to a lab-replay YAML fixture.", exists=True),
+    no_assert: bool = typer.Option(
+        False, "--no-assert", help="Skip the fixture's bundled assertion library."
+    ),
+) -> None:
+    """Replay a synthetic lab fixture (hosts + observations) — no live access."""
+    data = parse_lab_fixture(fixture.read_text())
+
+    async def _go() -> int:
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                result = await load_lab_fixture(session, data, run_assertions=not no_assert)
+            console.print(
+                f"[green]replayed[/green]: {result.hosts_loaded} host(s), "
+                f"{result.observations_loaded} observation(s), "
+                f"{result.assertions_loaded} assertion(s) loaded / {result.assertions_run} run"
+            )
+            console.print("Run [bold]helper audit[/bold] to see the resulting findings.")
             return 0
         finally:
             await engine.dispose()

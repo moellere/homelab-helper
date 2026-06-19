@@ -102,7 +102,20 @@ async def load_library(
     created/updated/skipped buckets so the operator can preview the diff.
     """
     text = path.read_text()  # noqa: ASYNC240 — one-off small config file
-    entries = parse_library_yaml(text)
+    return await load_library_entries(session, parse_library_yaml(text), dry_run=dry_run)
+
+
+async def load_library_entries(
+    session: AsyncSession,
+    entries: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+) -> LoadResult:
+    """Upsert ConfigurationAssertion rows from already-parsed entries.
+
+    The on-disk path (:func:`load_library`) and bundled-in-fixture callers
+    (lab replay) share this so the schema + idempotency rules stay identical.
+    """
     result = LoadResult()
     for entry in entries:
         await _load_one(session, entry, result, dry_run=dry_run)
@@ -154,6 +167,14 @@ def _build_fields(
     if not isinstance(spec, dict) or not spec:
         result.skipped.append((name, "missing or empty 'verifier_spec'"))
         return None
+    arch = entry.get("arch")
+    if arch is not None:
+        if not isinstance(arch, list) or not all(isinstance(a, str) for a in arch):
+            result.skipped.append((name, "'arch' must be a list of architecture strings"))
+            return None
+        # Fold into verifier_spec so no new DB column is needed; the engine
+        # SKIPs the assertion on hosts whose arch isn't listed.
+        spec = {**spec, "applies_to_arch": arch}
     description = entry.get("description")
     if not isinstance(description, str) or not description:
         result.skipped.append((name, "missing 'description'"))
@@ -229,4 +250,10 @@ def _matches(existing: ConfigurationAssertion, fields: dict[str, Any]) -> bool:
     return all(getattr(existing, attr) == value for attr, value in fields.items())
 
 
-__all__ = ["LibraryError", "LoadResult", "load_library", "parse_library_yaml"]
+__all__ = [
+    "LibraryError",
+    "LoadResult",
+    "load_library",
+    "load_library_entries",
+    "parse_library_yaml",
+]

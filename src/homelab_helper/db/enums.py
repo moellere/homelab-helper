@@ -41,7 +41,7 @@ class Architecture(StrEnum):
 
 
 # ---------------------------------------------------------------------------
-# Power policy & state (the bmax4/5 "expected-off" pattern, generalized)
+# Power policy & state (the node4/5 "expected-off" pattern, generalized)
 # ---------------------------------------------------------------------------
 
 
@@ -187,7 +187,7 @@ class AssertionStatus(StrEnum):
 class FindingKind(StrEnum):
     """Classification of what's wrong (or merely interesting).
 
-    The starter corpus comes from the dorktool day-one audit; new kinds
+    The starter corpus comes from the example day-one audit; new kinds
     accumulate as the reconciler grows.
     """
 

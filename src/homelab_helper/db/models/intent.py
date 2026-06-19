@@ -4,7 +4,7 @@ One current intent per ``(target_type, target_id)`` pair. Updating intent
 overwrites; if you want history, query ``ProposalLog`` for intent-change
 proposals.
 
-The reconciler uses this to suppress findings (the bmax2 stopped-VMs case),
+The reconciler uses this to suppress findings (the node2 stopped-VMs case),
 and to recognize the WAN2 ``STRAY`` case as "this was never real."
 """
 

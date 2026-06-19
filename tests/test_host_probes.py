@@ -67,9 +67,9 @@ def test_parse_cache_bytes_kib_mib_and_instances() -> None:
 
 
 def test_parse_proc_cpuinfo_first_block() -> None:
-    raw = "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Intel i5-8260U\n\nprocessor\t: 1\n"
+    raw = "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Example CPU\n\nprocessor\t: 1\n"
     parsed = parse_proc_cpuinfo(raw)
-    assert parsed["model name"] == "Intel i5-8260U"
+    assert parsed["model name"] == "Example CPU"
     assert parsed["vendor_id"] == "GenuineIntel"
 
 
@@ -77,7 +77,7 @@ def test_build_output_combines_lscpu_and_cpuinfo() -> None:
     lscpu = {
         "Architecture": "x86_64",
         "Vendor ID": "GenuineIntel",
-        "Model name": "Intel(R) Core(TM) i5-8260U @ 1.60GHz",
+        "Model name": "Example CPU @ 1.60GHz",
         "Socket(s)": "1",
         "Core(s) per socket": "4",
         "Thread(s) per core": "2",
@@ -87,7 +87,7 @@ def test_build_output_combines_lscpu_and_cpuinfo() -> None:
     }
     out = build_output(lscpu, {})
     assert isinstance(out, HostCpuOutput)
-    assert "i5-8260U" in (out.model or "")
+    assert "Example CPU" in (out.model or "")
     assert out.cores == 4
     assert out.threads == 8
     assert out.threads_per_core == 2
@@ -128,7 +128,7 @@ def test_parse_ip_link_show_drops_loopback_and_merges_addresses() -> None:
             {
                 "ifname": "eth0",
                 "addr_info": [
-                    {"family": "inet", "local": "10.250.6.20", "prefixlen": 23},
+                    {"family": "inet", "local": "10.0.6.20", "prefixlen": 23},
                     {"family": "inet6", "local": "fe80::1", "prefixlen": 64},
                 ],
             }

@@ -63,13 +63,13 @@ def test_fingerprint_is_deterministic_and_short() -> None:
 
     from homelab_helper.engine.fingerprint import make_fingerprint
 
-    fp1 = make_fingerprint("config-drift", "host", "bmax0", "e1000e-offload-disabled")
-    fp2 = make_fingerprint("config-drift", "host", "bmax0", "e1000e-offload-disabled")
+    fp1 = make_fingerprint("config-drift", "host", "node0", "e1000e-offload-disabled")
+    fp2 = make_fingerprint("config-drift", "host", "node0", "e1000e-offload-disabled")
     assert fp1 == fp2
     assert len(fp1) == 16
     assert all(c in "0123456789abcdef" for c in fp1)
 
-    fp_other = make_fingerprint("config-drift", "host", "bmax1", "e1000e-offload-disabled")
+    fp_other = make_fingerprint("config-drift", "host", "node1", "e1000e-offload-disabled")
     assert fp_other != fp1
 
 

@@ -1,7 +1,7 @@
 """ConfigurationAssertion + AssertionRun.
 
 The assertion library is the seed corpus of "things we know should be true."
-The 16 assertions from the dorktool walkthrough are the starter pack;
+The 16 assertions from the example walkthrough are the starter pack;
 the framework auto-runs verifiers on a schedule (P2) and on demand (P1).
 
 AssertionRun is append-only; the latest row per assertion is the "current
@@ -35,7 +35,7 @@ class ConfigurationAssertion(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
     name: Mapped[str] = mapped_column(String(255), unique=True)
-    # "covomv.br6.mac_pinned", "bmax-fleet.e1000e-offload-disabled"
+    # "nas0.br6.mac_pinned", "node-fleet.e1000e-offload-disabled"
 
     scope: Mapped[AssertionScope] = mapped_column(SAEnum(AssertionScope))
     scope_target: Mapped[str | None] = mapped_column(String(255))

@@ -2,7 +2,7 @@
 
 To run, set:
 
-    HOMELAB_TEST_SSH_HOST=bmax3
+    HOMELAB_TEST_SSH_HOST=node3
     HOMELAB_TEST_SSH_USER=root
     HOMELAB_TEST_SSH_KEY=~/.ssh/id_ed25519     # optional
     HOMELAB_TEST_SSH_PASSWORD=...              # optional

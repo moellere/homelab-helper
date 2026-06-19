@@ -31,6 +31,7 @@ dependencies = [
     "asyncssh>=2.14.2",
     "uuid6>=2024.7.10",
     "python-dotenv>=1.0.1",
+    "pyyaml>=6.0.1",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +49,10 @@ helper = "homelab_helper.cli.main:app"
 "host.network"  = "homelab_helper.probes.host.network:HostNetworkProbe"
 "host.storage"  = "homelab_helper.probes.host.storage:HostStorageProbe"
 "host.services" = "homelab_helper.probes.host.services:HostServicesProbe"
+"host.smart"    = "homelab_helper.probes.host.smart:HostSmartProbe"
+"talos.host"    = "homelab_helper.probes.talos.host:TalosHostProbe"
+"network.subnet-scan" = "homelab_helper.probes.network.subnet_scan:NetworkSubnetScanProbe"
+"network.fingerprint" = "homelab_helper.probes.network.fingerprint:NetworkFingerprintProbe"
 
 [project.urls]
 Homepage = "https://github.com/enochroot/homelab-helper"
@@ -99,9 +104,14 @@ ignore = [
 # kernel_ssh exposes timeout= as ergonomic config, not a structured-concurrency
 # escape hatch. Suppress ASYNC109 here.
 "src/homelab_helper/adapters/kernel_ssh.py" = ["ASYNC109"]
+# Same rationale for the talos adapter: timeout= is per-call config passed
+# through to the talosctl subprocess wrapper.
+"src/homelab_helper/adapters/talos.py" = ["ASYNC109"]
 # Typer commands legitimately call typer.Option/typer.Argument in defaults (B008)
-# and need Path at runtime for parameter resolution (TC003).
-"src/homelab_helper/cli/*" = ["B008", "TC003"]
+# and need Path at runtime for parameter resolution (TC003). Command handlers
+# also inline arg validation + an async _go() + reporting, so they run long
+# (PLR0915) without being genuinely complex.
+"src/homelab_helper/cli/*" = ["B008", "TC003", "PLR0915"]
 
 [tool.ruff.format]
 quote-style = "double"

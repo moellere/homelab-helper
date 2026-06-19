@@ -40,33 +40,113 @@ The rest of Phase 1, and all of Phase 6, is below.
   - [x] Latest-observation-per-key precedence (single-source; multi-source lands with non-SSH probes)
   - [x] Host-field idempotency: re-run is a no-op (returns empty deltas)
   - [x] CLI wiring: `helper discover host` invokes the reconciler after the probe batch
-  - [x] Replay-style test pattern (in-process fixtures); migrates to YAML when dorktool fixture lands
+  - [x] Replay-style test pattern (in-process fixtures); migrates to YAML when example fixture lands
   - [x] `transform` hook on `HostProjectionRule` (raw observation value → typed column domain) + `normalize_arch` mapper
   - [x] `host.cpu.*` slice: `host.cpu.architecture` → `Host.arch` (typed); model, vendor, sockets, cores, threads, threads_per_core, freq, cache, flags, interesting_flags → capabilities (`cpu_*` keys)
-  - [ ] `host.memory.*` slice + DIMM `PhysicalPart` / `Placement` lineage (open/close, append-only)
-  - [ ] `host.storage.*` slice + storage device `PhysicalPart` / `Placement` lineage
-  - [ ] `host.network.*` slice + NIC `PhysicalPart` / `Placement` lineage
+  - [x] `host.memory.*` slice (totals only): mem/swap/hugepage totals from `/proc/meminfo` → capabilities. DIMM-level keys land with the lineage slice below as first-class rows, not capabilities.
+  - [x] DIMM `PhysicalPart` / `Placement` lineage: `host.memory.dimms` observation contract (list of populated-slot dicts) → serial-keyed `PhysicalPart` upsert with field enrichment; append-only `Placement` open/close; cross-host move closes prior placement; DIMMs without serial counted in `parts_skipped_no_identity`; no-DIMM-observation safety (doesn't close existing placements). Future dmidecode-driven probe will emit the observation contract.
+  - [x] `host.storage.*` slice: scalar projections (`disk_count`, `disk_names`, `total_disk_bytes` → capabilities) + per-device `PhysicalPart` / `Placement` lineage from `host.storage.devices`. WWN-preferred / serial-fallback identity (USB enclosures forge serials); kind dispatched per-device (NVMe/SSD/HDD/OTHER) with reclassification on better evidence; partitions/LVM/RAID ignored. Kind-filtered close-loop prevents DIMM reconcile from disturbing storage placements (latent bug fix landed in this slice).
+  - [x] `host.network.*` slice: scalar projections (`network_interface_count`, `network_interface_names` → capabilities) + NIC `PhysicalPart` / `Placement` lineage from `host.network.interfaces`. MAC-keyed (lowercased into the `serial` column); virtual interfaces filtered by name prefix and counted in `parts_skipped_filtered` (distinct from `parts_skipped_no_identity`); slot is the kernel interface name. Cross-kind regression tests confirm storage reconcile doesn't disturb NIC placements (and vice versa). Future probe version emitting PCI addresses can replace the prefix heuristic with a positive has-PCI-backing test.
   - [ ] Multi-source precedence rules: kernel beats management-plane, verified beats inferred (lands with first non-SSH source)
-  - [ ] Finding generation with deterministic fingerprint dedup (wire in `FingerprintGenerator`)
-  - [ ] Finding-level idempotency: re-runs update `last_seen`, don't duplicate (AC4)
+  - [x] Finding generation with deterministic fingerprint dedup: `INVENTORY_GAP` emitted per skipped part (DIMM no serial, storage no WWN+serial, NIC no MAC); fingerprint = `sha256(kind|host|root-cause)[:16]`; idempotent re-run hits the same row and bumps `last_seen`.
+  - [x] Finding-level idempotency: re-runs update `last_seen`, don't duplicate (AC4). Plus auto-resolve when a previously-flagged condition clears, scoped per-category so an absent observation never silently auto-resolves findings of that category. Resolved findings reopen with the same fingerprint when the condition recurs.
   - _Unblocks AC2, AC3, AC4. Expect to rewrite parts of it twice (per roadmap risk note); build the replay test fixture alongside it._
 
 ### P1 — needed for the acceptance criteria
 
-- [ ] **NetBoxAdapter** (`adapters/netbox.py`) — read+write Devices, Interfaces, IPs, VLANs, Prefixes, Clusters, VMs, Services, InventoryItems, custom fields
-  - [ ] Reconciler write path: custom fields + InventoryItems mirror current Placements
+- [x] **NetBoxAdapter — first slice** (`adapters/netbox.py`): httpx-based async client; Device CRUD (list / get-by-name / update); custom-field CRUD (list / create); pagination; `Authorization: Token` auth; config via `HOMELAB_HELPER_NETBOX_URL` + `HOMELAB_HELPER_NETBOX_TOKEN` env vars; structured `NetBoxAPIError` carrying status + method + path. `sync_host(host)` PATCHes a Device's custom fields by hostname match (won't create Devices — schema doc invariant: NetBox owns canonical inventory facts, harness owns CF values). _Unblocks AC1/AC2's NetBox push (partial — Device CF surface only)._
+  - [ ] Interfaces / IPs / VLANs / Prefixes / Clusters / VMs / Services CRUD
+  - [x] **InventoryItem CRUD + reconciler write path**: list / create / update / delete via `/api/dcim/inventory-items/`; `sync_inventory_items(device_id, placements)` diffs against existing `discovered=True` items (slot label = diff key) and applies create/update/delete. `helper netbox sync-host` now runs both passes by default (`--skip-fields` / `--skip-inventory` for either alone). Human-edited InventoryItems are invisible to the sync because the list query passes `discovered=true` — sync never reaps an operator's hand-entered row.
   - [ ] `NETBOX_DIVERGENCE` finding on hand-edit conflict (skip write, never overwrite)
-  - _Unblocks AC1, AC2._
-- [ ] **NetBox bootstrap** (`helper netbox bootstrap`) — create the harness `cf_*` custom fields via the NetBox API on first run. _Open question #4 in the schema doc resolved in favour of bootstrap over manual setup._
-- [ ] **AssertionEngine** (`engine/assertions.py`, one-shot mode) — run verifiers, write `AssertionRun` rows, emit findings on failure. _Unblocks AC3._
-- [ ] **Network probes** — `network.subnet-scan` and `network.fingerprint` (asyncio TCP, no nmap dependency; fingerprint Proxmox/Cockpit/K8s API/web servers). _Unblocks AC1._
+- [x] **NetBox bootstrap** — `bootstrap_custom_fields()` adapter method + `helper netbox bootstrap [--dry-run]` CLI verb. Idempotent: lists existing CFs first, creates only what's missing; re-running after upstream NetBox upgrades is safe. Ships 10 Device CFs (power policy/state, discovery source/last-run, last-verified, capabilities, arch, hypervisor type, idle/max power draw). Schema doc open-question #4 resolved in favour of bootstrap.
+- [x] **AssertionEngine** (`engine/assertions.py`, one-shot mode) — verifier dispatch (`OBSERVATION_PREDICATE` fully wired; `SSH_COMMAND`/`HTTP_CHECK`/`API_QUERY`/`FILE_HASH` SKIP with a clear reason until their adapter slices land), `AssertionRun` rows persisted, `CONFIG_DRIFT` finding lifecycle on FAIL (deterministic fingerprint dedup, reopen-on-recurrence) and auto-resolve on PASS. CLI: `helper assert list|show|run` with `--name` / `--all` / `--include-disabled`, non-zero exit on FAIL/ERROR for CI gating.
+- [x] **Seed assertion library** (`engine/assertion_library.py` + `fixtures/assertion-library-starter.yaml`) — YAML schema (v1) + idempotent upsert-by-name loader; `helper assert load <path> [--dry-run]` verb. Starter pack ships 14 generic assertions across four categories (probe coverage, sane baselines, architecture/capability, network basics) that exercise the OBSERVATION_PREDICATE verifier against keys the existing probes produce. Hostname references resolve to Host UUIDs at load time; missing hosts skip with a clear reason rather than erroring (tolerant by design — land the library, discover hosts, re-load). _Combined with the reconciler's INVENTORY_GAP findings, `helper audit` now reports the day-one finding corpus once a fleet is seeded — partial AC3._
+- [x] **Network probes** — `network.subnet-scan` (asyncio TCP connect-scan against a configurable port panel, bounded concurrency, no nmap/no raw sockets) and `network.fingerprint` (SSH banner + HTTP `Server` header + port heuristic; identifies Proxmox VE, Cockpit, K8s API). Probes wired through the existing SDK + entry-points. _Unblocks AC1. NetBox push still pending the adapter slice._
 - [ ] **CLI verbs**:
-  - [ ] `helper discover network <cidr>` (wire the network probes) — AC1
-  - [ ] `helper audit` — AC3
-  - [ ] `helper findings [show|ack|resolve|suppress]`
-  - [ ] `helper host show <name>`
+  - [x] `helper discover network <cidr> [--ports a,b,c] [--timeout SECS] [--concurrency N] [--no-fingerprint]` — runs subnet-scan, fingerprints each discovered host on its observed open ports, prints the result table. Persists observations through the existing ProbeRunner.
+  - [x] `helper audit` — high-level roll-up (inventory counts, severity × status crosstab, top-N open findings) — AC3 read-side
+  - [x] `helper findings list|show|ack|resolve|suppress` — fingerprint-prefix matching everywhere; status/severity/kind/host filters on list
+  - [x] `helper host show <name>` — identity + capabilities (grouped by prefix) + current placements + open findings table
   - [ ] `helper config`
-- [ ] **dorktool integration fixture** — `fixtures/dorktool.yaml` loading the real lab; replayable, CI-friendly; the day-one audit runs as an integration test producing the 11–16 findings. _Unblocks the AC3/AC4 demonstration._
+- [ ] **Replayable lab fixture** — capture a fleet's observations (hosts +
+  observations + parts + placements) into YAML the reconciler can replay
+  offline, so the day-one audit runs as a CI integration test with no live SSH.
+  Needs a loader (none yet). Proposed schema mirrors the in-process replay
+  fixture in `tests/test_reconciler.py` (`{version, hosts: [{hostname,
+  primary_ip, observations: [{key, value}]}]}`); the loader seeds Host rows +
+  Observations, then runs the reconciler. The generic committed assertion
+  library is `fixtures/assertion-library-starter.yaml`; operators bind it to
+  their own hostnames in a local (un-committed) copy. _Unblocks AC3/AC4 as an
+  automated test._
+
+### Discovery sources & probes (landed)
+
+- [x] **Talos adapter** (`adapters/talos.py` + `probes/talos/host.py` +
+  `helper discover talos`) — `talosctl`-subprocess adapter (injectable runner
+  for tests) + a `talos.host` probe that pulls COSI resources (`nodename`,
+  `systeminformation`, `disks`, `links`, `addresses`) plus `/proc/cpuinfo` &
+  `/proc/meminfo` reads and `version`, projecting them onto the canonical
+  `host.*` keys so the reconciler/assertions/audit consume Talos nodes with no
+  downstream change. Physical-NIC filtering is positive (link `kind` empty +
+  real `busPath`), avoiding the SSH path's name-prefix heuristic. First non-SSH
+  source — also unblocks reconciler **multi-source precedence**.
+- [x] **`host.smart` probe** (`probes/host/smart.py`) — per-drive S.M.A.R.T. via
+  `smartctl -a -j` over kernel-ssh (root; `sudo -n` when not root). Emits
+  `host.smart.devices` (health, power-on hours, temperature, reallocated/pending
+  sectors, CRC errors, NVMe wear), `host.smart.health_all_passed`,
+  `host.smart.unhealthy_devices`; WWN in lsblk `0x…` form to cross-reference
+  storage parts. Graceful-skips when smartctl is absent, so it's safe in the
+  default host-probe set. Chosen over an OMV JSON-RPC adapter (vendor-specific,
+  needs API creds) and an MCP path (can't run in the headless probe pipeline).
+- [x] **Network-scan importer** (`engine/scan_import.py` + `helper discover
+  import <csv> [--dry-run]`) — ingest an external host-scan CSV
+  (`ip,hostname,os_class,os_detail,ssh_banner,ttl,mac,nic_vendor`) into Host
+  rows; classify by scan signature (full OpenSSH → deep-probeable;
+  embedded/dropbear/IoT/no-banner → agentless; Windows → agentless-for-now) and
+  raise a `DISCOVERY_AGENTLESS_NEEDED` (INFO) finding per unprobeable host.
+  Existing hosts match by primary_ip or short hostname and are enriched, not
+  clobbered. Idempotent.
+- [x] **Deep-probe records coverage** — `helper discover host`/`talos` set
+  `Host.discovery_source = KERNEL_PROBE` on a successful run; the importer treats
+  probed hosts (incl. Talos nodes with no SSH banner) as covered and
+  auto-resolves stale agentless findings.
+- [x] **`_resolve_host` matches by primary_ip too** — a probe run passing a short
+  name no longer duplicates a row another source created under an FQDN at the
+  same IP. Regression test `tests/test_cli_resolve_host.py`.
+
+### Reconciler / assertions (landed)
+
+- [x] **Forged-WWN collision guard** — `Reconciler._resolve_storage_identity` +
+  `_guard_forged_wwn`: when a storage WWN is already owned by a part with a
+  *different* serial, the WWN is forged (some USB/SATA enclosures report a
+  constant WWN) — re-key the device by its unique serial (recovered from the
+  by-id symlink) and raise a `STORAGE_PROVENANCE_DELTA` (MEDIUM) finding instead
+  of merging distinct drives into one "moving" part. First-created part wins WWN
+  ownership (deterministic via uuid7/`created_at`); re-runs stable. Test
+  `test_forged_wwn_collision_keys_by_serial_and_flags`.
+- [x] **SMART-health assertion pattern** — a `<host>.smart_all_healthy` (HIGH)
+  check using `host.smart.health_all_passed eq true` turns a failed SMART status
+  into a finding via the existing assertion engine.
+
+### Known gaps (found during validation)
+
+- [ ] **NIC virtual-interface filter** misses some hypervisor firewall interfaces
+  (e.g. Proxmox `fwbr*`/`fwln*`/`fwpr*`), which leak through as spurious NIC
+  parts. Add those prefixes to the host.network reconciler heuristic, or switch
+  to a positive PCI-backing test.
+- [ ] **DIMM no-identity is silent** — DIMMs skipped for a missing serial
+  (meminfo-only probe) produce no finding, unlike storage no-identity. Emit an
+  `INVENTORY_GAP` for skipped DIMMs, or land the dmidecode probe (P2).
+- [ ] **Per-assertion arch filter** — scope capability assertions (`aes`, `avx2`,
+  memory floors) by architecture so ARM nodes aren't failed by design; needed
+  before binding the assertion library to a mixed-arch fleet.
+- [ ] **`host.raid` / `host.shares` probes** — mdraid composition
+  (`/proc/mdstat` + `mdadm --detail`) so the reconciler models an array as a
+  volume over its member parts; NFS/SMB share enumeration.
+- [ ] **`talos.host` CPU/DIMM depth** — SMBIOS `processors`/`memorymodules` can
+  be sparse (cores/flags come from `/proc/cpuinfo`); DIMM lineage isn't
+  populated without a per-module serial.
+
 
 ### P2 — strengthens, doesn't block
 
@@ -78,14 +158,13 @@ The rest of Phase 1, and all of Phase 6, is below.
 ### Hygiene
 
 - [ ] `engine/__init__.py` docstring lists `Reconciler`/`AssertionEngine`/`Scheduler`/`ProposalManager` as if present — keep as forward-looking, or trim to what's implemented, as those components land
-- [ ] **CI workflow** (`.github/workflows/ci.yml`) — currently nothing automated runs on push or PR; the test suite is green locally but unverified in PRs. Run on push + PR against `main`:
-  - [ ] `uv sync --all-extras --group dev`
-  - [ ] `uv run pytest -q` (42 passing locally today)
-  - [ ] `uv run ruff format --check .`
-  - [ ] `uv run ruff check .`
-  - [ ] `uv run mypy src`
-  - [ ] `uv run pre-commit run --all-files` (covers anything contributors didn't install hooks for; `.pre-commit-config.yaml` already exists)
-  - [ ] Cache the uv environment between runs (`actions/cache` on `~/.cache/uv` keyed by `uv.lock`)
+- [x] **CI workflow** (`.github/workflows/ci.yml`) — runs on push + PR against `main`, with concurrency cancel-in-progress on the same branch:
+  - [x] `uv sync --all-extras --group dev` (uv cache keyed by `uv.lock` via `astral-sh/setup-uv@v6 enable-cache: true`)
+  - [x] `uv run ruff check src tests`
+  - [x] `uv run ruff format --check src tests`
+  - [x] `uv run mypy src` — fixed the two pre-existing `_resolve_host` errors as part of this slice so the gate is genuine, not vacuous
+  - [x] `uv run pytest -q`
+  - [ ] `uv run pre-commit run --all-files` (deferred — explicit ruff+mypy+pytest steps overlap, add only if a contributor lands the hooks-locally workflow)
 - [ ] Decide on Python version matrix for CI — at minimum the `.python-version` pin (3.12); consider also testing on 3.13 once it stabilises in upstream deps
 
 ---

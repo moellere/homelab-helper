@@ -12,6 +12,7 @@ Components landing here as Phase 1 progresses:
   :mod:`.fingerprint`).
 """
 
+from homelab_helper.engine.assertions import AssertionEngine, RunResult, VerifierResult
 from homelab_helper.engine.fingerprint import make_fingerprint
 from homelab_helper.engine.reconciler import (
     HostProjectionRule,
@@ -22,10 +23,13 @@ from homelab_helper.engine.reconciler import (
 from homelab_helper.engine.runner import ProbeRunner
 
 __all__ = [
+    "AssertionEngine",
     "HostProjectionRule",
     "ProbeRunner",
     "ReconcileResult",
     "Reconciler",
+    "RunResult",
+    "VerifierResult",
     "make_fingerprint",
     "normalize_arch",
 ]

@@ -36,7 +36,7 @@ The current MVP wedge. After Phase 1, the framework can:
 ├── docs/roadmap.md                 # Phased delivery plan
 ├── docs/backlog.md                 # Concrete task list (Phase 1 gaps + Phase 6)
 ├── docs/harness-schema-slice1.md   # Slice 1 DB schema spec (11 tables) + trust-gradient forward spec
-├── docs/netbox-modeling-walkthrough.md  # NetBox modeling decisions for the dorktool lab
+├── docs/netbox-modeling-walkthrough.md  # NetBox modeling decisions for the example lab
 ├── pyproject.toml                  # uv-managed project metadata
 ├── src/homelab_helper/             # The package
 │   ├── db/                         # Models, enums, session

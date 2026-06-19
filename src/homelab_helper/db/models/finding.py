@@ -39,7 +39,7 @@ class ReconciliationFinding(Base):
     evidence_refs: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list)
 
     # Affected resources for blast-radius display:
-    # [{"target_type": "host", "target_id": "bmax0"}, ...]
+    # [{"target_type": "host", "target_id": "node0"}, ...]
     affected: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list)
 
     # Suggested fixes — L1 means we show but never run.

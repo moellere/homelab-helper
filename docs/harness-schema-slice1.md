@@ -257,7 +257,7 @@ class PhysicalPart(Base):
 ```
 
 Design notes:
-- Generic USB SSDs (your pi-cp1/2/3 case) often have garbage serials and reused WWIDs. The reconciler needs a "best effort identity merge" pass that prefers serial → wwid → model+capacity+first-seen-host. Accepting some ambiguity is correct.
+- Generic USB SSDs (your cp1/2/3 case) often have garbage serials and reused WWIDs. The reconciler needs a "best effort identity merge" pass that prefers serial → wwid → model+capacity+first-seen-host. Accepting some ambiguity is correct.
 - `attributes` JSON keys we expect early: `ecc`, `rank`, `dimm_form_factor`, `nvme_generation`, `tdp_watts`, `pcie_lanes`.
 
 ### Placement
@@ -297,7 +297,7 @@ class Placement(Base):
 Design notes:
 - "Closing out" a placement is a write to `to_date`, never a row delete. Lineage chains are reconstructible by walking `part_id` rows ordered by `from_date`.
 - The reconciler opens a new placement only when the *slot* changes or the *host* changes. Re-discovering the same DIMM in the same slot is a `last_verified` bump on the part, not a new placement.
-- `confidence=ASSERTED` for operator-supplied historical placements (your bmax4→bmax1 DIMM moves). `confidence=VERIFIED` for placements written by a fresh kernel probe.
+- `confidence=ASSERTED` for operator-supplied historical placements (your node4→node1 DIMM moves). `confidence=VERIFIED` for placements written by a fresh kernel probe.
 
 ### OperationalIntent
 
@@ -332,7 +332,7 @@ class OperationalIntent(Base):
 
 Design notes:
 - One current intent per target. Updating intent overwrites; if you want history, query `ProposalLog` for "intent change" proposals.
-- The reconciler uses this to suppress findings: if `target_type=vm, target_id=bmax2:104, intent=stopped-by-design`, then "VM 104 is stopped" produces no finding.
+- The reconciler uses this to suppress findings: if `target_type=vm, target_id=node2:104, intent=stopped-by-design`, then "VM 104 is stopped" produces no finding.
 - The `STRAY` state is the WAN2 case — "this was never real, ignore it forever."
 - `review_at` lets you decay intent for things that shouldn't be permanent ("ask me again in 90 days if openclaw is still stopped").
 
@@ -387,7 +387,7 @@ class DiscoveryRun(Base):
     host_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("host.id"), index=True)
     # Null for network-wide scans (cold discovery against a CIDR).
     target_spec: Mapped[Optional[str]] = mapped_column(String(255))
-    # For network-wide: "10.250.6.0/23". For host-scoped: same as host.primary_ip.
+    # For network-wide: "10.0.6.0/23". For host-scoped: same as host.primary_ip.
 
     probe_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("probe.id"), index=True)
     probe_name: Mapped[str] = mapped_column(String(255), index=True)
@@ -459,7 +459,7 @@ class ConfigurationAssertion(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
     name: Mapped[str] = mapped_column(String(255), unique=True)
-    # "covomv.br6.mac_pinned", "bmax-fleet.e1000e-offload-disabled"
+    # "nas0.br6.mac_pinned", "node-fleet.e1000e-offload-disabled"
 
     scope: Mapped[AssertionScope]
     scope_target: Mapped[Optional[str]] = mapped_column(String(255))
@@ -540,7 +540,7 @@ class ReconciliationFinding(Base):
     severity: Mapped[FindingSeverity] = mapped_column(index=True)
 
     # Stable identity: same kind + same target + same root cause = same finding.
-    # Used to dedupe "the e1000e fix is still missing on bmax0" across reconciler runs.
+    # Used to dedupe "the e1000e fix is still missing on node0" across reconciler runs.
     fingerprint: Mapped[str] = mapped_column(String(255), unique=True, index=True)
 
     title: Mapped[str] = mapped_column(String(512))
@@ -551,7 +551,7 @@ class ReconciliationFinding(Base):
     evidence_refs: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list)
 
     # Affected resources for blast-radius display.
-    # [{"target_type": "host", "target_id": "bmax0"}, ...]
+    # [{"target_type": "host", "target_id": "node0"}, ...]
     affected: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list)
 
     # Suggested fixes. Structured so the UI can render them; L1 means we show but don't run.
@@ -573,7 +573,7 @@ class ReconciliationFinding(Base):
 ```
 
 Design notes:
-- `fingerprint` is the dedup key. For "bmax0 e1000e missing," the fingerprint is something like `"config-drift:bmax0:e1000e-offload-disabled"`. The reconciler computes it deterministically.
+- `fingerprint` is the dedup key. For "node0 e1000e missing," the fingerprint is something like `"config-drift:node0:e1000e-offload-disabled"`. The reconciler computes it deterministically.
 - Re-running reconciliation updates `last_seen`, refreshes `evidence_refs`, and bumps `description` if it changed. Doesn't create a new row.
 - `resolved` is automatic: if the underlying condition stops being true (assertion now passes, drift now matches), the reconciler sets `status=RESOLVED`.
 - `suppressed` is operator-set: "stop showing me this until $date" or "stop showing me this ever." Suppression respects fingerprint.
@@ -790,7 +790,7 @@ Design notes:
 
 Alembic. First migration creates everything in this doc. Subsequent migrations are normal Alembic autogenerated from model changes — schema is small enough that hand-review is easy.
 
-Seeding for development: a `fixtures/dorktool.yaml` that loads your real lab as the test fixture. Lets the day-one audit run as an integration test in CI.
+Seeding for development: a `fixtures/example.yaml` that loads your real lab as the test fixture. Lets the day-one audit run as an integration test in CI.
 
 ## Open questions for the next pass
 

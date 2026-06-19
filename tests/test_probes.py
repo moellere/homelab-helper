@@ -109,7 +109,7 @@ async def test_host_identity_rejects_bad_target() -> None:
 
 async def test_host_identity_requires_ssh_user() -> None:
     probe = HostIdentityProbe()
-    target = ProbeTarget(kind="host", hostname="bmax3")
+    target = ProbeTarget(kind="host", hostname="node3")
     ctx = ProbeContext(target=target, adapters=AdapterRegistry(), run_id="run-1")
     result = await probe.run(ctx)
     assert result.success is False
@@ -118,7 +118,7 @@ async def test_host_identity_requires_ssh_user() -> None:
 
 async def test_host_identity_requires_kernel_ssh_adapter() -> None:
     probe = HostIdentityProbe()
-    target = ProbeTarget(kind="host", hostname="bmax3", ssh_user="root")
+    target = ProbeTarget(kind="host", hostname="node3", ssh_user="root")
     ctx = ProbeContext(target=target, adapters=AdapterRegistry(), run_id="run-1")
     result = await probe.run(ctx)
     assert result.success is False
@@ -149,7 +149,7 @@ class FakeProbe(Probe):
                     key="test.answer",
                     value=42,
                     target_type=IntentTargetType.HOST,
-                    target_id="bmax3",
+                    target_id="node3",
                 )
             ],
             success=True,
@@ -204,9 +204,9 @@ def sessionmaker(engine):
 
 async def test_runner_success_path(sessionmaker) -> None:
     runner = ProbeRunner(AdapterRegistry())
-    target = ProbeTarget(kind="host", hostname="bmax3")
+    target = ProbeTarget(kind="host", hostname="node3")
     async with session_scope(sessionmaker) as session:
-        host = Host(hostname="bmax3")
+        host = Host(hostname="node3")
         session.add(host)
         await session.flush()
         run_row, result = await runner.run(FakeProbe(), target, session, host_id=host.id)
@@ -228,9 +228,9 @@ async def test_runner_success_path(sessionmaker) -> None:
 
 async def test_runner_records_crash_as_failure(sessionmaker) -> None:
     runner = ProbeRunner(AdapterRegistry())
-    target = ProbeTarget(kind="host", hostname="bmax3")
+    target = ProbeTarget(kind="host", hostname="node3")
     async with session_scope(sessionmaker) as session:
-        host = Host(hostname="bmax3")
+        host = Host(hostname="node3")
         session.add(host)
         await session.flush()
         run_row, result = await runner.run(CrashingProbe(), target, session, host_id=host.id)
@@ -243,9 +243,9 @@ async def test_runner_records_crash_as_failure(sessionmaker) -> None:
 async def test_runner_validates_output_schema(sessionmaker) -> None:
     """Bad raw_payload -> result.success flips to False, no observations persisted."""
     runner = ProbeRunner(AdapterRegistry())
-    target = ProbeTarget(kind="host", hostname="bmax3")
+    target = ProbeTarget(kind="host", hostname="node3")
     async with session_scope(sessionmaker) as session:
-        host = Host(hostname="bmax3")
+        host = Host(hostname="node3")
         session.add(host)
         await session.flush()
         run_row, result = await runner.run(BadSchemaProbe(), target, session, host_id=host.id)
@@ -261,7 +261,7 @@ async def test_runner_validates_output_schema(sessionmaker) -> None:
 
 def test_host_identity_output_round_trip() -> None:
     out = HostIdentityOutput(
-        hostname="bmax3",
+        hostname="node3",
         kernel="6.1.0-23-amd64",
         machine_id="abc123",
         os_id="debian",
@@ -269,5 +269,5 @@ def test_host_identity_output_round_trip() -> None:
         boot_time_unix=1700000000,
     )
     dumped = out.model_dump()
-    assert dumped["hostname"] == "bmax3"
-    assert HostIdentityOutput.model_validate(dumped).hostname == "bmax3"
+    assert dumped["hostname"] == "node3"
+    assert HostIdentityOutput.model_validate(dumped).hostname == "node3"

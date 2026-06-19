@@ -33,7 +33,7 @@ class DiscoveryRun(Base):
     host_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("host.id"), index=True)
     # Null for network-wide scans (cold discovery against a CIDR).
     target_spec: Mapped[str | None] = mapped_column(String(255))
-    # Network: "10.250.6.0/23". Host-scoped: same as host.primary_ip.
+    # Network: "10.0.6.0/23". Host-scoped: same as host.primary_ip.
 
     probe_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("probe.id"), index=True)
     probe_name: Mapped[str] = mapped_column(String(255), index=True)

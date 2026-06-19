@@ -15,9 +15,15 @@ Scope landed today:
   Device. Matches Device by hostname. **Won't create Devices** — operator
   owns Device creation; missing Device returns ``Synced(found=False)``.
 
+Also landed (Phase 3 virtualization slice):
+
+- Cluster + VirtualMachine CRUD (list/get-by-name/create/update).
+- ``sync_cluster_vms`` — upsert discovered (Proxmox-shaped) VMs into an existing
+  NetBox cluster; create+update only, never reaps operator VMs.
+
 Deferred to follow-up slices:
 
-- Interfaces / IPs / VLANs / Prefixes / Clusters / VMs / Services / InventoryItems
+- Interfaces / IPs / VLANs / Prefixes / Services CRUD
 - Reconciler-driven write path (placement mirroring)
 - ``NETBOX_DIVERGENCE`` finding when hand-edits collide with a planned write
 
@@ -236,6 +242,20 @@ class SyncInventoryResult:
     @property
     def changed(self) -> int:
         return len(self.created) + len(self.updated) + len(self.deleted)
+
+
+@dataclass
+class SyncVMResult:
+    cluster_name: str
+    found: bool = True
+    reason: str | None = None
+    created: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+
+    @property
+    def changed(self) -> int:
+        return len(self.created) + len(self.updated)
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +505,95 @@ class NetBoxAdapter:
 
         return result
 
+    # -------------------------------------------------- virtualization CRUD
+
+    async def list_clusters(self, *, name: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": 100}
+        if name is not None:
+            params["name"] = name
+        return await self._paginate("/api/virtualization/clusters/", params=params)
+
+    async def get_cluster_by_name(self, name: str) -> dict[str, Any] | None:
+        rows = await self.list_clusters(name=name)
+        return next((r for r in rows if r.get("name") == name), None)
+
+    async def create_cluster(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            await self._request("POST", "/api/virtualization/clusters/", json=payload),
+        )
+
+    async def update_cluster(self, cluster_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            await self._request("PATCH", f"/api/virtualization/clusters/{cluster_id}/", json=patch),
+        )
+
+    async def list_virtual_machines(self, *, cluster_id: int) -> list[dict[str, Any]]:
+        return await self._paginate(
+            "/api/virtualization/virtual-machines/",
+            params={"cluster_id": cluster_id, "limit": 100},
+        )
+
+    async def create_virtual_machine(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            await self._request("POST", "/api/virtualization/virtual-machines/", json=payload),
+        )
+
+    async def update_virtual_machine(self, vm_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            await self._request(
+                "PATCH", f"/api/virtualization/virtual-machines/{vm_id}/", json=patch
+            ),
+        )
+
+    async def sync_cluster_vms(
+        self,
+        cluster_name: str,
+        vms: list[dict[str, Any]],
+        *,
+        dry_run: bool = False,
+    ) -> SyncVMResult:
+        """Upsert discovered VMs/LXCs into an existing NetBox cluster.
+
+        NetBox owns cluster topology, so the cluster must already exist — like
+        ``sync_host`` won't create Devices, this won't create Clusters; a missing
+        cluster returns ``found=False`` with a clear reason. VMs are matched by
+        name within the cluster. **Create + update only** — this never deletes,
+        so an operator-entered VM is never reaped (a ``discovered`` marker for
+        safe reaping is a follow-up).
+        """
+        result = SyncVMResult(cluster_name=cluster_name)
+        cluster = await self.get_cluster_by_name(cluster_name)
+        if cluster is None:
+            result.found = False
+            result.reason = f"cluster {cluster_name!r} not found in NetBox — create it, then re-run"
+            return result
+        cluster_id = cluster["id"]
+
+        existing_rows = await self.list_virtual_machines(cluster_id=cluster_id)
+        existing = {r["name"]: r for r in existing_rows if isinstance(r.get("name"), str)}
+
+        for vm in vms:
+            name = vm.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            payload = _vm_to_netbox_payload(vm, cluster_id)
+            row = existing.get(name)
+            if row is None:
+                if not dry_run:
+                    await self.create_virtual_machine(payload)
+                result.created.append(name)
+            elif _vm_matches(row, payload):
+                result.unchanged.append(name)
+            else:
+                if not dry_run:
+                    await self.update_virtual_machine(row["id"], payload)
+                result.updated.append(name)
+        return result
+
     # ----------------------------------------------------------- host sync
 
     async def sync_host(self, host: Host, *, dry_run: bool = False) -> SyncHostResult:
@@ -599,6 +708,46 @@ def _inventory_matches(existing: dict[str, Any], desired: dict[str, Any]) -> boo
     return True
 
 
+_VM_COMPARED_FIELDS = ("status", "vcpus", "memory")
+_BYTES_PER_MB = 1024 * 1024
+
+
+def _vm_to_netbox_payload(vm: dict[str, Any], cluster_id: int) -> dict[str, Any]:
+    """Map a discovered (Proxmox-shaped) VM dict onto a NetBox VM payload.
+
+    Proxmox memory is bytes → NetBox ``memory`` is MB; running → ``active``,
+    everything else → ``offline``. ``vcpus`` is a float in NetBox's schema.
+    """
+    status = "active" if vm.get("status") == "running" else "offline"
+    payload: dict[str, Any] = {
+        "name": vm.get("name"),
+        "status": status,
+        "cluster": cluster_id,
+    }
+    maxcpu = vm.get("maxcpu")
+    if isinstance(maxcpu, (int, float)) and maxcpu:
+        payload["vcpus"] = float(maxcpu)
+    maxmem = vm.get("maxmem_bytes")
+    if isinstance(maxmem, int) and maxmem:
+        payload["memory"] = maxmem // _BYTES_PER_MB
+    return payload
+
+
+def _vm_matches(existing: dict[str, Any], desired: dict[str, Any]) -> bool:
+    """True when the compared VM fields already match (status may be a dict in NetBox)."""
+    for key in _VM_COMPARED_FIELDS:
+        want = desired.get(key)
+        have = existing.get(key)
+        if key == "status" and isinstance(have, dict):
+            have = have.get("value")
+        if key == "vcpus":
+            want = float(want) if want is not None else None
+            have = float(have) if have is not None else None
+        if (have if have is not None else None) != (want if want is not None else None):
+            return False
+    return True
+
+
 def _format_bytes(n: int) -> str:
     for boundary, unit in ((1024**4, "TB"), (1024**3, "GB"), (1024**2, "MB"), (1024, "KB")):
         if n >= boundary:
@@ -639,4 +788,5 @@ __all__ = [
     "PartPlacement",
     "SyncHostResult",
     "SyncInventoryResult",
+    "SyncVMResult",
 ]

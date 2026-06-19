@@ -20,6 +20,8 @@ from rich.table import Table
 from sqlalchemy import or_, select
 
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
+from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
+from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.talos import TalosAdapter
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.db.enums import DiscoverySource
@@ -102,6 +104,16 @@ def _mark_kernel_probed(host: Host, observations: int) -> None:
     """Flag a directly-probed host so the scan importer treats it as covered."""
     if observations > 0:
         host.discovery_source = DiscoverySource.KERNEL_PROBE
+
+
+def _load_proxmox_adapter() -> ProxmoxAdapter:
+    """Factory (monkeypatched in tests) — builds a Proxmox adapter from env."""
+    return ProxmoxAdapter.from_env()
+
+
+def _load_netbox_adapter() -> NetBoxAdapter:
+    """Factory (monkeypatched in tests) — builds a NetBox adapter from env."""
+    return NetBoxAdapter(NetBoxConfig.from_env())
 
 
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
@@ -420,6 +432,67 @@ def discover_replay(
             return 0
         finally:
             await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="proxmox")
+def discover_proxmox(
+    netbox_sync: bool = typer.Option(
+        False, "--netbox-sync", help="Propose discovered VMs into NetBox (cluster must exist)."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --netbox-sync, preview writes."),
+) -> None:
+    """Read a Proxmox cluster's nodes + VMs/LXCs (read-only); optionally push VMs to NetBox."""
+
+    async def _go() -> int:
+        adapter = _load_proxmox_adapter()
+        try:
+            ok, err = await adapter.health_check()
+            if not ok:
+                console.print(f"[red]proxmox unreachable:[/red] {err}")
+                return 1
+            status = await adapter.cluster_status()
+            vms = await adapter.list_vms()
+
+            cluster_label = status["name"] or "(standalone)"
+            console.print(
+                f"[cyan]cluster[/cyan] {cluster_label}: {status['node_count']} node(s), "
+                f"quorate={status['quorate']}"
+            )
+            table = Table(title=f"{len(vms)} guest(s)")
+            for col in ("vmid", "name", "type", "node", "status"):
+                table.add_column(col)
+            for vm in sorted(vms, key=lambda v: v.get("vmid") or 0):
+                table.add_row(
+                    str(vm.get("vmid")),
+                    str(vm.get("name")),
+                    str(vm.get("type")),
+                    str(vm.get("node")),
+                    str(vm.get("status")),
+                )
+            console.print(table)
+
+            if not netbox_sync:
+                return 0
+
+            nb = _load_netbox_adapter()
+            try:
+                real_vms = [v for v in vms if not v.get("template")]
+                res = await nb.sync_cluster_vms(cluster_label, real_vms, dry_run=dry_run)
+                if not res.found:
+                    console.print(f"[yellow]netbox:[/yellow] {res.reason}")
+                    return 1
+                console.print(
+                    f"[green]netbox sync[/green]: {len(res.created)} created, "
+                    f"{len(res.updated)} updated, {len(res.unchanged)} unchanged"
+                    + (" [dim](dry-run)[/dim]" if dry_run else "")
+                )
+            finally:
+                await nb.aclose()
+            return 0
+        finally:
+            await adapter.aclose()
 
     raise typer.Exit(code=asyncio.run(_go()))
 

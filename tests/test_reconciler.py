@@ -24,6 +24,7 @@ from sqlalchemy import select
 from homelab_helper.db.base import Base
 from homelab_helper.db.enums import (
     Architecture,
+    Confidence,
     FindingKind,
     FindingSeverity,
     FindingStatus,
@@ -97,6 +98,7 @@ async def _record_observations(
     facts: dict[str, Any],
     *,
     recorded_at: datetime | None = None,
+    confidence: Confidence | None = None,
 ) -> None:
     """Replay-style helper: write a key→value fixture into Observation rows."""
     for key, value in facts.items():
@@ -109,6 +111,8 @@ async def _record_observations(
         )
         if recorded_at is not None:
             obs.recorded_at = recorded_at
+        if confidence is not None:
+            obs.confidence = confidence
         s.add(obs)
     await s.flush()
 
@@ -1934,3 +1938,57 @@ async def test_finding_description_refreshes_on_re_run(sessionmaker) -> None:
         f = (await s.execute(select(ReconciliationFinding))).scalar_one()
         assert "stale wording" not in f.description
         assert "DIMM" in f.description
+
+
+# ---------------------------------------------------------------------------
+# Multi-source precedence (confidence beats recency)
+# ---------------------------------------------------------------------------
+
+
+async def test_verified_beats_newer_inferred(sessionmaker) -> None:
+    """A kernel-probe (VERIFIED) fact wins over a newer management-plane (INFERRED)."""
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 6, 1, tzinfo=UTC)
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id)
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.identity.kernel": "6.5.0-kernel"},
+            recorded_at=older,
+            confidence=Confidence.VERIFIED,
+        )
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.identity.kernel": "9.9.9-mgmt"},
+            recorded_at=newer,
+            confidence=Confidence.INFERRED,
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+    async with sessionmaker() as s:
+        host = (await s.execute(select(Host).where(Host.hostname == host.hostname))).scalar_one()
+        assert host.capabilities["kernel"] == "6.5.0-kernel"  # VERIFIED, despite being older
+
+
+async def test_inferred_fills_key_kernel_never_reported(sessionmaker) -> None:
+    """Management-plane data is used for keys no higher-confidence source covers."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id)
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {"host.identity.os_pretty_name": "Proxmox VE 8"},
+            confidence=Confidence.INFERRED,
+        )
+        await Reconciler().reconcile_host(s, host.id)
+
+    async with sessionmaker() as s:
+        host = (await s.execute(select(Host).where(Host.hostname == host.hostname))).scalar_one()
+        assert host.capabilities["os_pretty_name"] == "Proxmox VE 8"

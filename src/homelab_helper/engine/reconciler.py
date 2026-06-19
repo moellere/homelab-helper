@@ -37,10 +37,12 @@ component." It runs three phases:
    - Resolved findings flip back to ``OPEN`` if the condition recurs, same
      fingerprint preserved.
 
-Precedence rule today: **latest observation per (target, key) wins.** The
-Observation table is append-only, so the freshest row reflects the most
-recent probe run. Multi-source precedence (kernel beats management-plane)
-arrives when the second source does.
+Precedence rule: **highest-confidence observation per (target, key) wins**,
+recency only breaking ties within a tier. Kernel probes write ``VERIFIED``
+(ground truth), operators ``ASSERTED``, management-plane adapters (Proxmox/K8s/
+…) ``INFERRED``; a confidence-decayed row is ``STALE`` and loses to all. So a
+management-plane source fills only the keys the kernel never reported and never
+clobbers a verified hardware fact. See ``_obs_precedence`` / ``_best_per_key``.
 
 Idempotency: re-running the reconciler over the same observations is a
 no-op — the returned ``changes`` dict is empty, no part/placement/finding
@@ -58,6 +60,7 @@ from sqlalchemy import select
 
 from homelab_helper.db.enums import (
     Architecture,
+    Confidence,
     FindingKind,
     FindingSeverity,
     FindingStatus,
@@ -87,6 +90,24 @@ if TYPE_CHECKING:
 _DIMMS_KEY = "host.memory.dimms"
 _STORAGE_DEVICES_KEY = "host.storage.devices"
 _INTERFACES_KEY = "host.network.interfaces"
+
+# Multi-source precedence: when two sources report the same (host, key), the
+# higher-confidence observation wins regardless of recency — kernel probes write
+# VERIFIED (ground truth), operators ASSERTED, management-plane adapters
+# (Proxmox/K8s/…) INFERRED. A STALE-marked row (confidence decay, Phase 2) sinks
+# below everything. Recency only breaks ties within the same confidence tier.
+_CONFIDENCE_RANK: dict[Confidence, int] = {
+    Confidence.VERIFIED: 3,
+    Confidence.ASSERTED: 2,
+    Confidence.INFERRED: 1,
+    Confidence.STALE: 0,
+}
+
+
+def _obs_precedence(obs: Observation) -> tuple[int, datetime, Any]:
+    """Sort key for choosing the winning observation: confidence, then recency."""
+    return (_CONFIDENCE_RANK.get(obs.confidence, 0), obs.recorded_at, obs.id)
+
 
 # Storage parts created via the lineage path use one of these kinds, chosen
 # per-device by transport + rotational flag. The close-on-this-host filter
@@ -377,29 +398,42 @@ class Reconciler:
             findings_resolved=ledger["findings_resolved"],
         )
 
+    async def _best_per_key(
+        self,
+        session: AsyncSession,
+        host_id: uuid.UUID,
+        keys: list[str],
+    ) -> dict[str, Observation]:
+        """Return ``{key: winning Observation}`` by multi-source precedence.
+
+        The winner per key is the highest ``_obs_precedence`` — confidence tier
+        first (kernel VERIFIED beats management-plane INFERRED), recency only as
+        a tiebreaker. So a fresh management-plane reading never clobbers a
+        kernel-probe fact; it only fills keys the kernel never reported.
+        """
+        stmt = select(Observation).where(
+            Observation.target_type == IntentTargetType.HOST,
+            Observation.target_id == str(host_id),
+            Observation.key.in_(keys),
+        )
+        best: dict[str, Observation] = {}
+        for obs in (await session.execute(stmt)).scalars().all():
+            current = best.get(obs.key)
+            if current is None or _obs_precedence(obs) > _obs_precedence(current):
+                best[obs.key] = obs
+        return best
+
     async def _latest_per_key(
         self,
         session: AsyncSession,
         host_id: uuid.UUID,
         keys: list[str],
     ) -> dict[str, Any]:
-        """Return ``{key: value}`` taking the most-recent observation per key."""
-        stmt = (
-            select(Observation)
-            .where(
-                Observation.target_type == IntentTargetType.HOST,
-                Observation.target_id == str(host_id),
-                Observation.key.in_(keys),
-            )
-            .order_by(Observation.recorded_at.desc(), Observation.id.desc())
-        )
-        rows = (await session.execute(stmt)).scalars().all()
-        latest: dict[str, Any] = {}
-        for obs in rows:
-            # dict.setdefault keeps the first row seen per key, which is the
-            # newest given the ORDER BY.
-            latest.setdefault(obs.key, obs.value)
-        return latest
+        """Return ``{key: value}`` for the precedence-winning observation per key."""
+        return {
+            key: obs.value
+            for key, obs in (await self._best_per_key(session, host_id, keys)).items()
+        }
 
     async def _latest_observation_value(
         self,
@@ -407,18 +441,10 @@ class Reconciler:
         host_id: uuid.UUID,
         key: str,
     ) -> Any:
-        """Return the latest observation value for one key, or ``None`` if absent."""
-        stmt = (
-            select(Observation.value)
-            .where(
-                Observation.target_type == IntentTargetType.HOST,
-                Observation.target_id == str(host_id),
-                Observation.key == key,
-            )
-            .order_by(Observation.recorded_at.desc(), Observation.id.desc())
-            .limit(1)
-        )
-        return (await session.execute(stmt)).scalar_one_or_none()
+        """Return the precedence-winning observation value for one key, or ``None``."""
+        best = await self._best_per_key(session, host_id, [key])
+        obs = best.get(key)
+        return obs.value if obs is not None else None
 
     async def _reconcile_dimm_lineage(
         self,

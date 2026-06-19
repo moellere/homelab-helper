@@ -33,6 +33,7 @@ Stubbed (SKIP with a clear reason) until their adapters land:
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -50,13 +51,14 @@ from homelab_helper.db.enums import (
 from homelab_helper.db.models import (
     AssertionRun,
     ConfigurationAssertion,
+    Host,
     Observation,
     ReconciliationFinding,
 )
 from homelab_helper.engine.fingerprint import make_fingerprint
+from homelab_helper.engine.reconciler import normalize_arch
 
 if TYPE_CHECKING:
-    import uuid
     from collections.abc import Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -302,6 +304,34 @@ _VERIFIERS: dict[
 # ---------------------------------------------------------------------------
 
 
+async def _arch_skip(session: AsyncSession, assertion: ConfigurationAssertion) -> str | None:
+    """Return a SKIP reason if the host's arch is outside the assertion's scope.
+
+    Reads ``verifier_spec.applies_to_arch`` (a list of arch strings). Only
+    meaningful for host-scoped assertions. Returns ``None`` (run normally) when
+    no arch scope is set, the assertion isn't host-scoped, or the host's arch
+    matches. Architecture spellings are normalized, so ``x86_64`` and ``amd64``
+    are equivalent.
+    """
+    spec = assertion.verifier_spec or {}
+    arch_scope = spec.get("applies_to_arch")
+    if not arch_scope:
+        return None
+    if assertion.scope is not AssertionScope.HOST or not assertion.scope_target:
+        return None
+    try:
+        host_id = uuid.UUID(assertion.scope_target)
+    except (ValueError, AttributeError):
+        return None
+    host = (await session.execute(select(Host).where(Host.id == host_id))).scalar_one_or_none()
+    if host is None:
+        return None
+    allowed = {normalize_arch(a) for a in arch_scope}
+    if host.arch in allowed:
+        return None
+    return f"arch {host.arch.value} not in scope {sorted(a.value for a in allowed)}"
+
+
 def _scope_target_type(assertion: ConfigurationAssertion) -> str:
     """Map AssertionScope onto the finding's affected.target_type string."""
     if assertion.scope == AssertionScope.GLOBAL:
@@ -343,8 +373,14 @@ class AssertionEngine:
         assertion: ConfigurationAssertion,
     ) -> RunResult:
         """Run ONE assertion, persist AssertionRun + Finding side effects."""
-        verifier = _VERIFIERS.get(assertion.kind, _verify_not_implemented)
-        result: VerifierResult = await verifier(session, assertion)
+        # Architecture scope: SKIP (don't FAIL) on hosts the assertion doesn't
+        # apply to — e.g. an `aes`/`avx2` check scoped to amd64 on an arm node.
+        arch_reason = await _arch_skip(session, assertion)
+        if arch_reason is not None:
+            result: VerifierResult = VerifierResult(status=AssertionStatus.SKIP, error=arch_reason)
+        else:
+            verifier = _VERIFIERS.get(assertion.kind, _verify_not_implemented)
+            result = await verifier(session, assertion)
 
         run = AssertionRun(
             assertion_id=assertion.id,

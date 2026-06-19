@@ -1,13 +1,19 @@
-"""``host.memory`` probe — RAM totals + hugepages from ``/proc/meminfo``.
+"""``host.memory`` probe — RAM totals from ``/proc/meminfo`` + per-DIMM layout.
 
-This probe is RAM-totals only; DIMM-level inventory (slots, vendors, sizes per
-DIMM) needs ``dmidecode`` which requires sudo. That's a separate probe coming
-later in this slice's progression.
+Two layers:
+
+- Always: RAM/swap/hugepage totals from ``/proc/meminfo`` (works as any user).
+- Best-effort: per-DIMM inventory (slot, size, serial, vendor, part number)
+  from ``dmidecode -t memory``, which needs root — the probe prefixes
+  ``sudo -n`` when the SSH user isn't root and silently skips the DIMM layer if
+  dmidecode is unavailable or unauthorized. The emitted ``host.memory.dimms``
+  list is exactly the shape the reconciler's DIMM lineage consumes, so a
+  successful run populates ``PhysicalPart``/``Placement`` rows per DIMM.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
@@ -15,6 +21,82 @@ from homelab_helper.db.enums import IntentTargetType, PrivilegeLevel
 from homelab_helper.probes.base import ObservationData, Probe, ProbeContext, ProbeResult
 
 _MEMINFO_UNIT_TOKEN_COUNT = 2  # value + unit
+_SIZE_UNITS = {"kb": 1024, "mb": 1024**2, "gb": 1024**3, "tb": 1024**4}
+
+
+def _clean_field(value: str | None) -> str | None:
+    """Strip dmidecode placeholders to None."""
+    if value is None:
+        return None
+    v = value.strip()
+    if not v or v.lower() in ("not specified", "unknown", "none", "no module installed"):
+        return None
+    return v
+
+
+def _parse_dimm_size(value: str | None) -> int | None:
+    """``"16 GB"`` -> bytes. dmidecode reports binary multiples despite GB/MB."""
+    if not value:
+        return None
+    parts = value.split()
+    if len(parts) < _MEMINFO_UNIT_TOKEN_COUNT or not parts[0].isdigit():
+        return None
+    mult = _SIZE_UNITS.get(parts[1].lower())
+    return int(parts[0]) * mult if mult else None
+
+
+def _parse_speed_mts(value: str | None) -> int | None:
+    """``"3200 MT/s"`` -> 3200."""
+    if not value:
+        return None
+    first = value.split()[0] if value.split() else ""
+    return int(first) if first.isdigit() else None
+
+
+def parse_dmidecode_memory(content: str) -> list[dict[str, Any]]:
+    """Parse ``dmidecode -t memory`` into the reconciler's DIMM dict shape.
+
+    Each ``Memory Device`` block becomes a dict ``{slot, serial, size_bytes,
+    speed_mts, manufacturer, part_number, type}``. Empty slots (``Size: No
+    Module Installed``) are dropped — only populated DIMMs are parts.
+    """
+    blocks: list[dict[str, str]] = []
+    cur: dict[str, str] | None = None
+    in_device = False
+    for raw in content.splitlines():
+        if not raw.startswith((" ", "\t")):  # non-indented = section header
+            if cur is not None:
+                blocks.append(cur)
+                cur = None
+            in_device = raw.strip() == "Memory Device"
+            if in_device:
+                cur = {}
+            continue
+        if cur is None:
+            continue
+        key, sep, val = raw.strip().partition(":")
+        if sep:
+            cur[key.strip()] = val.strip()
+    if cur is not None:
+        blocks.append(cur)
+
+    dimms: list[dict[str, Any]] = []
+    for b in blocks:
+        size = _parse_dimm_size(b.get("Size"))
+        if size is None:  # empty slot or unreadable size
+            continue
+        dimms.append(
+            {
+                "slot": _clean_field(b.get("Locator")),
+                "serial": _clean_field(b.get("Serial Number")),
+                "size_bytes": size,
+                "speed_mts": _parse_speed_mts(b.get("Speed")),
+                "manufacturer": _clean_field(b.get("Manufacturer")),
+                "part_number": _clean_field(b.get("Part Number")),
+                "type": _clean_field(b.get("Type")),
+            }
+        )
+    return dimms
 
 
 def parse_meminfo(content: str) -> dict[str, int]:
@@ -70,10 +152,13 @@ class HostMemoryProbe(Probe):
         "host.memory.hugepages_total",
         "host.memory.hugepages_free",
         "host.memory.hugepagesize_bytes",
+        "host.memory.dimms",
+        "host.memory.dimm_count",
     ]
     output_schema: ClassVar[type[BaseModel] | None] = HostMemoryOutput
     description: ClassVar[str | None] = (
-        "RAM and swap totals from /proc/meminfo. DIMM-level layout is a separate (sudo-only) probe."
+        "RAM/swap totals from /proc/meminfo plus best-effort per-DIMM layout "
+        "from dmidecode (root): slot, size, serial, vendor, part number."
     )
 
     async def run(self, ctx: ProbeContext) -> ProbeResult:  # noqa: PLR0911
@@ -90,6 +175,7 @@ class HostMemoryProbe(Probe):
         adapter = ctx.adapters.get("kernel-ssh")
         connect_host = target.primary_ip or target.hostname
         assert connect_host
+        sudo = "" if target.ssh_user == "root" else "sudo -n "
 
         try:
             async with adapter.session(
@@ -100,6 +186,8 @@ class HostMemoryProbe(Probe):
                 port=target.ssh_port,
             ) as ssh:
                 res = await ssh.run("cat /proc/meminfo")
+                # Best-effort DIMM layout — root-only; skip cleanly on failure.
+                dmi = await ssh.run(f"{sudo}dmidecode -t memory")
         except Exception as exc:
             return ProbeResult(success=False, error=f"ssh failure: {exc}")
 
@@ -108,6 +196,7 @@ class HostMemoryProbe(Probe):
                 success=False, error=f"could not read /proc/meminfo (exit {res.exit_code})"
             )
 
+        dimms = parse_dmidecode_memory(dmi.stdout) if dmi.ok else []
         info = parse_meminfo(res.stdout)
         structured = HostMemoryOutput(
             mem_total_bytes=info.get("MemTotal"),
@@ -143,6 +232,21 @@ class HostMemoryProbe(Probe):
                 )
             )
 
+        if dimms:
+            dimm_obs: tuple[tuple[str, Any], ...] = (
+                ("host.memory.dimms", dimms),
+                ("host.memory.dimm_count", len(dimms)),
+            )
+            for dkey, dval in dimm_obs:
+                observations.append(
+                    ObservationData(
+                        key=dkey,
+                        value=dval,
+                        target_type=IntentTargetType.HOST,
+                        target_id=target_id,
+                    )
+                )
+
         return ProbeResult(
             observations=observations,
             success=True,
@@ -150,4 +254,9 @@ class HostMemoryProbe(Probe):
         )
 
 
-__all__ = ["HostMemoryOutput", "HostMemoryProbe", "parse_meminfo"]
+__all__ = [
+    "HostMemoryOutput",
+    "HostMemoryProbe",
+    "parse_dmidecode_memory",
+    "parse_meminfo",
+]

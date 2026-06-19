@@ -23,6 +23,7 @@ from rich.console import Console
 from homelab_helper import __version__
 from homelab_helper.cli.assertion import assert_app
 from homelab_helper.cli.audit import audit_app
+from homelab_helper.cli.config import config_app
 from homelab_helper.cli.db import db_app
 from homelab_helper.cli.discover import discover_app
 from homelab_helper.cli.findings import findings_app
@@ -39,6 +40,7 @@ app.add_typer(audit_app, name="audit")
 app.add_typer(assert_app)
 app.add_typer(netbox_app)
 app.add_typer(probes_app)
+app.add_typer(config_app, name="config")
 
 console = Console()
 

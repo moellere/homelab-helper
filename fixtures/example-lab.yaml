@@ -1,0 +1,123 @@
+# homelab-helper — synthetic lab-replay fixture (committed, fully generic)
+#
+# Replays hosts + raw host.* observations into the harness with no live access,
+# then reconciles and runs the bundled assertions. Drives the day-one audit as a
+# deterministic CI integration test (roadmap AC3/AC4: "at least eleven findings"
+# + idempotent re-runs). Load with `helper discover replay fixtures/example-lab.yaml`.
+#
+# It deliberately exercises every finding source the current engine produces:
+#   - INVENTORY_GAP (storage no-identity, NIC no-MAC, DIMM no-serial)
+#   - STORAGE_PROVENANCE_DELTA (a forged WWN shared across distinct drives)
+#   - CONFIG_DRIFT (failing assertions), with one arch-scoped SKIP
+#
+# The walkthrough's source-specific kinds (config-drift-confirmed, stray-config,
+# legacy/unknown-workload) need the Phase-3 management-plane adapters and are not
+# reproduced here.
+
+version: 1
+
+hosts:
+  - hostname: lab-a
+    primary_ip: 192.0.2.10
+    arch: amd64
+    observations:
+      - { key: host.identity.hostname, value: lab-a }
+      - { key: host.cpu.architecture, value: x86_64 }
+      - { key: host.cpu.cores, value: 1 }                       # < 2 -> assertion FAIL
+      - { key: host.cpu.interesting_flags, value: [aes] }       # no avx2 -> assertion FAIL
+      - { key: host.memory.mem_total_bytes, value: 2147483648 } # 2 GiB < 4 -> assertion FAIL
+      - key: host.storage.devices
+        value:
+          - { name: sda, type: disk, model: GenericDisk, size_bytes: 256060514304 }  # no id -> GAP
+          - { name: sdb, type: disk, transport: usb, size_bytes: 256060514304,
+              wwn: "naa.5000000000000099", serial: "SN-A" }     # establishes the forged WWN
+      - key: host.network.interfaces
+        value:
+          - { name: eth0, link_type: ether }                    # no MAC -> GAP
+          - { name: eth1, link_type: ether, mac: "02:00:00:00:00:01" }
+
+  - hostname: lab-b
+    primary_ip: 192.0.2.11
+    arch: amd64
+    observations:
+      - { key: host.identity.hostname, value: lab-b }
+      - { key: host.cpu.architecture, value: x86_64 }
+      - { key: host.cpu.cores, value: 4 }
+      - { key: host.cpu.interesting_flags, value: [aes] }       # no avx2 -> assertion FAIL
+      - { key: host.memory.mem_total_bytes, value: 2147483648 } # -> assertion FAIL
+      - key: host.storage.devices
+        value:
+          - { name: sda, type: disk, transport: usb, size_bytes: 256060514304,
+              wwn: "naa.5000000000000099", serial: "SN-B" }     # forged-WWN collision
+          - { name: sdc, type: disk, model: GenericDisk }       # no id -> GAP
+      - key: host.memory.dimms
+        value:
+          - { slot: DIMM_A1, size_bytes: 2147483648 }           # no serial -> GAP
+      - key: host.network.interfaces
+        value:
+          - { name: eth0, link_type: ether, mac: "02:00:00:00:00:02" }
+
+  - hostname: lab-c
+    primary_ip: 192.0.2.12
+    arch: arm64
+    observations:
+      - { key: host.identity.hostname, value: lab-c }
+      - { key: host.cpu.architecture, value: aarch64 }
+      - { key: host.cpu.cores, value: 4 }
+      - { key: host.cpu.interesting_flags, value: [asimd] }     # arm: no aes (but assertion is amd64-scoped)
+      - { key: host.memory.mem_total_bytes, value: 2147483648 } # -> assertion FAIL
+      - key: host.storage.devices
+        value:
+          - { name: sda, type: disk, transport: usb, size_bytes: 256060514304,
+              wwn: "naa.5000000000000099", serial: "SN-C" }     # forged-WWN collision
+          - { name: sdb, type: disk, model: GenericDisk }       # no id -> GAP
+      - key: host.network.interfaces
+        value:
+          - { name: eth0, link_type: ether, mac: "02:00:00:00:00:03" }
+
+# Bundled assertion library (same schema as fixtures/assertion-library-starter.yaml).
+assertions:
+  - name: lab-a.has_cpu_observation
+    host: lab-a
+    description: lab-a should have a host.cpu observation
+    severity_on_fail: medium
+    verifier_spec: { key: host.cpu.cores, predicate: exists }
+  - name: lab-a.cpu_cores_at_least_2
+    host: lab-a
+    description: lab-a should have at least 2 CPU cores
+    severity_on_fail: medium
+    verifier_spec: { key: host.cpu.cores, predicate: gte, value: 2 }
+  - name: lab-a.cpu_supports_avx2
+    host: lab-a
+    description: lab-a CPU should support AVX2
+    severity_on_fail: low
+    verifier_spec: { key: host.cpu.interesting_flags, predicate: contains, value: avx2 }
+  - name: lab-a.memory_at_least_4gb
+    host: lab-a
+    description: lab-a should have at least 4 GiB RAM
+    severity_on_fail: medium
+    verifier_spec: { key: host.memory.mem_total_bytes, predicate: gte, value: 4294967296 }
+
+  - name: lab-b.cpu_supports_avx2
+    host: lab-b
+    description: lab-b CPU should support AVX2
+    severity_on_fail: low
+    verifier_spec: { key: host.cpu.interesting_flags, predicate: contains, value: avx2 }
+  - name: lab-b.memory_at_least_4gb
+    host: lab-b
+    description: lab-b should have at least 4 GiB RAM
+    severity_on_fail: medium
+    verifier_spec: { key: host.memory.mem_total_bytes, predicate: gte, value: 4294967296 }
+
+  - name: lab-c.memory_at_least_4gb
+    host: lab-c
+    description: lab-c should have at least 4 GiB RAM
+    severity_on_fail: medium
+    verifier_spec: { key: host.memory.mem_total_bytes, predicate: gte, value: 4294967296 }
+  # amd64-scoped: SKIPs on the arm64 host (demonstrates the per-assertion arch filter).
+  - name: lab-c.cpu_supports_aes
+    host: lab-c
+    description: lab-c CPU should expose AES-NI
+    severity_on_fail: low
+    arch: [amd64]
+    verifier_spec: { key: host.cpu.interesting_flags, predicate: contains, value: aes }

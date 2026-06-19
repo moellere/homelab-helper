@@ -20,7 +20,7 @@ from homelab_helper.probes.host.cpu import (
     parse_int_or_none,
     parse_proc_cpuinfo,
 )
-from homelab_helper.probes.host.memory import parse_meminfo
+from homelab_helper.probes.host.memory import parse_dmidecode_memory, parse_meminfo
 from homelab_helper.probes.host.network import parse_ip_link_show, parse_speed_lines
 from homelab_helper.probes.host.services import parse_systemctl_units
 from homelab_helper.probes.host.storage import parse_lsblk_json
@@ -102,6 +102,44 @@ def test_parse_meminfo_converts_kb_to_bytes() -> None:
     assert info["MemFree"] == 5000000 * 1024
     assert info["HugePages_Total"] == 0
     assert info["Hugepagesize"] == 2048 * 1024
+
+
+def test_parse_dmidecode_memory_keeps_populated_dimms_only() -> None:
+    raw = """# dmidecode 3.4
+Getting SMBIOS data from sysfs.
+
+Handle 0x0010, DMI type 17, 92 bytes
+Memory Device
+\tArray Handle: 0x000F
+\tSize: 16 GB
+\tLocator: DIMM_A1
+\tType: DDR4
+\tSpeed: 3200 MT/s
+\tManufacturer: Example
+\tSerial Number: SN0001
+\tPart Number: EX-16G-3200
+
+Handle 0x0011, DMI type 17, 92 bytes
+Memory Device
+\tSize: No Module Installed
+\tLocator: DIMM_B1
+\tType: Unknown
+"""
+    dimms = parse_dmidecode_memory(raw)
+    assert len(dimms) == 1  # empty slot dropped
+    d = dimms[0]
+    assert d["slot"] == "DIMM_A1"
+    assert d["serial"] == "SN0001"
+    assert d["size_bytes"] == 16 * 1024**3
+    assert d["speed_mts"] == 3200
+    assert d["manufacturer"] == "Example"
+    assert d["part_number"] == "EX-16G-3200"
+    assert d["type"] == "DDR4"
+
+
+def test_parse_dmidecode_memory_empty_on_garbage() -> None:
+    assert parse_dmidecode_memory("") == []
+    assert parse_dmidecode_memory("no memory devices here") == []
 
 
 def test_parse_ip_link_show_drops_loopback_and_merges_addresses() -> None:

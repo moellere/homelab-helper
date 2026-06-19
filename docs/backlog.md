@@ -67,17 +67,19 @@ The rest of Phase 1, and all of Phase 6, is below.
   - [x] `helper audit` — high-level roll-up (inventory counts, severity × status crosstab, top-N open findings) — AC3 read-side
   - [x] `helper findings list|show|ack|resolve|suppress` — fingerprint-prefix matching everywhere; status/severity/kind/host filters on list
   - [x] `helper host show <name>` — identity + capabilities (grouped by prefix) + current placements + open findings table
-  - [ ] `helper config`
-- [ ] **Replayable lab fixture** — capture a fleet's observations (hosts +
-  observations + parts + placements) into YAML the reconciler can replay
-  offline, so the day-one audit runs as a CI integration test with no live SSH.
-  Needs a loader (none yet). Proposed schema mirrors the in-process replay
-  fixture in `tests/test_reconciler.py` (`{version, hosts: [{hostname,
-  primary_ip, observations: [{key, value}]}]}`); the loader seeds Host rows +
-  Observations, then runs the reconciler. The generic committed assertion
+  - [x] `helper config` (`cli/config.py`) — read-only view of effective config
+    (database URL + state, NetBox URL/token presence, verify-ssl, SSH key) and
+    each setting's source (env/default/unset); tokens reported set/unset, never
+    printed.
+- [x] **Replayable lab fixture + loader** (`engine/lab_replay.py` +
+  `fixtures/example-lab.yaml` + `helper discover replay`) — seeds Host rows +
+  Observations from a committed synthetic fixture, reconciles each host, and
+  loads+runs a bundled assertion library — no live SSH. The fixture yields 13
+  day-one findings (inventory-gap + storage-provenance + config-drift, with an
+  arch-scoped SKIP). Integration test `tests/test_lab_replay.py` asserts ≥11
+  findings (AC3) and idempotent re-runs (AC4). The committed generic assertion
   library is `fixtures/assertion-library-starter.yaml`; operators bind it to
-  their own hostnames in a local (un-committed) copy. _Unblocks AC3/AC4 as an
-  automated test._
+  their own hostnames in a local (un-committed) copy.
 
 ### Discovery sources & probes (landed)
 
@@ -113,6 +115,14 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [x] **`_resolve_host` matches by primary_ip too** — a probe run passing a short
   name no longer duplicates a row another source created under an FQDN at the
   same IP. Regression test `tests/test_cli_resolve_host.py`.
+- [x] **`host.memory` DIMM lineage** — the memory probe now emits
+  `host.memory.dimms` (slot/size/serial/vendor/part/type) from `dmidecode -t
+  memory` (root; `sudo -n` when not root, graceful-skip otherwise), the exact
+  shape the reconciler's DIMM lineage consumes — so `PhysicalPart`/`Placement`
+  rows populate per DIMM (closes the AC2 DIMM gap).
+- [x] **`host.pci` + `host.gpu` probes** — PCI enumeration via `lspci -vmmnn`
+  (shared parser) and GPU detection from PCI class `03xx`. Graceful-skip with no
+  PCI bus. The last two P1 warm-probe deliverables.
 
 ### Reconciler / assertions (landed)
 
@@ -130,16 +140,16 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Known gaps (found during validation)
 
-- [ ] **NIC virtual-interface filter** misses some hypervisor firewall interfaces
-  (e.g. Proxmox `fwbr*`/`fwln*`/`fwpr*`), which leak through as spurious NIC
-  parts. Add those prefixes to the host.network reconciler heuristic, or switch
-  to a positive PCI-backing test.
-- [ ] **DIMM no-identity is silent** — DIMMs skipped for a missing serial
-  (meminfo-only probe) produce no finding, unlike storage no-identity. Emit an
-  `INVENTORY_GAP` for skipped DIMMs, or land the dmidecode probe (P2).
-- [ ] **Per-assertion arch filter** — scope capability assertions (`aes`, `avx2`,
-  memory floors) by architecture so ARM nodes aren't failed by design; needed
-  before binding the assertion library to a mixed-arch fleet.
+- [x] **NIC virtual-interface filter** — added Proxmox firewall prefixes
+  (`fwbr`/`fwln`/`fwpr`) to the host.network reconciler heuristic so they no
+  longer leak through as spurious NIC parts. (A positive PCI-backing test is
+  still the eventual ideal.)
+- [x] **DIMM no-identity** — now emits an `INVENTORY_GAP` for DIMMs the probe
+  reports without a serial, same as storage, since the dmidecode probe populates
+  `host.memory.dimms`.
+- [x] **Per-assertion arch filter** — capability assertions take an optional
+  `arch:` scope (`verifier_spec.applies_to_arch`); off-arch hosts SKIP rather
+  than FAIL, so the library binds cleanly to mixed amd64/arm fleets.
 - [ ] **`host.raid` / `host.shares` probes** — mdraid composition
   (`/proc/mdstat` + `mdadm --detail`) so the reconciler models an array as a
   volume over its member parts; NFS/SMB share enumeration.

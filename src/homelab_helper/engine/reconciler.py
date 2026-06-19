@@ -118,6 +118,10 @@ _VIRTUAL_NIC_PREFIXES: tuple[str, ...] = (
     "lxc",
     "lxd",
     "bond",
+    # Hypervisor firewall plumbing (Proxmox): fwbr* bridge, fwpr*/fwln* veth pair.
+    "fwbr",
+    "fwpr",
+    "fwln",
 )
 
 

@@ -539,3 +539,57 @@ async def test_skip_does_not_touch_findings(sessionmaker) -> None:
     async with sessionmaker() as s:
         findings = (await s.execute(select(ReconciliationFinding))).scalars().all()
         assert findings[0].status == FindingStatus.OPEN
+
+
+# ---------------------------------------------------------------------------
+# Per-assertion architecture filter
+# ---------------------------------------------------------------------------
+
+
+async def test_assertion_arch_filter_skips_off_arch_host(sessionmaker) -> None:
+    from homelab_helper.db.enums import Architecture
+
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        host.arch = Architecture.ARM64
+        await _seed_observation(s, host, "host.cpu.interesting_flags", ["asimd"])  # no aes
+        a = _make_assertion(
+            "node0.aes_amd64_only",
+            host,
+            spec={
+                "key": "host.cpu.interesting_flags",
+                "predicate": "contains",
+                "value": "aes",
+                "applies_to_arch": ["amd64"],
+            },
+        )
+        s.add(a)
+        await s.flush()
+        result = await AssertionEngine().run_assertion(s, a)
+
+    assert result.status == AssertionStatus.SKIP
+    assert "arm64" in (result.error or "")
+
+
+async def test_assertion_arch_filter_runs_on_matching_arch(sessionmaker) -> None:
+    from homelab_helper.db.enums import Architecture
+
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        host.arch = Architecture.AMD64  # x86_64 normalizes to amd64
+        await _seed_observation(s, host, "host.cpu.interesting_flags", ["aes", "avx2"])
+        a = _make_assertion(
+            "node0.aes_amd64_ok",
+            host,
+            spec={
+                "key": "host.cpu.interesting_flags",
+                "predicate": "contains",
+                "value": "aes",
+                "applies_to_arch": ["x86_64"],  # spelling normalized to amd64
+            },
+        )
+        s.add(a)
+        await s.flush()
+        result = await AssertionEngine().run_assertion(s, a)
+
+    assert result.status == AssertionStatus.PASS

@@ -1391,6 +1391,10 @@ async def test_virtual_interfaces_are_filtered_not_no_identity(sessionmaker) -> 
                     _iface("tailscale0", mac="aa:bb:cc:00:00:05"),
                     _iface("wg0", mac="aa:bb:cc:00:00:06"),
                     _iface("bond0", mac="aa:bb:cc:00:00:07"),
+                    # Proxmox firewall plumbing — must be filtered, not parts.
+                    _iface("fwbr100i0", mac="aa:bb:cc:00:00:08"),
+                    _iface("fwpr100p0", mac="aa:bb:cc:00:00:09"),
+                    _iface("fwln100i0", mac="aa:bb:cc:00:00:0a"),
                 ],
             },
         )
@@ -1399,7 +1403,8 @@ async def test_virtual_interfaces_are_filtered_not_no_identity(sessionmaker) -> 
 
     assert result.parts_upserted == 1
     assert result.parts_skipped_no_identity == 0
-    assert result.parts_skipped_filtered == 6  # br0 docker0 veth1234 tailscale0 wg0 bond0
+    # br0 docker0 veth1234 tailscale0 wg0 bond0 + fwbr/fwpr/fwln
+    assert result.parts_skipped_filtered == 9
     assert result.placements_opened == [("aa:bb:cc:00:00:01", "enp1s0")]
 
 

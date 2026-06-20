@@ -205,6 +205,7 @@ class FindingKind(StrEnum):
     DRIFT_CANDIDATE = "drift-candidate"
     PROVENANCE_PARTIAL = "provenance-partial"
     INTRA_SITE_LINK_MANUAL = "intra-site-link-manual"
+    NETBOX_DIVERGENCE = "netbox-divergence"
     OTHER = "other"
 
 

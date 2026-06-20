@@ -8,6 +8,7 @@ round-trip: create on first sync, ``netbox_vm_id`` written back, match-by-id and
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -15,9 +16,12 @@ from sqlalchemy import select
 
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.db.base import Base
-from homelab_helper.db.models import Cluster, VirtualMachine
+from homelab_helper.db.enums import FindingKind, FindingStatus
+from homelab_helper.db.models import Cluster, ReconciliationFinding, VirtualMachine
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.netbox_vm_sync import sync_cluster_to_netbox
+
+_WHEN = datetime(2026, 6, 20, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -110,7 +114,7 @@ async def test_sync_creates_and_writes_back_id_then_idempotent(sessionmaker) -> 
 
     async with session_scope(sessionmaker) as s:
         cluster = (await s.execute(select(Cluster))).scalar_one()
-        r1 = await sync_cluster_to_netbox(s, nb.adapter(), cluster)
+        r1 = await sync_cluster_to_netbox(s, nb.adapter(), cluster, when=_WHEN)
 
     # Template skipped; only "web" synced.
     assert r1.created == ["web"]
@@ -125,7 +129,7 @@ async def test_sync_creates_and_writes_back_id_then_idempotent(sessionmaker) -> 
     # Second sync: matched by id, no change.
     async with session_scope(sessionmaker) as s:
         cluster = (await s.execute(select(Cluster))).scalar_one()
-        r2 = await sync_cluster_to_netbox(s, nb.adapter(), cluster)
+        r2 = await sync_cluster_to_netbox(s, nb.adapter(), cluster, when=_WHEN)
     assert r2.unchanged == ["web"]
     assert r2.created == []
 
@@ -135,7 +139,7 @@ async def test_sync_missing_cluster_found_false(sessionmaker) -> None:
     nb = _FakeNetBox(cluster_exists=False)
     async with session_scope(sessionmaker) as s:
         cluster = (await s.execute(select(Cluster))).scalar_one()
-        result = await sync_cluster_to_netbox(s, nb.adapter(), cluster)
+        result = await sync_cluster_to_netbox(s, nb.adapter(), cluster, when=_WHEN)
     assert result.found is False
     assert "not found" in (result.reason or "")
 
@@ -145,6 +149,54 @@ async def test_dry_run_updates_reported_but_no_post(sessionmaker) -> None:
     nb = _FakeNetBox()
     async with session_scope(sessionmaker) as s:
         cluster = (await s.execute(select(Cluster))).scalar_one()
-        result = await sync_cluster_to_netbox(s, nb.adapter(), cluster, dry_run=True)
+        result = await sync_cluster_to_netbox(s, nb.adapter(), cluster, when=_WHEN, dry_run=True)
     assert result.created == ["web"]
     assert nb.vms == {}  # nothing actually created in NetBox
+
+
+async def _first_sync(sessionmaker, nb) -> None:
+    async with session_scope(sessionmaker) as s:
+        cluster = (await s.execute(select(Cluster))).scalar_one()
+        await sync_cluster_to_netbox(s, nb.adapter(), cluster, when=_WHEN)
+
+
+async def test_hand_edit_diverges_skips_write_and_flags(sessionmaker) -> None:
+    await _seed_cluster(sessionmaker)
+    nb = _FakeNetBox()
+    await _first_sync(sessionmaker, nb)  # creates web, records baseline
+
+    # Operator hand-edits the VM in NetBox after our last sync.
+    nb.vms[100]["status"] = {"value": "offline"}
+
+    async with session_scope(sessionmaker) as s:
+        cluster = (await s.execute(select(Cluster))).scalar_one()
+        result = await sync_cluster_to_netbox(s, nb.adapter(), cluster, when=_WHEN)
+
+    assert result.diverged == ["web"]
+    assert result.updated == []  # the write was skipped
+    assert nb.vms[100]["status"] == {"value": "offline"}  # NetBox not clobbered
+    async with sessionmaker() as s:
+        f = (await s.execute(select(ReconciliationFinding))).scalar_one()
+        assert f.kind is FindingKind.NETBOX_DIVERGENCE
+        assert f.status is FindingStatus.OPEN
+
+
+async def test_divergence_resolves_when_netbox_back_in_sync(sessionmaker) -> None:
+    await _seed_cluster(sessionmaker)
+    nb = _FakeNetBox()
+    await _first_sync(sessionmaker, nb)
+    nb.vms[100]["status"] = {"value": "offline"}  # hand-edit -> diverge
+    async with session_scope(sessionmaker) as s:
+        cluster = (await s.execute(select(Cluster))).scalar_one()
+        await sync_cluster_to_netbox(s, nb.adapter(), cluster, when=_WHEN)
+
+    # Operator reverts NetBox back to the harness baseline.
+    nb.vms[100]["status"] = {"value": "active"}
+    async with session_scope(sessionmaker) as s:
+        cluster = (await s.execute(select(Cluster))).scalar_one()
+        result = await sync_cluster_to_netbox(s, nb.adapter(), cluster, when=_WHEN)
+
+    assert result.diverged == []
+    async with sessionmaker() as s:
+        f = (await s.execute(select(ReconciliationFinding))).scalar_one()
+        assert f.status is FindingStatus.RESOLVED

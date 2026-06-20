@@ -36,6 +36,7 @@ from homelab_helper.engine.scan_import import (
     classify,
     parse_scan_csv,
 )
+from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
 from homelab_helper.probes.network.fingerprint import NetworkFingerprintProbe
 from homelab_helper.probes.network.subnet_scan import NetworkSubnetScanProbe
@@ -438,12 +439,15 @@ def discover_replay(
 
 @discover_app.command(name="proxmox")
 def discover_proxmox(
+    persist: bool = typer.Option(
+        False, "--persist", help="Write the cluster + VMs into the harness DB."
+    ),
     netbox_sync: bool = typer.Option(
         False, "--netbox-sync", help="Propose discovered VMs into NetBox (cluster must exist)."
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="With --netbox-sync, preview writes."),
 ) -> None:
-    """Read a Proxmox cluster's nodes + VMs/LXCs (read-only); optionally push VMs to NetBox."""
+    """Read a Proxmox cluster's nodes + VMs/LXCs (read-only); persist and/or push to NetBox."""
 
     async def _go() -> int:
         adapter = _load_proxmox_adapter()
@@ -472,6 +476,23 @@ def discover_proxmox(
                     str(vm.get("status")),
                 )
             console.print(table)
+
+            if persist:
+                engine = make_engine(_database_url())
+                try:
+                    sm = make_sessionmaker(engine)
+                    async with session_scope(sm) as session:
+                        vr = await reconcile_proxmox_cluster(
+                            session, status, vms, when=datetime.now(UTC)
+                        )
+                    console.print(
+                        f"[green]persisted[/green]: cluster {vr.cluster_name} "
+                        f"({'new' if vr.cluster_created else 'updated'}), "
+                        f"VMs {len(vr.vms_created)} created / {len(vr.vms_updated)} updated / "
+                        f"{len(vr.vms_unchanged)} unchanged"
+                    )
+                finally:
+                    await engine.dispose()
 
             if not netbox_sync:
                 return 0

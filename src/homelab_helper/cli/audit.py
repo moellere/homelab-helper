@@ -22,10 +22,12 @@ from sqlalchemy import func, select
 
 from homelab_helper.db.enums import FindingSeverity, FindingStatus
 from homelab_helper.db.models import (
+    Cluster,
     Host,
     PhysicalPart,
     Placement,
     ReconciliationFinding,
+    VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker
 
@@ -69,6 +71,8 @@ def audit(
                 findings_total = (
                     await session.execute(select(func.count(ReconciliationFinding.id)))
                 ).scalar_one()
+                clusters = (await session.execute(select(func.count(Cluster.id)))).scalar_one()
+                vms = (await session.execute(select(func.count(VirtualMachine.id)))).scalar_one()
 
                 console.print("[bold]inventory[/bold]")
                 console.print(f"  hosts:                  {hosts}")
@@ -76,6 +80,8 @@ def audit(
                     f"  physical parts:         {parts}  "
                     f"[dim]({placements_now} placed now / {placements_total} placement rows)[/dim]"
                 )
+                if clusters or vms:
+                    console.print(f"  clusters / VMs:         {clusters} / {vms}")
                 console.print(f"  findings (all-time):    {findings_total}")
 
                 # Findings crosstab: severity x status.

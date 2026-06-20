@@ -88,12 +88,16 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [x] **Proxmox adapter** (`adapters/proxmox.py` + `helper discover proxmox`) —
   first management-plane source (Phase 3): read-only Proxmox VE REST client
   (API-token auth, injectable for tests), reads cluster status + VM/LXC + node +
-  storage. `helper discover proxmox [--netbox-sync [--dry-run]]` displays the
-  cluster's guests and optionally proposes them into an existing NetBox cluster
-  via `sync_cluster_vms`. Read-only at L1 (no mutate methods). Validation note:
-  parser shapes grounded against a live cluster via `pvesh`; the HTTP path needs
-  an API token to exercise live (mocked in tests). _Down-payment on Phase-3
-  multi-source precedence — kernel-probe vs management-plane for the same host._
+  storage. Read-only at L1 (no mutate methods). Live-validated against a real
+  4-node cluster over HTTPS with a PVEAuditor token.
+- [x] **Virtualization schema + persistence** — `Cluster` + `VirtualMachine`
+  models + Alembic migration `b2f1a9c7d3e4`; `engine/virt_reconcile.py` upserts
+  them from Proxmox discovery (idempotent, keyed by name / (cluster, vmid);
+  resolves a guest's node to its `Host`). `helper discover proxmox --persist`
+  writes the cluster + guests to the harness DB; `--netbox-sync` proposes them
+  into an existing NetBox cluster via `sync_cluster_vms`; `helper audit` now
+  reports cluster/VM counts. Live-validated: cluster + 20 guests persisted,
+  re-run idempotent.
 - [x] **Talos adapter** (`adapters/talos.py` + `probes/talos/host.py` +
   `helper discover talos`) — `talosctl`-subprocess adapter (injectable runner
   for tests) + a `talos.host` probe that pulls COSI resources (`nodename`,

@@ -53,8 +53,8 @@ def sessionmaker(engine):
     return make_sessionmaker(engine)
 
 
-async def test_all_eleven_tables_in_metadata() -> None:
-    """Base.metadata holds exactly the Slice 1 tables."""
+async def test_expected_tables_in_metadata() -> None:
+    """Base.metadata holds the Slice 1 tables + the Phase-3 virtualization slice."""
     expected = {
         "host",
         "physical_part",
@@ -67,6 +67,9 @@ async def test_all_eleven_tables_in_metadata() -> None:
         "assertion_run",
         "reconciliation_finding",
         "proposal_log",
+        # Phase 3 virtualization slice
+        "cluster",
+        "virtual_machine",
     }
     assert set(Base.metadata.tables.keys()) == expected
 

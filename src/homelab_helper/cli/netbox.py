@@ -32,8 +32,9 @@ from homelab_helper.adapters.netbox import (
     PartPlacement,
     SyncInventoryResult,
 )
-from homelab_helper.db.models import Host, PhysicalPart, Placement
+from homelab_helper.db.models import Cluster, Host, PhysicalPart, Placement
 from homelab_helper.db.session import make_engine, make_sessionmaker
+from homelab_helper.engine.netbox_vm_sync import sync_cluster_to_netbox
 
 netbox_app = typer.Typer(
     name="netbox",
@@ -223,6 +224,59 @@ def netbox_sync_host(
                     )
                 finally:
                     await adapter.aclose()
+        finally:
+            await db_engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@netbox_app.command(name="sync-cluster")
+def netbox_sync_cluster(
+    name: str = typer.Argument(..., help="Harness cluster name (must exist locally)."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview NetBox writes; don't persist id write-back."
+    ),
+) -> None:
+    """Sync a harness cluster's VirtualMachine rows into NetBox; write NetBox ids back.
+
+    Reads the cluster + VMs already persisted by ``helper discover proxmox
+    --persist`` and upserts them into the matching NetBox cluster (which the
+    operator owns — a missing one is reported, not created). The resulting
+    ``netbox_cluster_id`` / ``netbox_vm_id`` are written back onto the harness
+    rows so later syncs match by id. ``--dry-run`` previews and rolls back.
+    """
+
+    async def _go() -> int:
+        db_engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(db_engine)
+            async with sm() as session:
+                cluster = (
+                    await session.execute(select(Cluster).where(Cluster.name == name))
+                ).scalar_one_or_none()
+                if cluster is None:
+                    console.print(f"[red]no harness cluster named {name!r}[/red]")
+                    return 2
+
+                adapter = _load_adapter()
+                try:
+                    result = await sync_cluster_to_netbox(
+                        session, adapter, cluster, dry_run=dry_run
+                    )
+                finally:
+                    await adapter.aclose()
+
+                if not result.found:
+                    console.print(f"[yellow]netbox:[/yellow] {result.reason}")
+                    return 1
+                if not dry_run:
+                    await session.commit()
+                console.print(
+                    f"[green]synced[/green] {name}: {len(result.created)} created, "
+                    f"{len(result.updated)} updated, {len(result.unchanged)} unchanged"
+                    + (" [dim](dry-run, rolled back)[/dim]" if dry_run else " (ids written back)")
+                )
+                return 0
         finally:
             await db_engine.dispose()
 

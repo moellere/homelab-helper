@@ -57,6 +57,11 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [x] **NetBoxAdapter — first slice** (`adapters/netbox.py`): httpx-based async client; Device CRUD (list / get-by-name / update); custom-field CRUD (list / create); pagination; `Authorization: Token` auth; config via `HOMELAB_HELPER_NETBOX_URL` + `HOMELAB_HELPER_NETBOX_TOKEN` env vars; structured `NetBoxAPIError` carrying status + method + path. `sync_host(host)` PATCHes a Device's custom fields by hostname match (won't create Devices — schema doc invariant: NetBox owns canonical inventory facts, harness owns CF values). _Unblocks AC1/AC2's NetBox push (partial — Device CF surface only)._
   - [x] **Clusters + VirtualMachines CRUD** + `sync_cluster_vms` (Phase-3
     virtualization slice; create+update only, never reaps operator VMs)
+  - [x] **Harness-row VM sync + id write-back** (`engine/netbox_vm_sync.py` +
+    `helper netbox sync-cluster <name>`) — syncs the persisted `VirtualMachine`
+    rows into NetBox and writes `netbox_cluster_id`/`netbox_vm_id` back, so
+    re-syncs match by id (rename-safe). Completes the Proxmox→harness→NetBox
+    round-trip. `--dry-run` previews + rolls back.
   - [ ] Interfaces / IPs / VLANs / Prefixes / Services CRUD
   - [x] **InventoryItem CRUD + reconciler write path**: list / create / update / delete via `/api/dcim/inventory-items/`; `sync_inventory_items(device_id, placements)` diffs against existing `discovered=True` items (slot label = diff key) and applies create/update/delete. `helper netbox sync-host` now runs both passes by default (`--skip-fields` / `--skip-inventory` for either alone). Human-edited InventoryItems are invisible to the sync because the list query passes `discovered=true` — sync never reaps an operator's hand-entered row.
   - [ ] `NETBOX_DIVERGENCE` finding on hand-edit conflict (skip write, never overwrite)

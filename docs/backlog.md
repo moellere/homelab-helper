@@ -90,6 +90,15 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Discovery sources & probes (landed)
 
+- [x] **Kubernetes adapter** (`adapters/kubernetes.py` + `helper discover k8s`) —
+  second management-plane source: read-only `kubectl`-subprocess client
+  (injectable runner; kubeconfig/context config). `discover_k8s_nodes`
+  (`engine/k8s_import.py`) records each node's facts as **INFERRED** Observations
+  on its Host (matched by name/internal-ip) and reconciles — so K8s-only facts
+  (kubelet/runtime versions, roles → capabilities `k8s_*`) enrich the host while
+  the kernel-VERIFIED facts (kernel/arch/cpu/memory) hold by precedence.
+  Live-validated against a real cluster (6 nodes). The first source that
+  genuinely exercises multi-source precedence on shared hosts.
 - [x] **Proxmox adapter** (`adapters/proxmox.py` + `helper discover proxmox`) —
   first management-plane source (Phase 3): read-only Proxmox VE REST client
   (API-token auth, injectable for tests), reads cluster status + VM/LXC + node +

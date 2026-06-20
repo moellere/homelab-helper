@@ -20,6 +20,7 @@ from rich.table import Table
 from sqlalchemy import or_, select
 
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
+from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.talos import TalosAdapter
@@ -27,6 +28,7 @@ from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
 from homelab_helper.engine.reconciler import Reconciler
 from homelab_helper.engine.runner import ProbeRunner
@@ -115,6 +117,11 @@ def _load_proxmox_adapter() -> ProxmoxAdapter:
 def _load_netbox_adapter() -> NetBoxAdapter:
     """Factory (monkeypatched in tests) — builds a NetBox adapter from env."""
     return NetBoxAdapter(NetBoxConfig.from_env())
+
+
+def _load_k8s_adapter() -> K8sAdapter:
+    """Factory (monkeypatched in tests) — builds a Kubernetes adapter from env."""
+    return K8sAdapter.from_env()
 
 
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
@@ -514,6 +521,33 @@ def discover_proxmox(
             return 0
         finally:
             await adapter.aclose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="k8s")
+def discover_k8s() -> None:
+    """Discover Kubernetes nodes as Host observations (INFERRED; kernel facts win)."""
+
+    async def _go() -> int:
+        adapter = _load_k8s_adapter()
+        ok, err = await adapter.health_check()
+        if not ok:
+            console.print(f"[red]kubernetes unreachable:[/red] {err}")
+            return 1
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                result = await discover_k8s_nodes(session, adapter, when=datetime.now(UTC))
+            console.print(
+                f"[green]k8s[/green]: {result.nodes_seen} node(s) — "
+                f"{len(result.hosts_matched)} matched, {len(result.hosts_created)} new host(s); "
+                "facts recorded INFERRED (kernel-verified data unchanged)."
+            )
+            return 0
+        finally:
+            await engine.dispose()
 
     raise typer.Exit(code=asyncio.run(_go()))
 

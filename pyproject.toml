@@ -109,6 +109,8 @@ ignore = [
 # Same rationale for the talos adapter: timeout= is per-call config passed
 # through to the talosctl subprocess wrapper.
 "src/homelab_helper/adapters/talos.py" = ["ASYNC109"]
+# Same for the kubernetes adapter (kubectl subprocess wrapper).
+"src/homelab_helper/adapters/kubernetes.py" = ["ASYNC109"]
 # Typer commands legitimately call typer.Option/typer.Argument in defaults (B008)
 # and need Path at runtime for parameter resolution (TC003). Command handlers
 # also inline arg validation + an async _go() + reporting, so they run long

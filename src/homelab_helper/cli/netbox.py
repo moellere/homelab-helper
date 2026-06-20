@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -261,7 +262,7 @@ def netbox_sync_cluster(
                 adapter = _load_adapter()
                 try:
                     result = await sync_cluster_to_netbox(
-                        session, adapter, cluster, dry_run=dry_run
+                        session, adapter, cluster, when=datetime.now(UTC), dry_run=dry_run
                     )
                 finally:
                     await adapter.aclose()
@@ -271,9 +272,15 @@ def netbox_sync_cluster(
                     return 1
                 if not dry_run:
                     await session.commit()
+                diverged = (
+                    f", [yellow]{len(result.diverged)} diverged (skipped)[/yellow]"
+                    if result.diverged
+                    else ""
+                )
                 console.print(
                     f"[green]synced[/green] {name}: {len(result.created)} created, "
                     f"{len(result.updated)} updated, {len(result.unchanged)} unchanged"
+                    + diverged
                     + (" [dim](dry-run, rolled back)[/dim]" if dry_run else " (ids written back)")
                 )
                 return 0

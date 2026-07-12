@@ -28,6 +28,81 @@ The current MVP wedge. After Phase 1, the framework can:
 - Run configuration assertions and produce reconciliation findings
 - Produce a day-one audit against a real homelab
 
+## Running it locally
+
+> Pre-alpha, run-from-source. There's no packaged release or server to deploy
+> yet (the HTTP API and agent layers are later phases). "Running it locally"
+> means installing from source, initializing a local SQLite database, and
+> driving the `helper` CLI. Everything is **read-only (L1) — it proposes, never
+> applies.**
+
+**1. Install** (see [Development](#development) for the full toolchain):
+
+```bash
+uv sync --all-extras --group dev
+```
+
+**2. Initialize the database** — a SQLite file `./homelab.db` by default
+(override with `HOMELAB_HELPER_DATABASE_URL`; a `postgres` extra is available
+for Postgres):
+
+```bash
+uv run helper db init      # alembic upgrade + register entry-point probes
+uv run helper db status
+# uv run helper db reset --yes   # DESTRUCTIVE — dev only
+```
+
+**3. Configure source credentials.** Credentials are read from the process
+environment — there is no `.env` auto-loading, so `export` them or pass
+`uv run --env-file .env …`. Each source only needs its variables when you run
+that `discover` verb (all are prefixed `HOMELAB_HELPER_`):
+
+| Source | Variables |
+|---|---|
+| Database | `DATABASE_URL` (default local SQLite) |
+| UniFi | `UNIFI_URL`, `UNIFI_API_KEY`, `UNIFI_SITE`, `UNIFI_VERIFY_SSL` |
+| Cloudflare | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE` (or `CLOUDFLARE_ZONE_ID`) |
+| Argo CD | `ARGOCD_URL`, `ARGOCD_API_TOKEN`, `ARGOCD_VERIFY_SSL` |
+| Proxmox | `PROXMOX_URL`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`, `PROXMOX_VERIFY_SSL` |
+| Kubernetes | `KUBECONFIG`, `KUBE_CONTEXT` |
+| NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
+
+Print the effective configuration (secrets shown only as set/unset, never
+printed):
+
+```bash
+uv run helper config
+```
+
+**4. Run.** Discovery is read-only; add `--persist` to write to the DB and
+`--dry-run` to preview:
+
+```bash
+uv run helper --help
+
+uv run helper discover host <name> --ssh-user <u> --ssh-key <path>
+uv run helper discover unifi --persist
+uv run helper discover cloudflare --persist
+uv run helper discover argocd
+uv run helper discover proxmox --persist
+
+uv run helper view service <name>      # internal/external endpoints + DNS split-brain
+uv run helper view host <name>         # guests, endpoints, findings
+uv run helper audit
+uv run helper findings list
+```
+
+Keep tokens and keys in the environment — never commit them.
+
+### Using with Claude / MCP
+
+There is no native MCP server yet — it's a **Phase 4** deliverable (see
+[`roadmap.md`](./docs/roadmap.md)), which will expose the engine and adapter
+capabilities as MCP tools for Claude Desktop / Claude Code / Cursor. Until then,
+the practical path is to run **Claude Code inside this repo**: it drives the
+`helper` CLI directly ("discover the host at 10.0.6.27", "show me service X"),
+which stays within the read-only L1 stance.
+
 ## Repo layout
 
 ```

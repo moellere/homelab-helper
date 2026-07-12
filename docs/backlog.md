@@ -117,6 +117,25 @@ The rest of Phase 1, and all of Phase 6, is below.
   Cloudflare/ArgoCD columns which land with those adapters). `view host <name>`
   synthesizes the guests a host runs, endpoints resolving to it, and its open
   findings.
+- [x] **Cloudflare adapter** (`adapters/cloudflare.py` + `helper discover
+  cloudflare`) — the external half of the DNS split-brain: read-only Cloudflare
+  v4 API client (scoped Bearer token, `Zone.DNS:Read`; zone-name→id resolution
+  cached, or explicit zone id; paginated `list_dns_records`; success-envelope
+  unwrapping; injectable for tests). `reconcile_external_endpoints`
+  (`engine/dns_reconcile.py`, refactored to a scope-parametrized
+  `reconcile_endpoints` core with internal/external wrappers) upserts
+  `(scope=external, resolver=cloudflare)` endpoints; reciprocal scope discipline
+  means an external sync never touches internal (UniFi) rows and vice versa, so a
+  hostname carried by both resolvers pairs on one `Service` — ready for `view
+  service` to flag. `helper discover cloudflare --persist [--dry-run]` wires it.
+- [x] **Argo CD adapter** (`adapters/argocd.py` + `helper discover argocd`) — the
+  git-desired-state source: read-only Argo CD API client (Bearer token,
+  self-signed default, injectable for tests). `list_applications` pulls each
+  Application's git source (repo/path/target revision) alongside Argo CD's own
+  `sync`/`health` verdict and the individual out-of-sync resources;
+  `application_is_drifted` flags `OutOfSync`/non-`Healthy` apps. `helper discover
+  argocd` lists applications and highlights drift (read-only; drift→findings
+  persistence is queued below).
 - [x] **Kubernetes adapter** (`adapters/kubernetes.py` + `helper discover k8s`) —
   second management-plane source: read-only `kubectl`-subprocess client
   (injectable runner; kubeconfig/context config). `discover_k8s_nodes`
@@ -179,6 +198,29 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [x] **`host.pci` + `host.gpu` probes** — PCI enumeration via `lspci -vmmnn`
   (shared parser) and GPU detection from PCI class `03xx`. Graceful-skip with no
   PCI bus. The last two P1 warm-probe deliverables.
+
+### Discovery sources & probes (next up)
+
+- [ ] **OpenMediaVault adapter** (`adapters/openmediavault.py` + `helper discover
+  omv`) — read-only NAS management-plane source over OMV's JSON-RPC API
+  (`/rpc.php`, session-cookie or API auth). Reads filesystems/pools, SMART/disk
+  health, shared folders + NFS/SMB exports, and service states — the storage
+  facts a headless probe can't reach without vendor creds (this is why the
+  `host.smart` probe was chosen *over* an OMV adapter for the SSH path; OMV now
+  lands as its own management-plane source, same pattern as UniFi/Proxmox).
+  Feeds share/export inventory and, later, stray-export detection. Read-only at
+  L1; injectable client for tests.
+- [ ] **Argo CD drift → findings** — persist `application_is_drifted` results as
+  `DRIFT_CANDIDATE` (or a new git-vs-cluster kind) findings via the finding
+  fingerprint + reopen-on-recurrence machinery, and add `helper diff
+  git-vs-cluster`. The adapter already surfaces the per-resource drift; this is
+  the reconcile + finding-lifecycle slice on top of it.
+- [ ] **Cross-resolver service identity** — split-brain `view` only fires when the
+  internal and external endpoints share an exact hostname string. Real fleets
+  suffix them differently (`ha.lan` internal vs `ha.example.com` external), so
+  each lands as its own `Service` and never pairs. Add a normalization/alias step
+  (short-name↔FQDN, or an explicit alias map) so differently-suffixed names for
+  one service reconcile onto a single `Service` and the split-brain surfaces.
 
 ### Reconciler / assertions (landed)
 

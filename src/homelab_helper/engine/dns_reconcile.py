@@ -1,16 +1,18 @@
-"""DNS reconcile — internal resolution records → Service + ServiceEndpoint rows.
+"""DNS reconcile — resolution records → Service + ServiceEndpoint rows.
 
 Projects a DNS source's A/AAAA records onto the harness's Service model. Each
-record's hostname becomes a ``Service`` (created on demand) with one internal
-``ServiceEndpoint`` (``scope=internal``) tagged with the resolver that produced
-it (``unifi`` today). The pair (service, scope, resolver, hostname) is the
-idempotency key, so a re-sync updates the IP in place.
+record's hostname becomes a ``Service`` (created on demand) with one
+``ServiceEndpoint`` at the given scope, tagged with the resolver that produced
+it (``unifi`` internally, ``cloudflare`` externally). The pair
+(service, scope, resolver, hostname) is the idempotency key, so a re-sync
+updates the IP in place.
 
-Scope discipline: this only ever creates/updates/removes endpoints for the
-``(scope=internal, resolver=...)`` pair being reconciled. External endpoints
-(Cloudflare, later) and other resolvers are invisible to it — so the
-DNS-split-brain pairing of internal-vs-external for one hostname is preserved
-across independent syncs.
+Scope discipline: a reconcile only ever creates/updates/removes endpoints for
+the exact ``(scope, resolver)`` pair it was called for. Endpoints from any other
+scope/resolver are invisible to it — so the DNS-split-brain pairing of
+internal-vs-external for one hostname is preserved across independent syncs
+(an internal UniFi sync never touches an external Cloudflare endpoint, and vice
+versa).
 
 Only ``A`` / ``AAAA`` records map to endpoints — a CNAME/TXT carries no IP.
 Records the source no longer reports are removed (the operator deleted them);
@@ -77,24 +79,25 @@ async def _get_or_create_service(session: AsyncSession, name: str) -> Service:
     return svc
 
 
-async def reconcile_internal_endpoints(
+async def reconcile_endpoints(
     session: AsyncSession,
     dns_records: list[dict[str, Any]],
     *,
-    resolver: str = "unifi",
-    source: DiscoverySource = DiscoverySource.UNIFI,
+    scope: ResolutionScope,
+    resolver: str,
+    source: DiscoverySource,
     when: datetime | None = None,
 ) -> EndpointReconcileResult:
-    """Upsert internal ServiceEndpoints from a DNS source's address records."""
+    """Upsert ServiceEndpoints for one ``(scope, resolver)`` from address records."""
     result = EndpointReconcileResult(resolver=resolver)
     desired = _address_records(dns_records)  # hostname_lower -> ip
 
-    # Existing endpoints for exactly this (internal, resolver) slice.
+    # Existing endpoints for exactly this (scope, resolver) slice.
     existing_rows = (
         (
             await session.execute(
                 select(ServiceEndpoint).where(
-                    ServiceEndpoint.scope == ResolutionScope.INTERNAL,
+                    ServiceEndpoint.scope == scope,
                     ServiceEndpoint.resolver == resolver,
                 )
             )
@@ -111,7 +114,7 @@ async def reconcile_internal_endpoints(
             session.add(
                 ServiceEndpoint(
                     service_id=service.id,
-                    scope=ResolutionScope.INTERNAL,
+                    scope=scope,
                     hostname=hostname,
                     ip=ip,
                     resolver=resolver,
@@ -153,4 +156,47 @@ async def reconcile_internal_endpoints(
     return result
 
 
-__all__ = ["EndpointReconcileResult", "reconcile_internal_endpoints"]
+async def reconcile_internal_endpoints(
+    session: AsyncSession,
+    dns_records: list[dict[str, Any]],
+    *,
+    resolver: str = "unifi",
+    source: DiscoverySource = DiscoverySource.UNIFI,
+    when: datetime | None = None,
+) -> EndpointReconcileResult:
+    """Upsert internal ServiceEndpoints (UniFi by default) — internal DNS."""
+    return await reconcile_endpoints(
+        session,
+        dns_records,
+        scope=ResolutionScope.INTERNAL,
+        resolver=resolver,
+        source=source,
+        when=when,
+    )
+
+
+async def reconcile_external_endpoints(
+    session: AsyncSession,
+    dns_records: list[dict[str, Any]],
+    *,
+    resolver: str = "cloudflare",
+    source: DiscoverySource = DiscoverySource.CLOUDFLARE,
+    when: datetime | None = None,
+) -> EndpointReconcileResult:
+    """Upsert external ServiceEndpoints (Cloudflare by default) — public DNS."""
+    return await reconcile_endpoints(
+        session,
+        dns_records,
+        scope=ResolutionScope.EXTERNAL,
+        resolver=resolver,
+        source=source,
+        when=when,
+    )
+
+
+__all__ = [
+    "EndpointReconcileResult",
+    "reconcile_endpoints",
+    "reconcile_external_endpoints",
+    "reconcile_internal_endpoints",
+]

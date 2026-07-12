@@ -19,6 +19,8 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import or_, select
 
+from homelab_helper.adapters.argocd import ArgoCDAdapter, application_is_drifted
+from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
@@ -29,7 +31,10 @@ from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
-from homelab_helper.engine.dns_reconcile import reconcile_internal_endpoints
+from homelab_helper.engine.dns_reconcile import (
+    reconcile_external_endpoints,
+    reconcile_internal_endpoints,
+)
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
 from homelab_helper.engine.reconciler import Reconciler
@@ -129,6 +134,16 @@ def _load_k8s_adapter() -> K8sAdapter:
 def _load_unifi_adapter() -> UniFiAdapter:
     """Factory (monkeypatched in tests) — builds a UniFi adapter from env."""
     return UniFiAdapter.from_env()
+
+
+def _load_cloudflare_adapter() -> CloudflareAdapter:
+    """Factory (monkeypatched in tests) — builds a Cloudflare adapter from env."""
+    return CloudflareAdapter.from_env()
+
+
+def _load_argocd_adapter() -> ArgoCDAdapter:
+    """Factory (monkeypatched in tests) — builds an Argo CD adapter from env."""
+    return ArgoCDAdapter.from_env()
 
 
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
@@ -778,6 +793,110 @@ def discover_unifi(
             )
         finally:
             await engine.dispose()
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="cloudflare")
+def discover_cloudflare(
+    persist: bool = typer.Option(
+        False, "--persist", help="Reconcile external ServiceEndpoints from Cloudflare DNS."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --persist, preview + roll back."),
+) -> None:
+    """Read a Cloudflare zone's public DNS records (read-only) — the external half."""
+
+    async def _go() -> int:
+        adapter = _load_cloudflare_adapter()
+        try:
+            ok, err = await adapter.health_check()
+            if not ok:
+                console.print(f"[red]cloudflare unreachable:[/red] {err}")
+                return 1
+            dns = await adapter.list_dns_records()
+        finally:
+            await adapter.aclose()
+
+        console.print(f"[cyan]cloudflare[/cyan]: {len(dns)} DNS record(s)")
+        table = Table(title="external DNS")
+        for col in ("hostname", "value", "type", "proxied"):
+            table.add_column(col)
+        for r in sorted(dns, key=lambda d: str(d.get("hostname"))):
+            table.add_row(
+                str(r.get("hostname")),
+                str(r.get("value")),
+                str(r.get("record_type")),
+                str(r.get("proxied")),
+            )
+        console.print(table)
+
+        if not persist:
+            return 0
+
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                result = await reconcile_external_endpoints(session, dns, when=datetime.now(UTC))
+                if dry_run:
+                    await session.rollback()
+            console.print(
+                f"[green]endpoints[/green] (cloudflare/external): "
+                f"{len(result.created)} created, {len(result.updated)} updated, "
+                f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
+                + (" [dim](dry-run, rolled back)[/dim]" if dry_run else "")
+            )
+        finally:
+            await engine.dispose()
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="argocd")
+def discover_argocd() -> None:
+    """Read Argo CD Applications (read-only): git desired-state + sync/health drift."""
+
+    async def _go() -> int:
+        adapter = _load_argocd_adapter()
+        try:
+            ok, err = await adapter.health_check()
+            if not ok:
+                console.print(f"[red]argocd unreachable:[/red] {err}")
+                return 1
+            apps = await adapter.list_applications()
+        finally:
+            await adapter.aclose()
+
+        drifted = [a for a in apps if application_is_drifted(a)]
+        console.print(
+            f"[cyan]argocd[/cyan]: {len(apps)} application(s), "
+            f"[yellow]{len(drifted)}[/yellow] drifted"
+        )
+        table = Table(title="applications")
+        for col in ("name", "target", "sync", "health"):
+            table.add_column(col)
+        for a in sorted(apps, key=lambda x: str(x.get("name"))):
+            sync = str(a.get("sync_status") or "—")
+            health = str(a.get("health_status") or "—")
+            drift = application_is_drifted(a)
+            target = f"{a.get('repo_url') or '?'}@{a.get('target_revision') or 'HEAD'}"
+            table.add_row(
+                str(a.get("name")),
+                target,
+                f"[yellow]{sync}[/yellow]" if drift and sync != "Synced" else sync,
+                f"[yellow]{health}[/yellow]" if drift and health != "Healthy" else health,
+            )
+        console.print(table)
+
+        for a in drifted:
+            oos = a.get("out_of_sync_resources") or []
+            if oos:
+                names = ", ".join(
+                    f"{r.get('kind')}/{r.get('name')}({r.get('status')})" for r in oos
+                )
+                console.print(f"  [dim]{a.get('name')}[/dim]: {names}")
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))

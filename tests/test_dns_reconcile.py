@@ -11,6 +11,7 @@ from homelab_helper.db.models import Service, ServiceEndpoint
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.dns_reconcile import (
     _address_records,
+    reconcile_external_endpoints,
     reconcile_internal_endpoints,
 )
 
@@ -164,3 +165,48 @@ async def test_reconcile_removal_keeps_service_with_surviving_endpoint(sessionma
         eps = (await s.execute(select(ServiceEndpoint))).scalars().all()
         assert len(eps) == 1
         assert eps[0].scope == ResolutionScope.EXTERNAL
+
+
+# ---------------------------------------------------------------------------
+# external reconcile (Cloudflare) + split-brain pairing
+# ---------------------------------------------------------------------------
+
+
+async def test_external_reconcile_creates_cloudflare_endpoint(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        result = await reconcile_external_endpoints(s, [_rec("ha.example.com", "203.0.113.9")])
+    assert result.created == ["ha.example.com"]
+    async with sessionmaker() as s:
+        ep = (await s.execute(select(ServiceEndpoint))).scalar_one()
+        assert ep.scope == ResolutionScope.EXTERNAL
+        assert ep.resolver == "cloudflare"
+        assert ep.ip == "203.0.113.9"
+
+
+async def test_external_reconcile_leaves_internal_untouched(sessionmaker) -> None:
+    """Reciprocal scope discipline: an external sync must not touch internal rows."""
+    async with session_scope(sessionmaker) as s:
+        await reconcile_internal_endpoints(s, [_rec("ha.lan", "10.0.1.50")])
+        await reconcile_external_endpoints(s, [_rec("ha.lan", "203.0.113.9")])
+        # Now the external source drops the record entirely.
+        result = await reconcile_external_endpoints(s, [])
+    assert result.removed == ["ha.lan"]
+    async with sessionmaker() as s:
+        eps = (await s.execute(select(ServiceEndpoint))).scalars().all()
+        assert len(eps) == 1
+        assert eps[0].scope == ResolutionScope.INTERNAL
+        assert eps[0].ip == "10.0.1.50"
+
+
+async def test_internal_and_external_pair_on_one_service(sessionmaker) -> None:
+    """Same hostname from both resolvers lands as two endpoints on one Service."""
+    async with session_scope(sessionmaker) as s:
+        await reconcile_internal_endpoints(s, [_rec("ha.lan", "10.0.1.50")])
+        await reconcile_external_endpoints(s, [_rec("ha.lan", "203.0.113.9")])
+    async with sessionmaker() as s:
+        services = (await s.execute(select(Service))).scalars().all()
+        assert len(services) == 1  # one service, two scopes
+        eps = (await s.execute(select(ServiceEndpoint))).scalars().all()
+        by_scope = {ep.scope: ep.ip for ep in eps}
+        assert by_scope[ResolutionScope.INTERNAL] == "10.0.1.50"
+        assert by_scope[ResolutionScope.EXTERNAL] == "203.0.113.9"  # split-brain, ready for `view`

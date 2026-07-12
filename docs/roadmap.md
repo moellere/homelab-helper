@@ -148,7 +148,7 @@ The architecture's premise (multi-source SoT, not single SoT) only matters once 
 
 ### Goals
 
-- Ship the ProxmoxAdapter, K8sAdapter, UniFiAdapter, CloudflareAdapter, GitArgoCDAdapter.
+- Ship the ProxmoxAdapter, K8sAdapter, UniFiAdapter, CloudflareAdapter, GitArgoCDAdapter, OpenMediaVaultAdapter.
 - Wire each adapter into the engine so observations from each source flow through the same reconciler.
 - Implement synthesized views: service-to-host-to-pod resolution, DNS split-brain visibility, ArgoCD-vs-K8s drift, stray-config detection.
 - Add a query API that lets agents and the UI ask cross-source questions.
@@ -162,6 +162,7 @@ The architecture's premise (multi-source SoT, not single SoT) only matters once 
 | UniFiAdapter | Read DNS records, DHCP leases, switch port config, network/VLAN definitions, AP topology. |
 | CloudflareAdapter | Read DNS records, ACME cert state, zones. |
 | GitArgoCDAdapter | Read declared app state from Git; read ArgoCD application sync status; compare. |
+| OpenMediaVaultAdapter | Read NAS state over OMV's JSON-RPC API: filesystems/pools, SMART/disk health, shared folders + NFS/SMB exports, service states. Read-only management-plane source for share/export inventory (and later stray-export detection). |
 | Cross-source view builder | "Show me service X" returns the synthesized record across NetBox + K8s + UniFi + Cloudflare. |
 | Stray-config detection | UniFi-configured networks/VLANs with no observed traffic in N days → `STRAY_CONFIG` finding. |
 | Service endpoint reconciliation | ServiceEndpoint table populated; internal vs external endpoints visible. |

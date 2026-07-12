@@ -24,6 +24,7 @@ from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
+from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.talos import TalosAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter
@@ -144,6 +145,11 @@ def _load_cloudflare_adapter() -> CloudflareAdapter:
 def _load_argocd_adapter() -> ArgoCDAdapter:
     """Factory (monkeypatched in tests) — builds an Argo CD adapter from env."""
     return ArgoCDAdapter.from_env()
+
+
+def _load_omv_adapter() -> OpenMediaVaultAdapter:
+    """Factory (monkeypatched in tests) — builds an OpenMediaVault adapter from env."""
+    return OpenMediaVaultAdapter.from_env()
 
 
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
@@ -897,6 +903,72 @@ def discover_argocd() -> None:
                     f"{r.get('kind')}/{r.get('name')}({r.get('status')})" for r in oos
                 )
                 console.print(f"  [dim]{a.get('name')}[/dim]: {names}")
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+_BYTES_PER_UNIT = 1024
+
+
+def _fmt_bytes(n: int | None) -> str:
+    if not n:
+        return "—"
+    val = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if val < _BYTES_PER_UNIT or unit == "PiB":
+            return f"{val:.1f} {unit}"
+        val /= _BYTES_PER_UNIT
+    return f"{n} B"
+
+
+@discover_app.command(name="omv")
+def discover_omv() -> None:
+    """Read an OpenMediaVault NAS (read-only): filesystems, disks, shares, services."""
+
+    async def _go() -> int:
+        adapter = _load_omv_adapter()
+        try:
+            ok, err = await adapter.health_check()
+            if not ok:
+                console.print(f"[red]openmediavault unreachable:[/red] {err}")
+                return 1
+            filesystems = await adapter.list_filesystems()
+            disks = await adapter.list_smart_devices()
+            shares = await adapter.list_shared_folders()
+            services = await adapter.list_services()
+        finally:
+            await adapter.aclose()
+
+        console.print(
+            f"[cyan]openmediavault[/cyan]: {len(filesystems)} filesystem(s), "
+            f"{len(disks)} disk(s), {len(shares)} share(s), {len(services)} service(s)"
+        )
+
+        fs_table = Table(title="filesystems")
+        for col in ("device", "type", "mountpoint", "size", "used %"):
+            fs_table.add_column(col, overflow="fold")
+        for fs in sorted(filesystems, key=lambda f: str(f.get("device"))):
+            fs_table.add_row(
+                str(fs.get("device")),
+                str(fs.get("type") or "—"),
+                str(fs.get("mountpoint") or "—"),
+                _fmt_bytes(fs.get("size_bytes")),
+                f"{fs.get('used_percent')}%" if fs.get("used_percent") is not None else "—",
+            )
+        console.print(fs_table)
+
+        share_table = Table(title="shared folders")
+        for col in ("name", "path", "comment"):
+            share_table.add_column(col, overflow="fold")
+        for sh in sorted(shares, key=lambda s: str(s.get("name"))):
+            share_table.add_row(
+                str(sh.get("name")), str(sh.get("path") or "—"), str(sh.get("comment") or "—")
+            )
+        console.print(share_table)
+
+        running = [s for s in services if s.get("running")]
+        console.print(f"[bold]services[/bold]: {len(running)}/{len(services)} running")
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))

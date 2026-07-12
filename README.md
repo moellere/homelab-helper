@@ -65,6 +65,7 @@ that `discover` verb (all are prefixed `HOMELAB_HELPER_`):
 | Argo CD | `ARGOCD_URL`, `ARGOCD_API_TOKEN`, `ARGOCD_VERIFY_SSL` |
 | Proxmox | `PROXMOX_URL`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`, `PROXMOX_VERIFY_SSL` |
 | Kubernetes | `KUBECONFIG`, `KUBE_CONTEXT` |
+| OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
 
 Print the effective configuration (secrets shown only as set/unset, never
@@ -85,9 +86,11 @@ uv run helper discover unifi --persist
 uv run helper discover cloudflare --persist
 uv run helper discover argocd
 uv run helper discover proxmox --persist
+uv run helper discover omv             # OpenMediaVault NAS: filesystems, disks, shares, services
 
 uv run helper view service <name>      # internal/external endpoints + DNS split-brain
 uv run helper view host <name>         # guests, endpoints, findings
+uv run helper diff git-vs-cluster --persist   # Argo CD drift → DRIFT_CANDIDATE findings
 uv run helper audit
 uv run helper findings list
 ```

@@ -25,6 +25,7 @@ from homelab_helper.cli.assertion import assert_app
 from homelab_helper.cli.audit import audit_app
 from homelab_helper.cli.config import config_app
 from homelab_helper.cli.db import db_app
+from homelab_helper.cli.diff import diff_app
 from homelab_helper.cli.discover import discover_app
 from homelab_helper.cli.findings import findings_app
 from homelab_helper.cli.host import host_app
@@ -43,6 +44,7 @@ app.add_typer(netbox_app)
 app.add_typer(probes_app)
 app.add_typer(config_app, name="config")
 app.add_typer(view_app)
+app.add_typer(diff_app)
 
 console = Console()
 

@@ -199,22 +199,35 @@ The rest of Phase 1, and all of Phase 6, is below.
   (shared parser) and GPU detection from PCI class `03xx`. Graceful-skip with no
   PCI bus. The last two P1 warm-probe deliverables.
 
+### Discovery sources & probes (landed, cont.)
+
+- [x] **OpenMediaVault adapter** (`adapters/openmediavault.py` + `helper discover
+  omv`) — read-only NAS management-plane source over OMV's JSON-RPC API
+  (`/rpc.php`, lazy `session.login` with the cookie carried by the client;
+  RPC method names centralized as constants; injectable client for tests).
+  Reads mounted filesystems/pools, per-disk S.M.A.R.T. identity, shared folders,
+  and service states — the storage facts a headless probe can't reach without
+  vendor creds (this is why the `host.smart` probe was chosen *over* an OMV
+  adapter for the SSH path; OMV now lands as its own management-plane source,
+  same pattern as UniFi/Proxmox). Read-only at L1. NFS/SMB export enumeration
+  is the remaining slice (queued below).
+- [x] **Argo CD drift → findings** (`engine/argocd_drift.py` + `helper diff
+  git-vs-cluster`) — persists `application_is_drifted` results as
+  `DRIFT_CANDIDATE` findings via the deterministic fingerprint (`argocd-app` /
+  `<name>` / `argocd-drift`) + reopen-on-recurrence machinery, mirroring the
+  AssertionEngine lifecycle. `Degraded`/`Missing` → HIGH, `OutOfSync`+healthy →
+  MEDIUM. Invariant #1 respected: only apps Argo CD *reports* as healthy resolve;
+  a vanished app's finding is left open. `helper diff git-vs-cluster` prints the
+  drift table and, with `--persist [--dry-run]`, records the findings so they
+  surface in `helper findings` / `helper audit`.
+
 ### Discovery sources & probes (next up)
 
-- [ ] **OpenMediaVault adapter** (`adapters/openmediavault.py` + `helper discover
-  omv`) — read-only NAS management-plane source over OMV's JSON-RPC API
-  (`/rpc.php`, session-cookie or API auth). Reads filesystems/pools, SMART/disk
-  health, shared folders + NFS/SMB exports, and service states — the storage
-  facts a headless probe can't reach without vendor creds (this is why the
-  `host.smart` probe was chosen *over* an OMV adapter for the SSH path; OMV now
-  lands as its own management-plane source, same pattern as UniFi/Proxmox).
-  Feeds share/export inventory and, later, stray-export detection. Read-only at
-  L1; injectable client for tests.
-- [ ] **Argo CD drift → findings** — persist `application_is_drifted` results as
-  `DRIFT_CANDIDATE` (or a new git-vs-cluster kind) findings via the finding
-  fingerprint + reopen-on-recurrence machinery, and add `helper diff
-  git-vs-cluster`. The adapter already surfaces the per-resource drift; this is
-  the reconcile + finding-lifecycle slice on top of it.
+- [ ] **OMV NFS/SMB export enumeration** — extend the OpenMediaVault adapter with
+  the export reads (NFS `getShareList`, SMB share list) so exported shares join
+  the shared-folder inventory. Deferred from the initial OMV slice because the
+  export RPC method names need live validation; feeds later stray-export
+  detection.
 - [ ] **Cross-resolver service identity** — split-brain `view` only fires when the
   internal and external endpoints share an exact hostname string. Real fleets
   suffix them differently (`ha.lan` internal vs `ha.example.com` external), so

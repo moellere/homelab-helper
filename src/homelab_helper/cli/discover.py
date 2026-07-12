@@ -24,10 +24,12 @@ from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.talos import TalosAdapter
+from homelab_helper.adapters.unifi import UniFiAdapter
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.dns_reconcile import reconcile_internal_endpoints
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
 from homelab_helper.engine.reconciler import Reconciler
@@ -122,6 +124,11 @@ def _load_netbox_adapter() -> NetBoxAdapter:
 def _load_k8s_adapter() -> K8sAdapter:
     """Factory (monkeypatched in tests) — builds a Kubernetes adapter from env."""
     return K8sAdapter.from_env()
+
+
+def _load_unifi_adapter() -> UniFiAdapter:
+    """Factory (monkeypatched in tests) — builds a UniFi adapter from env."""
+    return UniFiAdapter.from_env()
 
 
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
@@ -711,5 +718,66 @@ def discover_network(
             return 0
         finally:
             await db_engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="unifi")
+def discover_unifi(
+    persist: bool = typer.Option(
+        False, "--persist", help="Reconcile internal ServiceEndpoints from DNS + clients."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --persist, preview + roll back."),
+) -> None:
+    """Read a UniFi controller's DNS records, clients, and networks (read-only)."""
+
+    async def _go() -> int:
+        adapter = _load_unifi_adapter()
+        try:
+            ok, err = await adapter.health_check()
+            if not ok:
+                console.print(f"[red]unifi unreachable:[/red] {err}")
+                return 1
+            dns = await adapter.list_dns_records()
+            clients = await adapter.list_clients()
+            networks = await adapter.list_networks()
+        finally:
+            await adapter.aclose()
+
+        console.print(
+            f"[cyan]unifi[/cyan]: {len(dns)} DNS record(s), {len(clients)} client(s), "
+            f"{len(networks)} network(s)"
+        )
+        table = Table(title="internal DNS")
+        for col in ("hostname", "value", "type", "enabled"):
+            table.add_column(col)
+        for r in sorted(dns, key=lambda d: str(d.get("hostname"))):
+            table.add_row(
+                str(r.get("hostname")),
+                str(r.get("value")),
+                str(r.get("record_type")),
+                str(r.get("enabled")),
+            )
+        console.print(table)
+
+        if not persist:
+            return 0
+
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                result = await reconcile_internal_endpoints(session, dns, when=datetime.now(UTC))
+                if dry_run:
+                    await session.rollback()
+            console.print(
+                f"[green]endpoints[/green] (unifi/internal): "
+                f"{len(result.created)} created, {len(result.updated)} updated, "
+                f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
+                + (" [dim](dry-run, rolled back)[/dim]" if dry_run else "")
+            )
+        finally:
+            await engine.dispose()
+        return 0
 
     raise typer.Exit(code=asyncio.run(_go()))

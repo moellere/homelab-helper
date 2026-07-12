@@ -16,6 +16,7 @@ from .part import PhysicalPart
 from .placement import Placement
 from .probe import Probe
 from .proposal import ProposalLog
+from .service import Service, ServiceEndpoint
 from .virtualization import Cluster, VirtualMachine
 
 __all__ = [
@@ -31,5 +32,7 @@ __all__ = [
     "Probe",
     "ProposalLog",
     "ReconciliationFinding",
+    "Service",
+    "ServiceEndpoint",
     "VirtualMachine",
 ]

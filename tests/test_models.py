@@ -70,6 +70,9 @@ async def test_expected_tables_in_metadata() -> None:
         # Phase 3 virtualization slice
         "cluster",
         "virtual_machine",
+        # Phase 3 service-endpoint slice
+        "service",
+        "service_endpoint",
     }
     assert set(Base.metadata.tables.keys()) == expected
 

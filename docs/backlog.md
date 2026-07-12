@@ -95,6 +95,28 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Discovery sources & probes (landed)
 
+- [x] **UniFi adapter** (`adapters/unifi.py` + `helper discover unifi`) — third
+  management-plane source: read-only UniFi Network REST client (`X-API-KEY`
+  auth, injectable for tests), reads internal DNS records, known clients
+  (hostname↔IP), and network/VLAN definitions. Pure per-row parse functions;
+  self-signed cert default. Read-only at L1. The DNS-record source that feeds
+  internal `ServiceEndpoint` reconciliation.
+- [x] **ServiceEndpoint reconciliation** (`db/models/service.py` +
+  `engine/dns_reconcile.py` + migration `5372e3c99f7e`) — `Service` +
+  `ServiceEndpoint` models capturing DNS split-brain (a hostname resolving to
+  different IPs internally vs externally). `reconcile_internal_endpoints`
+  upserts internal endpoints from a DNS source's A/AAAA records, keyed by
+  `(service, scope, resolver, hostname)`; scope-disciplined so it never touches
+  external/other-resolver endpoints, and cleans up orphaned Services on
+  removal. `helper discover unifi --persist [--dry-run]` wires it. New
+  `ResolutionScope` enum (internal/external).
+- [x] **Cross-source view builder** (`cli/view.py` + `helper view
+  service|host`) — the Phase-3 query surface. `view service <name>` synthesizes
+  a service across its internal/external endpoints, makes the DNS split-brain
+  explicit, and cross-references the VM/Host carrying the name (AC#2, minus the
+  Cloudflare/ArgoCD columns which land with those adapters). `view host <name>`
+  synthesizes the guests a host runs, endpoints resolving to it, and its open
+  findings.
 - [x] **Kubernetes adapter** (`adapters/kubernetes.py` + `helper discover k8s`) —
   second management-plane source: read-only `kubectl`-subprocess client
   (injectable runner; kubeconfig/context config). `discover_k8s_nodes`

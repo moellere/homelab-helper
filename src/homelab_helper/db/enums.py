@@ -248,6 +248,19 @@ class ProposalOutcome(StrEnum):
     EXPIRED = "expired"
 
 
+class ResolutionScope(StrEnum):
+    """Which side of a DNS split-brain a ServiceEndpoint resolves on.
+
+    ``INTERNAL`` is the LAN-side resolver (UniFi gateway, Consul, …);
+    ``EXTERNAL`` is the public resolver (Cloudflare → ingress). A single
+    service commonly has one of each with different IPs — that divergence is
+    the split-brain the harness makes visible.
+    """
+
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+
+
 __all__ = [
     "Architecture",
     "AssertionKind",
@@ -265,4 +278,5 @@ __all__ = [
     "PowerState",
     "PrivilegeLevel",
     "ProposalOutcome",
+    "ResolutionScope",
 ]

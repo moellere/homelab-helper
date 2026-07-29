@@ -36,36 +36,32 @@ def _rpc_of(request: httpx.Request) -> tuple[str, str]:
     return body["service"], body["method"]
 
 
+_RESPONSES: dict[tuple[str, str], object] = {
+    ("session", "login"): {"authenticated": True},
+    ("FileSystemMgmt", "enumerateMountedFilesystems"): [
+        {
+            "canonicaldevicefile": "/dev/sda1",
+            "type": "ext4",
+            "mountpoint": "/srv/data",
+            "size": "1000204886016",
+            "percentage": 42,
+        }
+    ],
+    ("Smart", "enumerateDevices"): [{"canonicaldevicefile": "/dev/sda", "model": "WDC"}],
+    ("ShareMgmt", "enumerateSharedFolders"): [
+        {"uuid": "u1", "name": "media", "reldirpath": "media/"}
+    ],
+    ("Services", "getStatus"): {
+        "total": 1,
+        "data": [{"name": "smb", "enabled": True, "running": True}],
+    },
+    ("NFS", "getShareList"): [{"uuid": "n1", "sharedfoldername": "media"}],
+    ("SMB", "getShareList"): [{"uuid": "s1", "name": "media"}],
+}
+
+
 def _handler(request: httpx.Request) -> httpx.Response:
-    service, method = _rpc_of(request)
-    if (service, method) == ("session", "login"):
-        return httpx.Response(200, json=_ok({"authenticated": True}))
-    if (service, method) == ("FileSystemMgmt", "enumerateMountedFilesystems"):
-        return httpx.Response(
-            200,
-            json=_ok(
-                [
-                    {
-                        "canonicaldevicefile": "/dev/sda1",
-                        "type": "ext4",
-                        "mountpoint": "/srv/data",
-                        "size": "1000204886016",
-                        "percentage": 42,
-                    }
-                ]
-            ),
-        )
-    if (service, method) == ("Smart", "enumerateDevices"):
-        return httpx.Response(200, json=_ok([{"canonicaldevicefile": "/dev/sda", "model": "WDC"}]))
-    if (service, method) == ("ShareMgmt", "enumerateSharedFolders"):
-        return httpx.Response(
-            200, json=_ok([{"uuid": "u1", "name": "media", "reldirpath": "media/"}])
-        )
-    if (service, method) == ("Services", "getStatus"):
-        return httpx.Response(
-            200, json=_ok({"total": 1, "data": [{"name": "smb", "enabled": True, "running": True}]})
-        )
-    return httpx.Response(200, json=_ok([]))
+    return httpx.Response(200, json=_ok(_RESPONSES.get(_rpc_of(request), [])))
 
 
 def test_discover_omv_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,6 +70,8 @@ def test_discover_omv_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0
     assert "1 filesystem(s)" in result.stdout
     assert "media" in result.stdout
+    # Summary line wraps under the narrow test terminal; assert on the exports table instead.
+    assert "exports" in result.stdout
     assert "1/1 running" in result.stdout
 
 

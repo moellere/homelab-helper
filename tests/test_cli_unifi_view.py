@@ -98,6 +98,7 @@ def test_discover_unifi_persist_creates_endpoints(
     result = runner.invoke(app, ["discover", "unifi", "--persist"])
     assert result.exit_code == 0
     assert "1 created" in result.stdout
+    assert "stray-config" in result.stdout  # stray-config reconcile also runs on persist
 
 
 def test_discover_unifi_dry_run_rolls_back(empty_db: str, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -17,9 +17,11 @@ from homelab_helper.adapters.openmediavault import (
     OpenMediaVaultConfig,
     OpenMediaVaultConfigError,
     parse_filesystem,
+    parse_nfs_export,
     parse_service,
     parse_shared_folder,
     parse_smart_device,
+    parse_smb_share,
 )
 
 _CONFIG = OpenMediaVaultConfig(url="https://nas.example.lan", username="admin", password="pw")
@@ -129,40 +131,29 @@ def test_parse_service_coerces_bools() -> None:
 # ---------------------------------------------------------------------------
 
 
+_RESPONSES: dict[tuple[str, str], object] = {
+    ("session", "login"): {"authenticated": True, "username": "admin"},
+    ("FileSystemMgmt", "enumerateMountedFilesystems"): [
+        {"canonicaldevicefile": "/dev/sda1", "type": "ext4", "size": "1000", "used": "400"}
+    ],
+    ("Smart", "enumerateDevices"): [
+        {"canonicaldevicefile": "/dev/sda", "model": "WDC", "serialnumber": "S1"}
+    ],
+    ("ShareMgmt", "enumerateSharedFolders"): [
+        {"uuid": "u1", "name": "media", "reldirpath": "media/"}
+    ],
+    # OMV's getStatus returns the {total, data} shape.
+    ("Services", "getStatus"): {
+        "total": 1,
+        "data": [{"name": "smb", "enabled": True, "running": True}],
+    },
+    ("NFS", "getShareList"): [{"uuid": "n1", "sharedfoldername": "media", "client": "10.0.1.0/24"}],
+    ("SMB", "getShareList"): [{"uuid": "s1", "name": "media", "sharedfoldername": "media"}],
+}
+
+
 def _default_handler(request: httpx.Request) -> httpx.Response:
-    service, method = _rpc_of(request)
-    if (service, method) == ("session", "login"):
-        return httpx.Response(200, json=_ok({"authenticated": True, "username": "admin"}))
-    if (service, method) == ("FileSystemMgmt", "enumerateMountedFilesystems"):
-        return httpx.Response(
-            200,
-            json=_ok(
-                [
-                    {
-                        "canonicaldevicefile": "/dev/sda1",
-                        "type": "ext4",
-                        "size": "1000",
-                        "used": "400",
-                    }
-                ]
-            ),
-        )
-    if (service, method) == ("Smart", "enumerateDevices"):
-        return httpx.Response(
-            200,
-            json=_ok([{"canonicaldevicefile": "/dev/sda", "model": "WDC", "serialnumber": "S1"}]),
-        )
-    if (service, method) == ("ShareMgmt", "enumerateSharedFolders"):
-        return httpx.Response(
-            200, json=_ok([{"uuid": "u1", "name": "media", "reldirpath": "media/"}])
-        )
-    if (service, method) == ("Services", "getStatus"):
-        # OMV's getStatus returns the {total, data} shape.
-        return httpx.Response(
-            200,
-            json=_ok({"total": 1, "data": [{"name": "smb", "enabled": True, "running": True}]}),
-        )
-    return httpx.Response(200, json=_ok([]))
+    return httpx.Response(200, json=_ok(_RESPONSES.get(_rpc_of(request), [])))
 
 
 async def test_login_happens_before_reads() -> None:
@@ -216,6 +207,31 @@ async def test_shared_folders_read() -> None:
     finally:
         await adapter.aclose()
     assert shares[0]["name"] == "media"
+
+
+def test_parse_nfs_export_maps_client() -> None:
+    out = parse_nfs_export({"uuid": "n1", "sharedfoldername": "media", "client": "10.0.1.0/24"})
+    assert out["protocol"] == "nfs"
+    assert out["shared_folder"] == "media"
+    assert out["client"] == "10.0.1.0/24"
+
+
+def test_parse_smb_share_maps_readonly() -> None:
+    out = parse_smb_share({"uuid": "s1", "name": "media", "readonly": True})
+    assert out["protocol"] == "smb"
+    assert out["name"] == "media"
+    assert out["readonly"] is True
+
+
+async def test_nfs_and_smb_exports_read() -> None:
+    adapter = _adapter(_default_handler)
+    try:
+        nfs = await adapter.list_nfs_exports()
+        smb = await adapter.list_smb_shares()
+    finally:
+        await adapter.aclose()
+    assert nfs[0]["shared_folder"] == "media"
+    assert smb[0]["name"] == "media"
 
 
 async def test_rpc_error_envelope_raises() -> None:

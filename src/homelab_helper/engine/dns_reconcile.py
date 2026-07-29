@@ -70,6 +70,19 @@ def _address_records(dns_records: list[dict[str, Any]]) -> dict[str, str]:
     return out
 
 
+def service_key(hostname: str) -> str:
+    """Canonical service name shared across resolvers and domains.
+
+    Internal and external DNS suffix the same service differently (``ha.lan``
+    inside, ``ha.example.com`` outside). Both should attach to one ``Service``,
+    so the key is the leftmost DNS label, lowercased — the part that actually
+    names the service. Two distinct services that happen to share a short name
+    will merge onto one ``Service``; that's an acceptable trade for a homelab,
+    and an explicit alias map can override it later (see backlog).
+    """
+    return hostname.strip().lower().split(".", 1)[0]
+
+
 async def _get_or_create_service(session: AsyncSession, name: str) -> Service:
     svc = (await session.execute(select(Service).where(Service.name == name))).scalar_one_or_none()
     if svc is None:
@@ -110,7 +123,7 @@ async def reconcile_endpoints(
     for hostname, ip in desired.items():
         ep = existing.get(hostname)
         if ep is None:
-            service = await _get_or_create_service(session, hostname)
+            service = await _get_or_create_service(session, service_key(hostname))
             session.add(
                 ServiceEndpoint(
                     service_id=service.id,
@@ -199,4 +212,5 @@ __all__ = [
     "reconcile_endpoints",
     "reconcile_external_endpoints",
     "reconcile_internal_endpoints",
+    "service_key",
 ]

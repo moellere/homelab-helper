@@ -3,7 +3,8 @@
 The storage-appliance source. Where Proxmox/K8s/UniFi cover compute and network,
 OpenMediaVault owns the NAS facts a headless probe can't reach without vendor
 credentials: mounted filesystems/pools, per-disk S.M.A.R.T. identity, the shared
-folders it exports, and the state of its services. (This is why the SSH path's
+folders it exports (plus the NFS/SMB exports that publish them), and the state
+of its services. (This is why the SSH path's
 ``host.smart`` probe was chosen *over* an OMV adapter earlier — OMV now lands as
 its own management-plane source, the same pattern as UniFi/Proxmox.)
 
@@ -46,6 +47,8 @@ _RPC_FILESYSTEMS = ("FileSystemMgmt", "enumerateMountedFilesystems")
 _RPC_SMART_DEVICES = ("Smart", "enumerateDevices")
 _RPC_SHARED_FOLDERS = ("ShareMgmt", "enumerateSharedFolders")
 _RPC_SERVICES = ("Services", "getStatus")
+_RPC_NFS_SHARES = ("NFS", "getShareList")
+_RPC_SMB_SHARES = ("SMB", "getShareList")
 
 
 class OpenMediaVaultConfigError(RuntimeError):
@@ -138,6 +141,29 @@ def parse_service(raw: dict[str, Any]) -> dict[str, Any]:
         "title": raw.get("title") or raw.get("name"),
         "enabled": bool(raw.get("enabled")),
         "running": bool(raw.get("running")),
+    }
+
+
+def parse_nfs_export(raw: dict[str, Any]) -> dict[str, Any]:
+    """Shape one ``NFS.getShareList`` row (an export)."""
+    return {
+        "protocol": "nfs",
+        "uuid": raw.get("uuid"),
+        "shared_folder": raw.get("sharedfoldername") or raw.get("sharedfolderref"),
+        "client": raw.get("client") or None,
+        "options": raw.get("options") or None,
+    }
+
+
+def parse_smb_share(raw: dict[str, Any]) -> dict[str, Any]:
+    """Shape one ``SMB.getShareList`` row (a share)."""
+    return {
+        "protocol": "smb",
+        "uuid": raw.get("uuid"),
+        "name": raw.get("name"),
+        "shared_folder": raw.get("sharedfoldername") or raw.get("sharedfolderref"),
+        "readonly": bool(raw.get("readonly")),
+        "guest": raw.get("guest") or None,
     }
 
 
@@ -253,6 +279,16 @@ class OpenMediaVaultAdapter:
         rows = self._rows(await self._rpc(*_RPC_SERVICES))
         return [parse_service(r) for r in rows]
 
+    async def list_nfs_exports(self) -> list[dict[str, Any]]:
+        await self._login()
+        rows = self._rows(await self._rpc(*_RPC_NFS_SHARES))
+        return [parse_nfs_export(r) for r in rows]
+
+    async def list_smb_shares(self) -> list[dict[str, Any]]:
+        await self._login()
+        rows = self._rows(await self._rpc(*_RPC_SMB_SHARES))
+        return [parse_smb_share(r) for r in rows]
+
     async def health_check(self) -> tuple[bool, str | None]:
         """Quick reachability/auth probe — a session login."""
         try:
@@ -268,7 +304,9 @@ __all__ = [
     "OpenMediaVaultConfig",
     "OpenMediaVaultConfigError",
     "parse_filesystem",
+    "parse_nfs_export",
     "parse_service",
     "parse_shared_folder",
     "parse_smart_device",
+    "parse_smb_share",
 ]

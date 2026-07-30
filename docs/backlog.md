@@ -209,8 +209,9 @@ The rest of Phase 1, and all of Phase 6, is below.
   and service states — the storage facts a headless probe can't reach without
   vendor creds (this is why the `host.smart` probe was chosen *over* an OMV
   adapter for the SSH path; OMV now lands as its own management-plane source,
-  same pattern as UniFi/Proxmox). Read-only at L1. NFS/SMB export enumeration
-  is the remaining slice (queued below).
+  same pattern as UniFi/Proxmox). Read-only at L1. Also enumerates NFS/SMB
+  exports (`NFS`/`SMB` `getShareList`) so the exported shares join the
+  shared-folder inventory; `discover omv` renders an exports table.
 - [x] **Argo CD drift → findings** (`engine/argocd_drift.py` + `helper diff
   git-vs-cluster`) — persists `application_is_drifted` results as
   `DRIFT_CANDIDATE` findings via the deterministic fingerprint (`argocd-app` /
@@ -220,20 +221,34 @@ The rest of Phase 1, and all of Phase 6, is below.
   a vanished app's finding is left open. `helper diff git-vs-cluster` prints the
   drift table and, with `--persist [--dry-run]`, records the findings so they
   surface in `helper findings` / `helper audit`.
+- [x] **Stray-config detection** (`engine/stray_config.py`, wired into `helper
+  discover unifi --persist`) — cross-references UniFi network/VLAN definitions
+  against known clients by **subnet membership** (IP-based, deterministic — no
+  reliance on UniFi's internal id linkage). An enabled network with a routable
+  subnet and zero clients in it opens a `STRAY_CONFIG` (LOW) finding, with the
+  fingerprint + reopen-on-recurrence lifecycle; a network that gains a client
+  resolves it. Invariant #1 respected (a vanished network isn't auto-resolved);
+  networks without a subnet are skipped. Structural L1 signal — the roadmap's
+  "no traffic in N days" refinement still leans on the Phase-2 time-series.
+- [x] **Cross-resolver service identity** (`dns_reconcile.service_key` +
+  service-level split-brain in `view`) — the DNS reconcile now keys a `Service`
+  by the leftmost DNS label (canonical short name), so internal `ha.lan` and
+  external `ha.example.com` attach to one `Service` (`ha`) while each endpoint
+  keeps its full FQDN. `helper view service` detects split-brain at the service
+  level (internal IPs vs external IPs), not per exact hostname — so differently-
+  suffixed internal/external names now surface as split-brain. Colliding short
+  names merge (acceptable for a homelab); an explicit alias map can override
+  later.
 
 ### Discovery sources & probes (next up)
 
-- [ ] **OMV NFS/SMB export enumeration** — extend the OpenMediaVault adapter with
-  the export reads (NFS `getShareList`, SMB share list) so exported shares join
-  the shared-folder inventory. Deferred from the initial OMV slice because the
-  export RPC method names need live validation; feeds later stray-export
-  detection.
-- [ ] **Cross-resolver service identity** — split-brain `view` only fires when the
-  internal and external endpoints share an exact hostname string. Real fleets
-  suffix them differently (`ha.lan` internal vs `ha.example.com` external), so
-  each lands as its own `Service` and never pairs. Add a normalization/alias step
-  (short-name↔FQDN, or an explicit alias map) so differently-suffixed names for
-  one service reconcile onto a single `Service` and the split-brain surfaces.
+- [ ] **OMV export → stray-export detection** — with NFS/SMB exports now
+  inventoried, flag an exported share whose backing shared-folder/filesystem is
+  gone (or an export no client mounts, once temporal data lands) as a
+  `STRAY_CONFIG` on the storage side. Complements the UniFi network stray-config.
+- [ ] **Explicit service alias map** — an operator-editable fixture that overrides
+  the leftmost-label heuristic when two distinct services share a short name (or
+  one service spans unrelated short names). Refines cross-resolver identity.
 
 ### Reconciler / assertions (landed)
 

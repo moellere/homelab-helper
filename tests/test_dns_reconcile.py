@@ -13,6 +13,7 @@ from homelab_helper.engine.dns_reconcile import (
     _address_records,
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
+    service_key,
 )
 
 
@@ -69,7 +70,8 @@ async def test_reconcile_creates_service_and_internal_endpoint(sessionmaker) -> 
     async with sessionmaker() as s:
         svc = (await s.execute(select(Service))).scalar_one()
         ep = (await s.execute(select(ServiceEndpoint))).scalar_one()
-        assert svc.name == "nas.lan"
+        assert svc.name == "nas"  # canonical service key (leftmost label)
+        assert ep.hostname == "nas.lan"  # endpoint keeps the full hostname
         assert ep.scope == ResolutionScope.INTERNAL
         assert ep.resolver == "unifi"
         assert ep.ip == "10.0.1.5"
@@ -108,7 +110,7 @@ async def test_reconcile_removes_deleted_records_and_orphan_service(sessionmaker
     assert result.removed == ["ha.lan"]
     async with sessionmaker() as s:
         names = {sv.name for sv in (await s.execute(select(Service))).scalars().all()}
-        assert names == {"nas.lan"}  # orphaned ha.lan service cleaned up
+        assert names == {"nas"}  # orphaned ha service cleaned up (canonical keys)
 
 
 async def test_reconcile_leaves_other_resolver_endpoints_untouched(sessionmaker) -> None:
@@ -210,3 +212,28 @@ async def test_internal_and_external_pair_on_one_service(sessionmaker) -> None:
         by_scope = {ep.scope: ep.ip for ep in eps}
         assert by_scope[ResolutionScope.INTERNAL] == "10.0.1.50"
         assert by_scope[ResolutionScope.EXTERNAL] == "203.0.113.9"  # split-brain, ready for `view`
+
+
+# ---------------------------------------------------------------------------
+# cross-resolver service identity (differently-suffixed names pair)
+# ---------------------------------------------------------------------------
+
+
+def test_service_key_takes_leftmost_label() -> None:
+    assert service_key("ha.lan") == "ha"
+    assert service_key("HA.example.com") == "ha"
+    assert service_key("nas") == "nas"
+
+
+async def test_differently_suffixed_names_pair_on_one_service(sessionmaker) -> None:
+    """The real cross-resolver case: internal ha.lan + external ha.example.com → one Service."""
+    async with session_scope(sessionmaker) as s:
+        await reconcile_internal_endpoints(s, [_rec("ha.lan", "10.0.1.50")])
+        await reconcile_external_endpoints(s, [_rec("ha.example.com", "203.0.113.9")])
+    async with sessionmaker() as s:
+        services = (await s.execute(select(Service))).scalars().all()
+        assert len(services) == 1
+        assert services[0].name == "ha"  # canonical key, not either FQDN
+        eps = (await s.execute(select(ServiceEndpoint))).scalars().all()
+        assert {ep.hostname for ep in eps} == {"ha.lan", "ha.example.com"}  # full FQDNs kept
+        assert {ep.scope for ep in eps} == {ResolutionScope.INTERNAL, ResolutionScope.EXTERNAL}

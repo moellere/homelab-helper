@@ -97,19 +97,22 @@ def _print_endpoints(endpoints: list[ServiceEndpoint]) -> None:
 
 
 def _print_split_brain(endpoints: list[ServiceEndpoint]) -> None:
-    """Flag hostnames that resolve to different IPs internally vs externally."""
-    by_host: dict[str, dict[ResolutionScope, str]] = {}
-    for ep in endpoints:
-        if ep.ip:
-            by_host.setdefault(ep.hostname, {})[ep.scope] = ep.ip
-    for hostname, scopes in by_host.items():
-        internal = scopes.get(ResolutionScope.INTERNAL)
-        external = scopes.get(ResolutionScope.EXTERNAL)
-        if internal and external and internal != external:
-            console.print(
-                f"\n[yellow]DNS split-brain[/yellow] {hostname}: "
-                f"internal → {internal}, external → {external}"
-            )
+    """Flag a service that resolves to different IPs internally vs externally.
+
+    Compared at the service level, not per exact hostname — the internal and
+    external resolvers name the same service with different suffixes
+    (``ha.lan`` vs ``ha.example.com``), so pairing on the hostname string would
+    miss it. Both sets of endpoints hang off one ``Service`` (see
+    ``dns_reconcile.service_key``); differing internal-vs-external IPs are the
+    split-brain.
+    """
+    internal = sorted({ep.ip for ep in endpoints if ep.scope == ResolutionScope.INTERNAL and ep.ip})
+    external = sorted({ep.ip for ep in endpoints if ep.scope == ResolutionScope.EXTERNAL and ep.ip})
+    if internal and external and internal != external:
+        console.print(
+            f"\n[yellow]DNS split-brain[/yellow]: "
+            f"internal → {', '.join(internal)}, external → {', '.join(external)}"
+        )
 
 
 async def _print_service_crossrefs(

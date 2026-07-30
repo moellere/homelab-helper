@@ -46,6 +46,7 @@ from homelab_helper.engine.scan_import import (
     classify,
     parse_scan_csv,
 )
+from homelab_helper.engine.stray_config import reconcile_stray_config
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
 from homelab_helper.probes.network.fingerprint import NetworkFingerprintProbe
@@ -746,7 +747,9 @@ def discover_network(
 @discover_app.command(name="unifi")
 def discover_unifi(
     persist: bool = typer.Option(
-        False, "--persist", help="Reconcile internal ServiceEndpoints from DNS + clients."
+        False,
+        "--persist",
+        help="Reconcile internal ServiceEndpoints from DNS + stray-config from networks/clients.",
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="With --persist, preview + roll back."),
 ) -> None:
@@ -788,7 +791,9 @@ def discover_unifi(
         try:
             sm = make_sessionmaker(engine)
             async with session_scope(sm) as session:
-                result = await reconcile_internal_endpoints(session, dns, when=datetime.now(UTC))
+                now = datetime.now(UTC)
+                result = await reconcile_internal_endpoints(session, dns, when=now)
+                stray = await reconcile_stray_config(session, networks, clients, when=now)
                 if dry_run:
                     await session.rollback()
             console.print(
@@ -796,6 +801,16 @@ def discover_unifi(
                 f"{len(result.created)} created, {len(result.updated)} updated, "
                 f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
                 + (" [dim](dry-run, rolled back)[/dim]" if dry_run else "")
+            )
+            console.print(
+                f"[green]stray-config[/green]: {len(stray.opened)} opened, "
+                f"{len(stray.reopened)} reopened, {len(stray.updated)} re-seen, "
+                f"{len(stray.resolved)} resolved"
+                + (
+                    f" ({stray.skipped_no_subnet} network(s) skipped)"
+                    if stray.skipped_no_subnet
+                    else ""
+                )
             )
         finally:
             await engine.dispose()
@@ -937,12 +952,15 @@ def discover_omv() -> None:
             disks = await adapter.list_smart_devices()
             shares = await adapter.list_shared_folders()
             services = await adapter.list_services()
+            nfs = await adapter.list_nfs_exports()
+            smb = await adapter.list_smb_shares()
         finally:
             await adapter.aclose()
 
         console.print(
             f"[cyan]openmediavault[/cyan]: {len(filesystems)} filesystem(s), "
-            f"{len(disks)} disk(s), {len(shares)} share(s), {len(services)} service(s)"
+            f"{len(disks)} disk(s), {len(shares)} share(s), {len(services)} service(s), "
+            f"{len(nfs)} NFS + {len(smb)} SMB export(s)"
         )
 
         fs_table = Table(title="filesystems")
@@ -966,6 +984,19 @@ def discover_omv() -> None:
                 str(sh.get("name")), str(sh.get("path") or "—"), str(sh.get("comment") or "—")
             )
         console.print(share_table)
+
+        if nfs or smb:
+            exp_table = Table(title="exports")
+            for col in ("protocol", "share", "detail"):
+                exp_table.add_column(col, overflow="fold")
+            for e in nfs:
+                exp_table.add_row(
+                    "nfs", str(e.get("shared_folder") or "—"), str(e.get("client") or "—")
+                )
+            for e in smb:
+                detail = "ro" if e.get("readonly") else "rw"
+                exp_table.add_row("smb", str(e.get("name") or "—"), detail)
+            console.print(exp_table)
 
         running = [s for s in services if s.get("running")]
         console.print(f"[bold]services[/bold]: {len(running)}/{len(services)} running")

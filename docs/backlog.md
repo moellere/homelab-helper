@@ -250,6 +250,31 @@ The rest of Phase 1, and all of Phase 6, is below.
   the leftmost-label heuristic when two distinct services share a short name (or
   one service spans unrelated short names). Refines cross-resolver identity.
 
+### Phase 4 — conversational layer (started)
+
+- [x] **MCP server** (`mcp_server.py` + `helper mcp serve|tools`) — the query
+  surface as Model Context Protocol tools over stdio (official `mcp` SDK):
+  `list_hosts`, `get_host` (identity + guests + endpoints + open findings),
+  `list_findings`/`get_finding` (stable fingerprints as identities),
+  `list_services`/`get_service` (split-brain surfaced as data), `audit_summary`,
+  and `run_discovery` for the six management-plane sources (reads live source,
+  persists to harness DB — never writes to the lab). Lookup misses and adapter
+  errors return `{"error": ...}` payloads so LLM callers can react instead of
+  hitting protocol faults. Registers with Claude Code via
+  `claude mcp add homelab -- uv run --directory <repo> helper mcp serve`.
+- [ ] **LLMRouter** — task-class → privacy → capability tier → backend selection;
+  Ollama default, BYOK Anthropic/OpenAI/OpenAI-compatible; refuses cleanly when
+  policy can't be satisfied (strict-local + Frontier ask → clear refusal).
+- [ ] **`helper chat`** — CLI chat loop over the router with read-only engine
+  access (P4-AC1).
+- [ ] **Narrator agent** — findings → prose (P4-AC2 Ceph narration).
+- [ ] **Conversational Discovery Agent** — interview-style host onboarding
+  (P4-AC3).
+- [ ] **Skill Inferer** — passive per-domain trust hints from chat (P4-AC6).
+- [ ] **MCP host-discovery tool** — expose SSH host deep-probe via MCP once
+  credential handling over MCP is designed (P4-AC4's NetBox leg; needs a
+  credential-reference story, not raw secrets through tool args).
+
 ### Reconciler / assertions (landed)
 
 - [x] **Forged-WWN collision guard** — `Reconciler._resolve_storage_identity` +

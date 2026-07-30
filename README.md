@@ -99,12 +99,24 @@ Keep tokens and keys in the environment — never commit them.
 
 ### Using with Claude / MCP
 
-There is no native MCP server yet — it's a **Phase 4** deliverable (see
-[`roadmap.md`](./docs/roadmap.md)), which will expose the engine and adapter
-capabilities as MCP tools for Claude Desktop / Claude Code / Cursor. Until then,
-the practical path is to run **Claude Code inside this repo**: it drives the
-`helper` CLI directly ("discover the host at 10.0.6.27", "show me service X"),
-which stays within the read-only L1 stance.
+The harness ships a native **MCP server** (the first Phase-4 deliverable) that
+exposes its query surface as tools for Claude Desktop / Claude Code / Cursor:
+`list_hosts`, `get_host`, `list_findings`, `get_finding`, `list_services`,
+`get_service`, `audit_summary`, and `run_discovery` (management-plane sources
+only — reads the live source, persists to the harness DB, never writes to the
+lab).
+
+```bash
+uv run helper mcp tools    # list the tool roster
+uv run helper mcp serve    # stdio server (launched by a client)
+
+# Register with Claude Code:
+claude mcp add homelab -- uv run --directory /path/to/homelab-helper helper mcp serve
+```
+
+For Claude Desktop, add the same command under `mcpServers` in its config.
+Everything the server can do stays within the read-only L1 stance; source
+credentials come from the same `HOMELAB_HELPER_*` env vars as the CLI.
 
 ## Repo layout
 

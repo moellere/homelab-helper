@@ -29,6 +29,7 @@ from homelab_helper.cli.diff import diff_app
 from homelab_helper.cli.discover import discover_app
 from homelab_helper.cli.findings import findings_app
 from homelab_helper.cli.host import host_app
+from homelab_helper.cli.mcp import mcp_app
 from homelab_helper.cli.netbox import netbox_app
 from homelab_helper.cli.probes import probes_app
 from homelab_helper.cli.view import view_app
@@ -45,6 +46,7 @@ app.add_typer(probes_app)
 app.add_typer(config_app, name="config")
 app.add_typer(view_app)
 app.add_typer(diff_app)
+app.add_typer(mcp_app)
 
 console = Console()
 

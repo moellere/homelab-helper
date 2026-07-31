@@ -947,7 +947,11 @@ def discover_omv() -> None:
                 )
             for e in smb:
                 detail = "ro" if e.get("readonly") else "rw"
-                exp_table.add_row("smb", str(e.get("name") or "—"), detail)
+                # OMV leaves `name` empty on SMB rows — the shared folder is the
+                # identifying label, same as the NFS side.
+                exp_table.add_row(
+                    "smb", str(e.get("name") or e.get("shared_folder") or "—"), detail
+                )
             console.print(exp_table)
 
         running = [s for s in services if s.get("running")]

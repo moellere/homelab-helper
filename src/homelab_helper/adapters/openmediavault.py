@@ -50,6 +50,17 @@ _RPC_SERVICES = ("Services", "getStatus")
 _RPC_NFS_SHARES = ("NFS", "getShareList")
 _RPC_SMB_SHARES = ("SMB", "getShareList")
 
+# The ``getShareList`` RPCs validate against OMV's paged-query schema, which
+# makes start/limit/sortfield/sortdir required — omitting them is a 400, not an
+# unpaged result. ``limit: -1`` is OMV's "no limit". The enumerate-style RPCs
+# above take no params.
+_PAGING_ALL: dict[str, Any] = {
+    "start": 0,
+    "limit": -1,
+    "sortfield": None,
+    "sortdir": None,
+}
+
 
 class OpenMediaVaultConfigError(RuntimeError):
     """Raised when required OpenMediaVault configuration is missing."""
@@ -281,12 +292,12 @@ class OpenMediaVaultAdapter:
 
     async def list_nfs_exports(self) -> list[dict[str, Any]]:
         await self._login()
-        rows = self._rows(await self._rpc(*_RPC_NFS_SHARES))
+        rows = self._rows(await self._rpc(*_RPC_NFS_SHARES, _PAGING_ALL))
         return [parse_nfs_export(r) for r in rows]
 
     async def list_smb_shares(self) -> list[dict[str, Any]]:
         await self._login()
-        rows = self._rows(await self._rpc(*_RPC_SMB_SHARES))
+        rows = self._rows(await self._rpc(*_RPC_SMB_SHARES, _PAGING_ALL))
         return [parse_smb_share(r) for r in rows]
 
     async def health_check(self) -> tuple[bool, str | None]:

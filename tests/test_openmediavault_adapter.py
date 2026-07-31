@@ -272,3 +272,44 @@ async def test_health_check_reports_login_failure() -> None:
         await adapter.aclose()
     assert ok is False
     assert err is not None
+
+
+async def test_share_list_rpcs_send_omv_paging_params() -> None:
+    """OMV validates getShareList against its paged-query schema.
+
+    Omitting start/limit/sortfield/sortdir is a 400 ("Missing 'required'
+    attribute 'start'"), not an unpaged result — so the params are part of the
+    contract, not an optimization. The enumerate-style RPCs take none.
+    """
+    bodies: dict[tuple[str, str], object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        bodies[(payload["service"], payload["method"])] = payload["params"]
+        return _default_handler(request)
+
+    adapter = _adapter(handler)
+    try:
+        await adapter.list_nfs_exports()
+        await adapter.list_smb_shares()
+        await adapter.list_filesystems()
+    finally:
+        await adapter.aclose()
+
+    for rpc in (("NFS", "getShareList"), ("SMB", "getShareList")):
+        params = bodies[rpc]
+        assert isinstance(params, dict), f"{rpc} sent {params!r}"
+        assert params["start"] == 0
+        assert params["limit"] == -1  # OMV's "no limit"
+        assert "sortfield" in params
+        assert "sortdir" in params
+
+    # Enumerate-style RPCs are unchanged — no params.
+    assert bodies[("FileSystemMgmt", "enumerateMountedFilesystems")] is None
+
+
+async def test_parse_smb_share_falls_back_to_shared_folder_for_label() -> None:
+    """Real OMV rows leave `name` empty; the shared folder is the label."""
+    parsed = parse_smb_share({"uuid": "s2", "sharedfoldername": "backup", "readonly": False})
+    assert parsed["name"] is None
+    assert parsed["shared_folder"] == "backup"

@@ -155,7 +155,7 @@ async def test_list_dns_records_hits_site_path() -> None:
         records = await adapter.list_dns_records()
     finally:
         await adapter.aclose()
-    assert seen["path"] == "/proxy/network/api/s/default/rest/dnsrecord"
+    assert seen["path"] == "/proxy/network/v2/api/site/default/static-dns"
     assert seen["key"] == "key123"
     assert records[0]["hostname"] == "nas.lan"
 
@@ -218,7 +218,7 @@ async def test_site_path_uses_configured_site() -> None:
         await adapter.list_dns_records()
     finally:
         await adapter.aclose()
-    assert "/api/s/lab/" in seen["path"]
+    assert "/v2/api/site/lab/" in seen["path"]
 
 
 async def test_api_error_raised_on_non_2xx() -> None:
@@ -258,3 +258,71 @@ async def test_health_check_reports_failure() -> None:
         await adapter.aclose()
     assert ok is False
     assert err is not None
+
+
+# ---------------------------------------------------------------------------
+# multi-controller configuration
+# ---------------------------------------------------------------------------
+
+
+def test_resolver_tag_distinguishes_controllers() -> None:
+    """Endpoints are keyed by (scope, resolver), so two gateways must not share
+    a resolver or each sync would reap the other's rows."""
+    assert UniFiConfig(url="u", api_key="k").resolver == "unifi"
+    assert UniFiConfig(url="u", api_key="k", name="covington").resolver == "unifi:covington"
+    assert UniFiConfig(url="u", api_key="k", name="wyola").resolver == "unifi:wyola"
+
+
+def test_all_from_env_returns_single_controller_when_list_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HOMELAB_HELPER_UNIFI_CONTROLLERS", raising=False)
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_URL", "https://gw.lan")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_API_KEY", "k1")
+    configs = UniFiConfig.all_from_env()
+    assert [c.name for c in configs] == ["default"]
+    assert configs[0].resolver == "unifi"
+
+
+def test_all_from_env_reads_each_named_controller(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_CONTROLLERS", "covington, wyola")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_COVINGTON_URL", "https://10.250.0.1")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_COVINGTON_API_KEY", "key-a")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_WYOLA_URL", "https://10.254.0.1")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_WYOLA_API_KEY", "key-b")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_WYOLA_SITE", "wyola-site")
+
+    configs = UniFiConfig.all_from_env()
+
+    assert [c.name for c in configs] == ["covington", "wyola"]
+    # A key is per-controller — one gateway's key is rejected by another.
+    assert [c.api_key for c in configs] == ["key-a", "key-b"]
+    assert [c.resolver for c in configs] == ["unifi:covington", "unifi:wyola"]
+    assert configs[1].site == "wyola-site"
+    assert configs[0].site == "default"
+
+
+def test_all_from_env_names_the_controller_that_is_missing_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_CONTROLLERS", "covington,wyola")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_COVINGTON_URL", "https://10.250.0.1")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_COVINGTON_API_KEY", "key-a")
+    monkeypatch.delenv("HOMELAB_HELPER_UNIFI_WYOLA_URL", raising=False)
+    monkeypatch.delenv("HOMELAB_HELPER_UNIFI_WYOLA_API_KEY", raising=False)
+
+    with pytest.raises(UniFiConfigError) as exc:
+        UniFiConfig.all_from_env()
+    assert "wyola" in str(exc.value)
+    assert "HOMELAB_HELPER_UNIFI_WYOLA_URL" in str(exc.value)
+
+
+def test_hyphenated_controller_name_maps_to_underscored_vars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_CONTROLLERS", "site-b")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_SITE_B_URL", "https://gw-b.lan")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_SITE_B_API_KEY", "key-b")
+    (config,) = UniFiConfig.all_from_env()
+    assert config.name == "site-b"
+    assert config.resolver == "unifi:site-b"

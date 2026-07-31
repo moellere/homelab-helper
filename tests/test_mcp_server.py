@@ -219,7 +219,7 @@ def _wrap(rows: list[dict]) -> dict:
 
 def _unifi_handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
-    if path.endswith("/rest/dnsrecord"):
+    if path.endswith("/static-dns"):
         return httpx.Response(
             200, json=_wrap([{"key": "nas.lan", "value": "10.0.1.5", "record_type": "A"}])
         )

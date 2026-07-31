@@ -42,7 +42,7 @@ def _wrap(rows: list[dict]) -> dict:
 
 def _unifi_handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
-    if path.endswith("/rest/dnsrecord"):
+    if path.endswith("/static-dns"):
         return _r([{"key": "nas.lan", "value": "10.0.1.5", "record_type": "A"}])
     if path.endswith("/rest/user"):
         return _r([{"hostname": "nas", "ip": "10.0.1.5", "mac": "aa:bb:cc:00:11:22"}])

@@ -12,7 +12,7 @@ import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -26,7 +26,7 @@ from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.talos import TalosAdapter
-from homelab_helper.adapters.unifi import UniFiAdapter
+from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
@@ -107,6 +107,18 @@ def _load_k8s_adapter() -> K8sAdapter:
 def _load_unifi_adapter() -> UniFiAdapter:
     """Factory (monkeypatched in tests) — builds a UniFi adapter from env."""
     return UniFiAdapter.from_env()
+
+
+def _load_unifi_adapters() -> list[UniFiAdapter]:
+    """Every configured controller.
+
+    Without ``HOMELAB_HELPER_UNIFI_CONTROLLERS`` this defers to the single-
+    controller factory above, so one gateway stays the simple path.
+    """
+    raw = os.environ.get("HOMELAB_HELPER_UNIFI_CONTROLLERS") or ""
+    if not [n for n in raw.split(",") if n.strip()]:
+        return [_load_unifi_adapter()]
+    return [UniFiAdapter(cfg) for cfg in UniFiConfig.all_from_env()]
 
 
 def _load_cloudflare_adapter() -> CloudflareAdapter:
@@ -707,34 +719,50 @@ def discover_unifi(
 ) -> None:
     """Read a UniFi controller's DNS records, clients, and networks (read-only)."""
 
-    async def _go() -> int:
-        adapter = _load_unifi_adapter()
+    async def _read_one(adapter: UniFiAdapter) -> dict[str, Any] | None:
         try:
             ok, err = await adapter.health_check()
             if not ok:
-                console.print(f"[red]unifi unreachable:[/red] {err}")
-                return 1
-            dns = await adapter.list_dns_records()
-            clients = await adapter.list_clients()
-            networks = await adapter.list_networks()
+                console.print(
+                    f"[red]unifi[/red] [bold]{adapter.config.name}[/bold] unreachable: {err}"
+                )
+                return None
+            return {
+                "dns": await adapter.list_dns_records(),
+                "clients": await adapter.list_clients(),
+                "networks": await adapter.list_networks(),
+            }
         finally:
             await adapter.aclose()
 
-        console.print(
-            f"[cyan]unifi[/cyan]: {len(dns)} DNS record(s), {len(clients)} client(s), "
-            f"{len(networks)} network(s)"
-        )
-        table = Table(title="internal DNS")
-        for col in ("hostname", "value", "type", "enabled"):
-            table.add_column(col)
-        for r in sorted(dns, key=lambda d: str(d.get("hostname"))):
-            table.add_row(
-                str(r.get("hostname")),
-                str(r.get("value")),
-                str(r.get("record_type")),
-                str(r.get("enabled")),
+    async def _go() -> int:
+        adapters = _load_unifi_adapters()
+        reachable: list[tuple[UniFiAdapter, dict[str, Any]]] = []
+        for adapter in adapters:
+            data = await _read_one(adapter)
+            if data is not None:
+                reachable.append((adapter, data))
+        if not reachable:
+            return 1
+
+        for adapter, data in reachable:
+            cfg = adapter.config
+            console.print(
+                f"[cyan]unifi[/cyan] [bold]{cfg.name}[/bold] ({cfg.url}): "
+                f"{len(data['dns'])} DNS record(s), {len(data['clients'])} client(s), "
+                f"{len(data['networks'])} network(s)"
             )
-        console.print(table)
+            table = Table(title=f"internal DNS - {cfg.name}")
+            for col in ("hostname", "value", "type", "enabled"):
+                table.add_column(col)
+            for r in sorted(data["dns"], key=lambda d: str(d.get("hostname"))):
+                table.add_row(
+                    str(r.get("hostname")),
+                    str(r.get("value")),
+                    str(r.get("record_type")),
+                    str(r.get("enabled")),
+                )
+            console.print(table)
 
         if not persist:
             return 0
@@ -744,26 +772,34 @@ def discover_unifi(
             sm = make_sessionmaker(engine)
             async with session_scope(sm) as session:
                 now = datetime.now(UTC)
-                result = await reconcile_internal_endpoints(session, dns, when=now)
-                stray = await reconcile_stray_config(session, networks, clients, when=now)
+                for adapter, data in reachable:
+                    cfg = adapter.config
+                    # Each controller owns its own (scope, resolver) slice, so
+                    # one gateway's sync never reaps another's endpoints.
+                    result = await reconcile_internal_endpoints(
+                        session, data["dns"], resolver=cfg.resolver, when=now
+                    )
+                    stray = await reconcile_stray_config(
+                        session, data["networks"], data["clients"], when=now
+                    )
+                    console.print(
+                        f"[green]endpoints[/green] ({cfg.resolver}/internal): "
+                        f"{len(result.created)} created, {len(result.updated)} updated, "
+                        f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
+                    )
+                    console.print(
+                        f"[green]stray-config[/green] ({cfg.name}): {len(stray.opened)} opened, "
+                        f"{len(stray.reopened)} reopened, {len(stray.updated)} re-seen, "
+                        f"{len(stray.resolved)} resolved"
+                        + (
+                            f" ({stray.skipped_no_subnet} network(s) skipped)"
+                            if stray.skipped_no_subnet
+                            else ""
+                        )
+                    )
                 if dry_run:
                     await session.rollback()
-            console.print(
-                f"[green]endpoints[/green] (unifi/internal): "
-                f"{len(result.created)} created, {len(result.updated)} updated, "
-                f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
-                + (" [dim](dry-run, rolled back)[/dim]" if dry_run else "")
-            )
-            console.print(
-                f"[green]stray-config[/green]: {len(stray.opened)} opened, "
-                f"{len(stray.reopened)} reopened, {len(stray.updated)} re-seen, "
-                f"{len(stray.resolved)} resolved"
-                + (
-                    f" ({stray.skipped_no_subnet} network(s) skipped)"
-                    if stray.skipped_no_subnet
-                    else ""
-                )
-            )
+                    console.print("[dim](dry-run, rolled back)[/dim]")
         finally:
             await engine.dispose()
         return 0

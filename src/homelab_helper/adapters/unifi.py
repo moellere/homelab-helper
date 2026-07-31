@@ -57,6 +57,14 @@ class UniFiConfig:
     site: str = "default"
     verify_ssl: bool = False  # UniFi ships a self-signed cert by default
     timeout_s: float = 10.0
+    name: str = "default"
+    """Controller label. Distinguishes gateways in a multi-site lab, and lands
+    in the DNS resolver tag so two controllers' endpoints never collide."""
+
+    @property
+    def resolver(self) -> str:
+        """Resolver tag for ServiceEndpoints produced by this controller."""
+        return "unifi" if self.name == "default" else f"unifi:{self.name}"
 
     @classmethod
     def from_env(cls) -> UniFiConfig:
@@ -69,7 +77,44 @@ class UniFiConfig:
             )
         site = os.environ.get("HOMELAB_HELPER_UNIFI_SITE") or "default"
         verify = os.environ.get("HOMELAB_HELPER_UNIFI_VERIFY_SSL", "false").lower() not in _FALSEY
-        return cls(url=url, api_key=api_key, site=site, verify_ssl=verify)
+        name = os.environ.get("HOMELAB_HELPER_UNIFI_NAME") or "default"
+        return cls(url=url, api_key=api_key, site=site, verify_ssl=verify, name=name)
+
+    @classmethod
+    def all_from_env(cls) -> list[UniFiConfig]:
+        """Every configured controller, for labs with more than one gateway.
+
+        ``HOMELAB_HELPER_UNIFI_CONTROLLERS=covington,wyola`` opts in; each name
+        then reads ``HOMELAB_HELPER_UNIFI_<NAME>_URL`` / ``_API_KEY`` (and
+        optional ``_SITE`` / ``_VERIFY_SSL``). An API key is per-controller —
+        one gateway's key is rejected by another. With the list unset this is
+        the single unsuffixed controller, so existing setups are unaffected.
+        """
+        raw = os.environ.get("HOMELAB_HELPER_UNIFI_CONTROLLERS") or ""
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+        if not names:
+            return [cls.from_env()]
+        configs: list[UniFiConfig] = []
+        for name in names:
+            prefix = f"HOMELAB_HELPER_UNIFI_{name.upper().replace('-', '_')}_"
+            url = os.environ.get(prefix + "URL")
+            api_key = os.environ.get(prefix + "API_KEY")
+            if not url or not api_key:
+                raise UniFiConfigError(
+                    f"UniFi controller {name!r} is listed in "
+                    f"HOMELAB_HELPER_UNIFI_CONTROLLERS but needs {prefix}URL and {prefix}API_KEY."
+                )
+            verify = os.environ.get(prefix + "VERIFY_SSL", "false").lower() not in _FALSEY
+            configs.append(
+                cls(
+                    url=url,
+                    api_key=api_key,
+                    site=os.environ.get(prefix + "SITE") or "default",
+                    verify_ssl=verify,
+                    name=name,
+                )
+            )
+        return configs
 
 
 def parse_dns_record(raw: dict[str, Any]) -> dict[str, Any]:
@@ -167,6 +212,11 @@ class UniFiAdapter:
     def _site_path(self, tail: str) -> str:
         return f"/api/s/{self.config.site}/{tail.lstrip('/')}"
 
+    def _v2_site_path(self, tail: str) -> str:
+        """v2 API path. Static DNS lives here; the v1 ``rest/dnsrecord`` route
+        answers ``api.err.InvalidObject`` on current controllers."""
+        return f"/v2/api/site/{self.config.site}/{tail.lstrip('/')}"
+
     async def _request(self, method: str, path: str) -> Any:
         response = await self.client.request(method, path)
         if response.status_code >= _HTTP_ERROR_THRESHOLD:
@@ -181,7 +231,9 @@ class UniFiAdapter:
     # ------------------------------------------------------------------ reads
 
     async def list_dns_records(self) -> list[dict[str, Any]]:
-        rows = await self._request("GET", self._site_path("rest/dnsrecord")) or []
+        """Static DNS entries. The v2 route returns a bare JSON array rather
+        than the ``{meta, data}`` envelope — ``_request`` passes both through."""
+        rows = await self._request("GET", self._v2_site_path("static-dns")) or []
         return [parse_dns_record(r) for r in rows]
 
     async def list_clients(self) -> list[dict[str, Any]]:

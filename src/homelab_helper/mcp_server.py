@@ -33,7 +33,7 @@ from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
-from homelab_helper.adapters.unifi import UniFiAdapter
+from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.config import config_status as _config_status
 from homelab_helper.config import database_url, load_env
 from homelab_helper.db.enums import FindingStatus, ResolutionScope
@@ -394,6 +394,15 @@ def _load_unifi_adapter() -> UniFiAdapter:
     return UniFiAdapter.from_env()
 
 
+def _load_unifi_adapters() -> list[UniFiAdapter]:
+    """Every configured controller; defers to the single-controller factory
+    unless HOMELAB_HELPER_UNIFI_CONTROLLERS names more than one."""
+    raw = os.environ.get("HOMELAB_HELPER_UNIFI_CONTROLLERS") or ""
+    if not [n for n in raw.split(",") if n.strip()]:
+        return [_load_unifi_adapter()]
+    return [UniFiAdapter(cfg) for cfg in UniFiConfig.all_from_env()]
+
+
 def _load_cloudflare_adapter() -> CloudflareAdapter:
     """Factory (monkeypatched in tests)."""
     return CloudflareAdapter.from_env()
@@ -419,8 +428,8 @@ def _load_omv_adapter() -> OpenMediaVaultAdapter:
     return OpenMediaVaultAdapter.from_env()
 
 
-async def _discover_unifi(session: AsyncSession) -> dict[str, Any]:
-    adapter = _load_unifi_adapter()
+async def _discover_one_unifi(session: AsyncSession, adapter: UniFiAdapter) -> dict[str, Any]:
+    cfg = adapter.config
     try:
         dns = await adapter.list_dns_records()
         clients = await adapter.list_clients()
@@ -428,9 +437,13 @@ async def _discover_unifi(session: AsyncSession) -> dict[str, Any]:
     finally:
         await adapter.aclose()
     now = datetime.now(UTC)
-    eps = await reconcile_internal_endpoints(session, dns, when=now)
+    # Each controller owns its own (scope, resolver) slice, so one gateway's
+    # sync never reaps another's endpoints.
+    eps = await reconcile_internal_endpoints(session, dns, resolver=cfg.resolver, when=now)
     stray = await reconcile_stray_config(session, networks, clients, when=now)
     return {
+        "controller": cfg.name,
+        "resolver": cfg.resolver,
         "dns_records": len(dns),
         "clients": len(clients),
         "networks": len(networks),
@@ -441,6 +454,21 @@ async def _discover_unifi(session: AsyncSession) -> dict[str, Any]:
         },
         "stray_config": {"opened": len(stray.opened), "resolved": len(stray.resolved)},
     }
+
+
+async def _discover_unifi(session: AsyncSession) -> dict[str, Any]:
+    """Read every configured controller. A lab with one gateway gets a
+    one-element list; a multi-site lab gets one entry per controller, and an
+    unreachable controller is reported without failing the others."""
+    results: list[dict[str, Any]] = []
+    for adapter in _load_unifi_adapters():
+        try:
+            results.append(await _discover_one_unifi(session, adapter))
+        except Exception as exc:
+            results.append({"controller": adapter.config.name, "error": str(exc)})
+    if len(results) == 1:
+        return results[0]
+    return {"controllers": results}
 
 
 async def _discover_cloudflare(session: AsyncSession) -> dict[str, Any]:

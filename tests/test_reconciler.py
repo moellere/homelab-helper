@@ -42,7 +42,12 @@ from homelab_helper.db.models import (
     ReconciliationFinding,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
-from homelab_helper.engine.reconciler import HostProjectionRule, Reconciler, normalize_arch
+from homelab_helper.engine.reconciler import (
+    HostProjectionRule,
+    Reconciler,
+    normalize_arch,
+    normalize_wwn,
+)
 
 
 @pytest.fixture
@@ -930,7 +935,7 @@ async def test_first_storage_observation_creates_part_and_placement(sessionmaker
             host.id,
             {
                 "host.storage.devices": [
-                    _disk("nvme0n1", wwn="nvme-wwn-aaa"),
+                    _disk("nvme0n1", wwn="0025385191b1c4e2"),
                     _disk(
                         "sda", wwn=None, serial="SATA-SER-bbb", transport="sata", rotational=True
                     ),
@@ -944,8 +949,8 @@ async def test_first_storage_observation_creates_part_and_placement(sessionmaker
     assert result.parts_upserted == 2
     assert result.parts_skipped_no_identity == 0
     assert sorted(result.placements_opened) == [
+        ("0025385191b1c4e2", "/dev/nvme0n1"),
         ("SATA-SER-bbb", "/dev/sda"),
-        ("nvme-wwn-aaa", "/dev/nvme0n1"),
     ]
     assert result.placements_closed == []
 
@@ -958,7 +963,7 @@ async def test_first_storage_observation_creates_part_and_placement(sessionmaker
         by_kind = {p.kind: p for p in parts}
         assert PartKind.NVME in by_kind  # transport=nvme
         assert PartKind.HDD in by_kind  # rotational=True
-        assert by_kind[PartKind.NVME].wwid == "nvme-wwn-aaa"
+        assert by_kind[PartKind.NVME].wwid == "0025385191b1c4e2"
         assert by_kind[PartKind.HDD].serial == "SATA-SER-bbb"
         # WWN-keyed part still records serial if probe supplied one.
         assert by_kind[PartKind.NVME].serial == "SDISK-DEFAULT"
@@ -972,14 +977,14 @@ async def test_storage_lineage_is_idempotent(sessionmaker) -> None:
             s,
             run.id,
             host.id,
-            {"host.storage.devices": [_disk("nvme0n1", wwn="nvme-wwn-aaa")]},
+            {"host.storage.devices": [_disk("nvme0n1", wwn="0025385191b1c4e2")]},
         )
 
         first = await Reconciler().reconcile_host(s, host.id)
         second = await Reconciler().reconcile_host(s, host.id)
 
     assert first.parts_upserted == 1
-    assert first.placements_opened == [("nvme-wwn-aaa", "/dev/nvme0n1")]
+    assert first.placements_opened == [("0025385191b1c4e2", "/dev/nvme0n1")]
     assert second.parts_upserted == 0
     assert second.placements_opened == []
     assert not second.touched_lineage
@@ -995,7 +1000,7 @@ async def test_storage_disk_moves_to_different_host(sessionmaker) -> None:
             s,
             run_src.id,
             src.id,
-            {"host.storage.devices": [_disk("nvme0n1", wwn="nvme-wwn-aaa")]},
+            {"host.storage.devices": [_disk("nvme0n1", wwn="0025385191b1c4e2")]},
             recorded_at=datetime(2026, 5, 1, tzinfo=UTC),
         )
         await Reconciler().reconcile_host(s, src.id)
@@ -1006,14 +1011,14 @@ async def test_storage_disk_moves_to_different_host(sessionmaker) -> None:
             s,
             run_dst.id,
             dst.id,
-            {"host.storage.devices": [_disk("nvme1n1", wwn="nvme-wwn-aaa")]},
+            {"host.storage.devices": [_disk("nvme1n1", wwn="0025385191b1c4e2")]},
             recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
         result = await Reconciler().reconcile_host(s, dst.id)
 
     assert result.parts_upserted == 0
-    assert result.placements_opened == [("nvme-wwn-aaa", "/dev/nvme1n1")]
-    assert result.placements_closed == [("nvme-wwn-aaa", "/dev/nvme0n1")]
+    assert result.placements_opened == [("0025385191b1c4e2", "/dev/nvme1n1")]
+    assert result.placements_closed == [("0025385191b1c4e2", "/dev/nvme0n1")]
 
     async with sessionmaker() as s:
         all_placements = (await s.execute(select(Placement))).scalars().all()
@@ -1079,8 +1084,9 @@ async def test_forged_wwn_collision_keys_by_serial_and_flags(sessionmaker) -> No
         # Three distinct parts, one per serial — not one shared part.
         assert sorted(p.serial for p in parts) == sorted(serials)
         # Exactly one part owns the forged WWN (the first); the others are
-        # serial-only so future WWN lookups stay unambiguous.
-        assert [p.serial for p in parts if p.wwid == forged] == ["SN0001"]
+        # serial-only so future WWN lookups stay unambiguous. Stored in the
+        # canonical bare-hex form, not the notation the probe happened to use.
+        assert [p.serial for p in parts if p.wwid == normalize_wwn(forged)] == ["SN0001"]
         assert {p.wwid for p in parts if p.serial in ("SN0002", "SN0003")} == {None}
 
         # Each of the three hosts keeps its own open placement (no bouncing).
@@ -1094,7 +1100,7 @@ async def test_forged_wwn_collision_keys_by_serial_and_flags(sessionmaker) -> No
         collisions = [f for f in findings if f.kind == FindingKind.STORAGE_PROVENANCE_DELTA]
         # Two colliders (cp2, cp3); cp1 established the WWN, so it isn't flagged.
         assert len(collisions) == 2
-        assert all(forged in f.title for f in collisions)
+        assert all(normalize_wwn(forged) in f.title for f in collisions)
 
 
 async def test_storage_disk_without_identity_is_skipped(sessionmaker) -> None:
@@ -1158,7 +1164,7 @@ async def test_storage_part_kind_reclassifies_on_better_evidence(sessionmaker) -
                 "host.storage.devices": [
                     _disk(
                         "nvme0n1",
-                        wwn="nvme-wwn-aaa",
+                        wwn="0025385191b1c4e2",
                         transport=None,
                         rotational=None,
                     ),
@@ -1173,14 +1179,14 @@ async def test_storage_part_kind_reclassifies_on_better_evidence(sessionmaker) -
             s,
             run2.id,
             host.id,
-            {"host.storage.devices": [_disk("nvme0n1", wwn="nvme-wwn-aaa")]},
+            {"host.storage.devices": [_disk("nvme0n1", wwn="0025385191b1c4e2")]},
             recorded_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
         await Reconciler().reconcile_host(s, host.id)
 
     async with sessionmaker() as s:
         part = (
-            await s.execute(select(PhysicalPart).where(PhysicalPart.wwid == "nvme-wwn-aaa"))
+            await s.execute(select(PhysicalPart).where(PhysicalPart.wwid == "0025385191b1c4e2"))
         ).scalar_one()
         assert part.kind == PartKind.NVME  # reclassified
 
@@ -1376,6 +1382,71 @@ async def test_nic_mac_is_normalized_to_lowercase(sessionmaker) -> None:
         )
         assert len(parts) == 1
         assert parts[0].serial == "aa:bb:cc:dd:ee:ff"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0x5000000000000001", "5000000000000001"),
+        ("naa.5000000000000001", "5000000000000001"),
+        ("wwn-0x5000000000000001", "5000000000000001"),
+        ("NAA.5000000000000001", "5000000000000001"),
+        ("  0x5000000000000001  ", "5000000000000001"),
+        ("nvme.eui.0025385191b1c4e2", "0025385191b1c4e2"),
+        ("eui.0025385191b1c4e2", "0025385191b1c4e2"),
+        ("5000-0000-0000-0001", "5000000000000001"),
+        # Not hex once stripped — passed through untouched, never coerced.
+        ("TPBF2209160050501345", "TPBF2209160050501345"),
+        ("WWN-DEFAULT", "WWN-DEFAULT"),
+        ("", ""),
+    ],
+)
+def test_normalize_wwn(raw: str, expected: str) -> None:
+    assert normalize_wwn(raw) == expected
+
+
+async def test_wwn_notation_change_closes_prior_placement(sessionmaker) -> None:
+    """One drive, two sources, two spellings — must be one part, not two.
+
+    The real case: three Pis were reflashed from Talos to Ubuntu and renamed.
+    Talos reported the USB SSD as ``naa.…``; lsblk reports the same drive as
+    ``0x…``. Before normalization the disk placement stayed open on the old
+    host while a duplicate part opened on the new one, so the drive appeared to
+    be in two places at once.
+    """
+    async with session_scope(sessionmaker) as s:
+        old_host = await _seed_host(s, hostname="pi-cp3")
+        run = await _seed_run(s, old_host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            old_host.id,
+            {"host.storage.devices": [_disk("sda", wwn="naa.5000000000000001", serial=None)]},
+        )
+        await Reconciler().reconcile_host(s, old_host.id)
+
+        new_host = await _seed_host(s, hostname="wynode2")
+        run2 = await _seed_run(s, new_host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run2.id,
+            new_host.id,
+            {"host.storage.devices": [_disk("sda", wwn="0x5000000000000001", serial=None)]},
+        )
+        result = await Reconciler().reconcile_host(s, new_host.id)
+
+        parts = (
+            (await s.execute(select(PhysicalPart).where(PhysicalPart.wwid == "5000000000000001")))
+            .scalars()
+            .all()
+        )
+        open_placements = (
+            (await s.execute(select(Placement).where(Placement.to_date.is_(None)))).scalars().all()
+        )
+
+    assert len(parts) == 1  # one drive, one part — not one per notation
+    assert [p.host_id for p in open_placements] == [new_host.id]
+    assert result.placements_closed == [("5000000000000001", "/dev/sda")]
 
 
 async def test_virtual_interfaces_are_filtered_not_no_identity(sessionmaker) -> None:
@@ -1581,12 +1652,12 @@ async def test_storage_reconcile_does_not_touch_nic_placements(sessionmaker) -> 
             s,
             run.id,
             host.id,
-            {"host.storage.devices": [_disk("nvme0n1", wwn="wwn-aaa")]},
+            {"host.storage.devices": [_disk("nvme0n1", wwn="0025385191b1c4e2")]},
         )
         result = await Reconciler().reconcile_host(s, host.id)
 
     assert result.placements_closed == []
-    assert ("wwn-aaa", "/dev/nvme0n1") in result.placements_opened
+    assert ("0025385191b1c4e2", "/dev/nvme0n1") in result.placements_opened
 
     async with sessionmaker() as s:
         open_p = await _open_placements(s, host.id)

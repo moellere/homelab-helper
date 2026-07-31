@@ -119,6 +119,20 @@ _STORAGE_PART_KINDS: tuple[PartKind, ...] = (
     PartKind.OTHER,
 )
 
+# WWN notation wrappers. Each source spells the same World Wide Name its own
+# way; normalize_wwn strips these (repeatedly — "nvme.eui." stacks two) to reach
+# the bare hex underneath.
+_WWN_NOTATION_PREFIXES: tuple[str, ...] = (
+    "wwn-",
+    "nvme.",
+    "nvme-",
+    "naa.",
+    "eui.",
+    "0x",
+)
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
 # Interface-name prefixes that mean "software construct, not a physical NIC."
 # Heuristic — the existing probe doesn't carry a PCI address. A future probe
 # version emitting one would let us replace this with a positive
@@ -1210,11 +1224,13 @@ def _storage_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
     """Return ``("wwid", wwn)`` or ``("serial", serial)`` for a storage entry.
 
     WWN preferred — USB enclosures and consumer drives often fake serials but
-    expose stable WWN. Empty strings count as missing.
+    expose stable WWN. Empty strings count as missing. The WWN is normalized
+    (:func:`normalize_wwn`) so the same drive keys identically no matter which
+    source observed it.
     """
     wwn = entry.get("wwn")
-    if isinstance(wwn, str) and wwn:
-        return ("wwid", wwn)
+    if isinstance(wwn, str) and wwn.strip():
+        return ("wwid", normalize_wwn(wwn))
     serial = entry.get("serial")
     if isinstance(serial, str) and serial:
         return ("serial", serial)
@@ -1281,6 +1297,34 @@ def _is_real_nic(entry: dict[str, Any]) -> bool:
     if not isinstance(name, str) or not name:
         return False
     return not any(name.startswith(p) for p in _VIRTUAL_NIC_PREFIXES)
+
+
+def normalize_wwn(raw: str) -> str:
+    """Canonicalize a WWN so one drive keys identically across probe sources.
+
+    The same disk is spelled ``0x5000000000000001`` by lsblk, ``naa.5000000000000001``
+    by Talos/COSI, and ``wwn-0x5000000000000001`` under ``/dev/disk/by-id`` —
+    three different part identities for one drive, so placements never closed on
+    a cross-source move. Strip the notation and separators down to bare lowercase
+    hex.
+
+    Only values that resolve to hex are rewritten. Anything else passes through
+    untouched — a missed match costs a duplicate part row, whereas rewriting an
+    identity we don't recognize risks merging two distinct drives onto one part
+    and corrupting lineage.
+    """
+    value = raw.strip().lower()
+    stripping = True
+    while stripping:
+        stripping = False
+        for prefix in _WWN_NOTATION_PREFIXES:
+            if value.startswith(prefix):
+                value = value[len(prefix) :]
+                stripping = True
+    candidate = value.replace("-", "").replace(":", "").replace(".", "")
+    if candidate and all(char in _HEX_DIGITS for char in candidate):
+        return candidate
+    return raw.strip()
 
 
 def _normalize_mac(mac: Any) -> str | None:

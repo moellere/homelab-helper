@@ -34,6 +34,8 @@ from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter
+from homelab_helper.config import config_status as _config_status
+from homelab_helper.config import database_url, load_env
 from homelab_helper.db.enums import FindingStatus, ResolutionScope
 from homelab_helper.db.models import (
     Cluster,
@@ -49,6 +51,8 @@ from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
 )
+from homelab_helper.engine.host_probe import HostProbeRequest, UnknownProbeError
+from homelab_helper.engine.host_probe import probe_host as _probe_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.stray_config import reconcile_stray_config
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
@@ -68,8 +72,13 @@ server = MCPServer(
 )
 
 
+# An MCP client launches this process with whatever environment it happens to
+# have, so the .env is loaded here as well as in the CLI entry point.
+load_env()
+
+
 def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
+    return database_url()
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -543,6 +552,168 @@ async def run_discovery(source: str) -> dict[str, Any]:
         return {"source": source, **result}
     except Exception as exc:  # surface adapter/config errors as data, not protocol faults
         return {"source": source, "error": str(exc)}
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def config_status() -> dict[str, Any]:
+    """Which discovery sources have credentials, which are missing what, and
+    where the harness DB and .env live. Secret values are never returned — only
+    whether each variable is set. Check this first when run_discovery reports a
+    credentials error."""
+    return _config_status()
+
+
+async def _lookup_by_prefix(
+    session: AsyncSession, prefix: str
+) -> ReconciliationFinding | dict[str, Any]:
+    """One finding whose fingerprint starts with ``prefix``, or an error dict.
+
+    Mirrors the CLI's prefix matching so the same short fingerprint works in
+    either surface; ambiguity is reported rather than guessed at.
+    """
+    if not prefix:
+        return {"error": "fingerprint prefix cannot be empty"}
+    matches = (
+        (
+            await session.execute(
+                select(ReconciliationFinding).where(
+                    ReconciliationFinding.fingerprint.like(f"{prefix}%")
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not matches:
+        return {"error": f"no finding matches fingerprint prefix {prefix!r}"}
+    if len(matches) > 1:
+        return {
+            "error": f"fingerprint prefix {prefix!r} is ambiguous ({len(matches)} matches)",
+            "matches": [{"fingerprint": f.fingerprint, "title": f.title} for f in matches[:5]],
+        }
+    return matches[0]
+
+
+async def _transition_finding(
+    fingerprint: str,
+    apply: Any,
+) -> dict[str, Any]:
+    """Resolve a fingerprint prefix, mutate the finding, return its new state."""
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            found = await _lookup_by_prefix(session, fingerprint)
+            if isinstance(found, dict):
+                return found
+            apply(found)
+            return _finding_dict(found)
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def ack_finding(
+    fingerprint: str, by: str | None = None, notes: str | None = None
+) -> dict[str, Any]:
+    """Acknowledge a finding (status -> acknowledged): seen, not yet fixed.
+    Accepts a full fingerprint or a unique prefix. Harness-DB only — changes
+    nothing in the infrastructure."""
+
+    def _apply(f: ReconciliationFinding) -> None:
+        f.status = FindingStatus.ACKNOWLEDGED
+        f.acknowledged_at = datetime.now(UTC)
+        f.acknowledged_by = by
+        if notes:
+            f.notes = notes
+
+    return await _transition_finding(fingerprint, _apply)
+
+
+@server.tool()
+async def resolve_finding(fingerprint: str, notes: str | None = None) -> dict[str, Any]:
+    """Manually mark a finding resolved (status -> resolved). Use when the
+    underlying condition is genuinely fixed; the reconciler reopens the same
+    fingerprint if it recurs. Accepts a full fingerprint or a unique prefix."""
+
+    def _apply(f: ReconciliationFinding) -> None:
+        f.status = FindingStatus.RESOLVED
+        f.resolved_at = datetime.now(UTC)
+        if notes:
+            f.notes = notes
+
+    return await _transition_finding(fingerprint, _apply)
+
+
+@server.tool()
+async def suppress_finding(
+    fingerprint: str, until: str | None = None, notes: str | None = None
+) -> dict[str, Any]:
+    """Suppress a finding from default listings (status -> suppressed). For
+    known-and-accepted conditions the reconciler will keep re-detecting, such as
+    hardware that forges a WWN. ``until`` is an ISO date; omit to suppress
+    indefinitely. Accepts a full fingerprint or a unique prefix."""
+    suppressed_until: datetime | None = None
+    if until:
+        try:
+            suppressed_until = datetime.fromisoformat(until).replace(tzinfo=UTC)
+        except ValueError:
+            return {"error": f"until must be an ISO date (got {until!r})"}
+
+    def _apply(f: ReconciliationFinding) -> None:
+        f.status = FindingStatus.SUPPRESSED
+        f.suppressed_until = suppressed_until
+        if notes:
+            f.notes = notes
+
+    return await _transition_finding(fingerprint, _apply)
+
+
+@server.tool()
+async def probe_host(
+    hostname: str,
+    ssh_user: str,
+    ssh_key_path: str | None = None,
+    primary_ip: str | None = None,
+    ssh_port: int = 22,
+    probes: list[str] | None = None,
+) -> dict[str, Any]:
+    """Deep-probe one Linux host over SSH (CPU, memory, DIMMs, storage, NICs,
+    PCI, GPU, SMART, services), persist the observations, and reconcile.
+
+    Complements run_discovery, which only reads management planes — this is the
+    kernel-level source. Reads the host and writes only to the harness DB.
+
+    Authenticates by key: pass ssh_key_path, or set HOMELAB_HELPER_SSH_KEY.
+    Passwords are deliberately not accepted here. A full suite takes ~30s.
+    Creates the Host row if the harness doesn't know it yet; pass primary_ip
+    when the name doesn't resolve.
+    """
+    key_path = ssh_key_path or os.environ.get("HOMELAB_HELPER_SSH_KEY")
+    if not key_path:
+        return {"error": "an SSH key is required: pass ssh_key_path or set HOMELAB_HELPER_SSH_KEY"}
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            result = await _probe_host(
+                session,
+                HostProbeRequest(
+                    name=hostname,
+                    ssh_user=ssh_user,
+                    ssh_key_path=key_path,
+                    primary_ip=primary_ip,
+                    ssh_port=ssh_port,
+                    probe_names=tuple(probes) if probes else None,
+                ),
+            )
+            return result.as_dict()
+    except UnknownProbeError as exc:
+        return {"error": f"unknown probe {exc.args[0]!r}"}
+    except Exception as exc:
+        return {"hostname": hostname, "error": str(exc)}
     finally:
         await engine.dispose()
 

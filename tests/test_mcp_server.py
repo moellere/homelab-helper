@@ -54,6 +54,11 @@ EXPECTED_TOOLS = {
     "get_service",
     "audit_summary",
     "run_discovery",
+    "config_status",
+    "ack_finding",
+    "resolve_finding",
+    "suppress_finding",
+    "probe_host",
 }
 
 

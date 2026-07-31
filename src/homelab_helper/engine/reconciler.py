@@ -119,6 +119,20 @@ _STORAGE_PART_KINDS: tuple[PartKind, ...] = (
     PartKind.OTHER,
 )
 
+# WWN notation wrappers. Each source spells the same World Wide Name its own
+# way; normalize_wwn strips these (repeatedly — "nvme.eui." stacks two) to reach
+# the bare hex underneath.
+_WWN_NOTATION_PREFIXES: tuple[str, ...] = (
+    "wwn-",
+    "nvme.",
+    "nvme-",
+    "naa.",
+    "eui.",
+    "0x",
+)
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
 # Kernel block-device name prefixes that mean "not a physical drive." lsblk
 # reports these with ``type == "disk"`` even though nothing backs them but the
 # network (rbd/nbd/drbd), RAM (zram/ram), or another layer of the storage stack
@@ -1233,11 +1247,13 @@ def _storage_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
     """Return ``("wwid", wwn)`` or ``("serial", serial)`` for a storage entry.
 
     WWN preferred — USB enclosures and consumer drives often fake serials but
-    expose stable WWN. Empty strings count as missing.
+    expose stable WWN. Empty strings count as missing. The WWN is normalized
+    (:func:`normalize_wwn`) so the same drive keys identically no matter which
+    source observed it.
     """
     wwn = entry.get("wwn")
-    if isinstance(wwn, str) and wwn:
-        return ("wwid", wwn)
+    if isinstance(wwn, str) and wwn.strip():
+        return ("wwid", normalize_wwn(wwn))
     serial = entry.get("serial")
     if isinstance(serial, str) and serial:
         return ("serial", serial)
@@ -1309,6 +1325,34 @@ def _is_real_nic(entry: dict[str, Any]) -> bool:
 def _is_virtual_disk(name: str) -> bool:
     """Return True for block devices that no physical drive backs."""
     return name.startswith(_VIRTUAL_DISK_PREFIXES)
+
+
+def normalize_wwn(raw: str) -> str:
+    """Canonicalize a WWN so one drive keys identically across probe sources.
+
+    The same disk is spelled ``0x5000000000000001`` by lsblk, ``naa.5000000000000001``
+    by Talos/COSI, and ``wwn-0x5000000000000001`` under ``/dev/disk/by-id`` —
+    three different part identities for one drive, so placements never closed on
+    a cross-source move. Strip the notation and separators down to bare lowercase
+    hex.
+
+    Only values that resolve to hex are rewritten. Anything else passes through
+    untouched — a missed match costs a duplicate part row, whereas rewriting an
+    identity we don't recognize risks merging two distinct drives onto one part
+    and corrupting lineage.
+    """
+    value = raw.strip().lower()
+    stripping = True
+    while stripping:
+        stripping = False
+        for prefix in _WWN_NOTATION_PREFIXES:
+            if value.startswith(prefix):
+                value = value[len(prefix) :]
+                stripping = True
+    candidate = value.replace("-", "").replace(":", "").replace(".", "")
+    if candidate and all(char in _HEX_DIGITS for char in candidate):
+        return candidate
+    return raw.strip()
 
 
 def _classify_disk_entry(entry: dict[str, Any]) -> tuple[str | None, bool]:

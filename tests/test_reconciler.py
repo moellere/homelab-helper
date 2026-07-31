@@ -1378,6 +1378,52 @@ async def test_nic_mac_is_normalized_to_lowercase(sessionmaker) -> None:
         assert parts[0].serial == "aa:bb:cc:dd:ee:ff"
 
 
+async def test_virtual_block_devices_are_filtered_not_no_identity(sessionmaker) -> None:
+    """rbd/zram/… report type=disk but no drive backs them — filter, don't flag.
+
+    Mirrors a real Ceph-backed Proxmox node: one NVMe plus three RBD volumes.
+    Before the filter these raised an INVENTORY_GAP apiece for "no stable
+    identity," which is unactionable — a network block device cannot have a WWN.
+    """
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.storage.devices": [
+                    _disk("nvme0n1", wwn="nvme.eui.0001", serial="NVME-REAL"),
+                    _disk("rbd0", wwn=None, serial=None, transport=None),
+                    _disk("rbd1", wwn=None, serial=None, transport=None),
+                    _disk("rbd2", wwn=None, serial=None, transport=None),
+                    _disk("zram0", wwn=None, serial=None, transport=None),
+                    _disk("loop0", wwn=None, serial=None, transport=None),
+                ],
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+        gaps = (
+            (
+                await s.execute(
+                    select(ReconciliationFinding).where(
+                        ReconciliationFinding.kind == FindingKind.INVENTORY_GAP
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert result.parts_upserted == 1
+    assert result.parts_skipped_filtered == 5  # rbd0-2, zram0, loop0
+    assert result.parts_skipped_no_identity == 0
+    assert gaps == []
+
+
 async def test_virtual_interfaces_are_filtered_not_no_identity(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         host = await _seed_host(s)

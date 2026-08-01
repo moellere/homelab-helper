@@ -26,6 +26,11 @@ _ALL_VARS = (
     "HOMELAB_HELPER_OMV_URL",
     "HOMELAB_HELPER_OMV_USERNAME",
     "HOMELAB_HELPER_OMV_PASSWORD",
+    "HOMELAB_HELPER_UNIFI_CONTROLLERS",
+    "HOMELAB_HELPER_UNIFI_COVINGTON_URL",
+    "HOMELAB_HELPER_UNIFI_COVINGTON_API_KEY",
+    "HOMELAB_HELPER_UNIFI_WYOLA_URL",
+    "HOMELAB_HELPER_UNIFI_WYOLA_API_KEY",
 )
 
 
@@ -85,3 +90,34 @@ def test_env_file_search_is_bounded_by_the_project_root(tmp_path, monkeypatch) -
     # The project's own .env is found from a nested directory.
     (repo / ".env").write_text("HOMELAB_HELPER_NETBOX_URL=https://project\n")
     assert find_env_files(nested)[0] == repo / ".env"
+
+
+def test_multi_controller_unifi_counts_as_configured(monkeypatch) -> None:
+    """The per-controller form supersedes the unsuffixed vars — reporting those
+    as missing would send an operator chasing a non-problem."""
+    _clear(monkeypatch)
+    monkeypatch.delenv("HOMELAB_HELPER_UNIFI_CONTROLLERS", raising=False)
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_CONTROLLERS", "covington,wyola")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_COVINGTON_URL", "https://10.250.0.1")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_COVINGTON_API_KEY", "key-a")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_WYOLA_URL", "https://10.254.0.1")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_WYOLA_API_KEY", "key-b")
+
+    result = runner.invoke(app, ["config"])
+
+    assert result.exit_code == 0
+    assert "covington" in result.stdout
+    assert "wyola" in result.stdout
+    assert "key-a" not in result.stdout  # per-controller keys stay secret
+    assert "key-b" not in result.stdout
+
+
+def test_partial_named_controller_is_not_counted(monkeypatch) -> None:
+    """A controller listed but missing its key must not mark unifi ready."""
+    _clear(monkeypatch)
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_CONTROLLERS", "wyola")
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_WYOLA_URL", "https://10.254.0.1")
+    monkeypatch.delenv("HOMELAB_HELPER_UNIFI_WYOLA_API_KEY", raising=False)
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0
+    assert "unifi_url" in result.stdout  # falls back to reporting the plain form

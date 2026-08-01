@@ -57,6 +57,8 @@ def _detail(row: dict) -> str:
     """
     if not row["configured"]:
         return "missing: " + ", ".join(_short(v) for v in row["missing"])
+    if row.get("controllers"):
+        return "controllers: " + ", ".join(row["controllers"])
     bits = [
         f"{_short(v['variable'])}=" + ("set" if v["secret"] else str(v["value"]))
         for v in row["variables"]

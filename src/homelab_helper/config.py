@@ -17,13 +17,42 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./homelab.db"
 
 _ENV_FILENAME = ".env"
+
+NO_DOTENV_VAR = "HOMELAB_HELPER_NO_DOTENV"
+"""Set truthy to skip ``.env`` loading entirely.
+
+The test suite sets it: without it, a run on an operator's workstation reads
+that operator's real credentials and behaves differently from CI — and any test
+that monkeypatches an adapter factory is silently bypassed when the ambient
+config names something the factory then builds for real.
+"""
+
+
+def _named_unifi_controllers() -> list[str]:
+    """Controller names that carry a complete per-controller credential set.
+
+    The multi-controller form supersedes the unsuffixed UniFi variables, so a
+    lab using it isn't missing anything.
+    """
+    raw = os.environ.get("HOMELAB_HELPER_UNIFI_CONTROLLERS") or ""
+    ready = []
+    for name in (n.strip() for n in raw.split(",")):
+        if not name:
+            continue
+        prefix = f"HOMELAB_HELPER_UNIFI_{name.upper().replace('-', '_')}_"
+        if os.environ.get(prefix + "URL") and os.environ.get(prefix + "API_KEY"):
+            ready.append(name)
+    return ready
 
 
 @dataclass(frozen=True)
@@ -35,9 +64,19 @@ class SourceConfig:
     optional: tuple[str, ...] = ()
     secret: frozenset[str] = frozenset()
     note: str | None = None
+    alt_check: Callable[[], bool] | None = None
+    """Optional second way this source can be satisfied, checked before the
+    required list."""
 
     def missing(self) -> tuple[str, ...]:
-        """Required variables that are unset or empty."""
+        """Required variables that are unset or empty.
+
+        A source that declares ``alt_check`` may satisfy itself another way —
+        UniFi's multi-controller form replaces the unsuffixed variables with a
+        per-controller set, and reporting those as missing would be wrong.
+        """
+        if self.alt_check is not None and self.alt_check():
+            return ()
         return tuple(var for var in self.required if not os.environ.get(var))
 
     def configured(self) -> bool:
@@ -67,8 +106,13 @@ SOURCES: tuple[SourceConfig, ...] = (
     SourceConfig(
         name="unifi",
         required=("HOMELAB_HELPER_UNIFI_URL", "HOMELAB_HELPER_UNIFI_API_KEY"),
-        optional=("HOMELAB_HELPER_UNIFI_SITE", "HOMELAB_HELPER_UNIFI_VERIFY_SSL"),
+        optional=(
+            "HOMELAB_HELPER_UNIFI_SITE",
+            "HOMELAB_HELPER_UNIFI_VERIFY_SSL",
+            "HOMELAB_HELPER_UNIFI_CONTROLLERS",
+        ),
         secret=frozenset({"HOMELAB_HELPER_UNIFI_API_KEY"}),
+        alt_check=lambda: bool(_named_unifi_controllers()),
     ),
     SourceConfig(
         name="cloudflare",
@@ -140,6 +184,8 @@ def load_env(start: Path | None = None) -> list[Path]:
     with whatever environment it happens to have. ``override=False`` means an
     explicit export always wins, and the first file to define a key keeps it.
     """
+    if os.environ.get(NO_DOTENV_VAR):
+        return []
     files = find_env_files(start)
     for env_file in files:
         load_dotenv(env_file, override=False)
@@ -164,10 +210,16 @@ def variable_status(var: str, *, secret: bool) -> dict[str, Any]:
 
 def source_status(source: SourceConfig) -> dict[str, Any]:
     """Credential status for one source — never includes a secret value."""
+    extra: dict[str, Any] = {}
+    if source.name == "unifi":
+        controllers = _named_unifi_controllers()
+        if controllers:
+            extra["controllers"] = controllers
     return {
         "source": source.name,
         "configured": source.configured(),
         "missing": list(source.missing()),
+        **extra,
         "note": source.note,
         "variables": [
             variable_status(var, secret=var in source.secret)

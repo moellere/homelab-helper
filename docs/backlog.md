@@ -307,6 +307,25 @@ The rest of Phase 1, and all of Phase 6, is below.
   fields for the same drive — so no identity links the two eras. Part merge is
   therefore operator-driven, not inferable.
 
+  **Second case — renaming a UniFi controller strands its resolver slice.**
+  `ServiceEndpoint` is keyed by `(service, scope, resolver, hostname)` and a
+  sync reaps only the `(scope, resolver)` slice it was called for — the scope
+  discipline that lets two gateways coexist without deleting each other's rows.
+  The cost is that changing a controller's name changes its resolver tag, and
+  the previous slice is left behind with nothing to ever reap it. Observed live:
+  a single-controller lab adopting the multi-controller form renamed `default` →
+  `covington`, so 107 endpoints under resolver `unifi` were silently superseded
+  by 107 identical rows under `unifi:covington`. Nothing errored, nothing
+  reported it, and the duplicates are invisible until someone groups endpoints
+  by resolver. Cleaned up by hand this time.
+
+  Same shape as the hardware case above: **an identity change strands rows that
+  no reconcile pass owns.** Whatever retire/merge verb lands should cover
+  resolver slices too, not just hosts and parts. Cheap partial mitigation
+  worth doing first — have the endpoint reconcile warn when it creates a slice
+  whose rows duplicate an existing slice's `(hostname, ip)` set, which turns a
+  silent orphan into a visible one without needing the full verb.
+
 ### Reconciler / assertions (landed)
 
 - [x] **Forged-WWN collision guard** — `Reconciler._resolve_storage_identity` +

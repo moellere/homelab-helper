@@ -12,33 +12,40 @@ import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
 from rich.table import Table
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from homelab_helper.adapters.argocd import ArgoCDAdapter, application_is_drifted
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
-from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.talos import TalosAdapter
-from homelab_helper.adapters.unifi import UniFiAdapter
+from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli._probe_sync import sync_probes_sync
-from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
 )
+from homelab_helper.engine.host_probe import (
+    HostProbeRequest,
+    ProbeOutcome,
+    UnknownProbeError,
+    probe_host,
+    select_host_probes,
+)
+from homelab_helper.engine.host_probe import mark_kernel_probed as _mark_kernel_probed
+from homelab_helper.engine.host_probe import resolve_host as _resolve_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
-from homelab_helper.engine.reconciler import Reconciler
+from homelab_helper.engine.reconciler import Reconciler, ReconcileResult
 from homelab_helper.engine.runner import ProbeRunner
 from homelab_helper.engine.scan_import import (
     ProbeStrategy,
@@ -73,49 +80,13 @@ def _database_url() -> str:
     return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
-async def _resolve_host(session: AsyncSession, name: str, primary_ip: str | None) -> Host:
-    """Find an existing Host by hostname *or* primary_ip; create one if missing.
-
-    Matching by IP as well as name keeps a probe run (which may pass a short
-    name) from duplicating a row another source created under a different label
-    — e.g. the scan importer storing an FQDN. First-created row wins on ties.
-    """
-    conditions = [Host.hostname == name]
-    if primary_ip:
-        conditions.append(Host.primary_ip == primary_ip)
-    existing: Host | None = (
-        (await session.execute(select(Host).where(or_(*conditions)).order_by(Host.created_at)))
-        .scalars()
-        .first()
-    )
-    if existing is not None:
-        if primary_ip and not existing.primary_ip:
-            existing.primary_ip = primary_ip
-        return existing
-    host = Host(hostname=name, primary_ip=primary_ip)
-    session.add(host)
-    await session.flush()
-    return host
-
-
 def _resolve_probes(filter_names: list[str] | None) -> list[type[Probe]]:
     """Pick the probes to run — by name filter, or all host-kind probes."""
-    available = discover_probes()
-    if filter_names:
-        chosen: list[type[Probe]] = []
-        for n in filter_names:
-            if n not in available:
-                console.print(f"[red]unknown probe:[/red] {n}")
-                sys.exit(2)
-            chosen.append(available[n])
-        return chosen
-    return [cls for cls in available.values() if "host" in cls.target_kinds]
-
-
-def _mark_kernel_probed(host: Host, observations: int) -> None:
-    """Flag a directly-probed host so the scan importer treats it as covered."""
-    if observations > 0:
-        host.discovery_source = DiscoverySource.KERNEL_PROBE
+    try:
+        return select_host_probes(filter_names)
+    except UnknownProbeError as exc:
+        console.print(f"[red]unknown probe:[/red] {exc.args[0]}")
+        sys.exit(2)
 
 
 def _load_proxmox_adapter() -> ProxmoxAdapter:
@@ -138,6 +109,18 @@ def _load_unifi_adapter() -> UniFiAdapter:
     return UniFiAdapter.from_env()
 
 
+def _load_unifi_adapters() -> list[UniFiAdapter]:
+    """Every configured controller.
+
+    Without ``HOMELAB_HELPER_UNIFI_CONTROLLERS`` this defers to the single-
+    controller factory above, so one gateway stays the simple path.
+    """
+    raw = os.environ.get("HOMELAB_HELPER_UNIFI_CONTROLLERS") or ""
+    if not [n for n in raw.split(",") if n.strip()]:
+        return [_load_unifi_adapter()]
+    return [UniFiAdapter(cfg) for cfg in UniFiConfig.all_from_env()]
+
+
 def _load_cloudflare_adapter() -> CloudflareAdapter:
     """Factory (monkeypatched in tests) — builds a Cloudflare adapter from env."""
     return CloudflareAdapter.from_env()
@@ -155,7 +138,12 @@ def _load_omv_adapter() -> OpenMediaVaultAdapter:
 
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
     """Run the reconciler for a host and print the deltas."""
-    result = await Reconciler().reconcile_host(session, host_id)
+    _report_reconcile(await Reconciler().reconcile_host(session, host_id))
+
+
+def _report_reconcile(result: ReconcileResult) -> None:
+    """Print reconciler deltas. Split out so callers that already reconciled
+    (the shared host-probe path) render identically."""
     console.print(
         f"\n[cyan]reconciled[/cyan]: {result.observations_seen} "
         f"observation(s) applied, {len(result.changes)} change(s)"
@@ -228,67 +216,43 @@ def discover_host(
         console.print("[red]error:[/red] no probes matched the filter.")
         raise typer.Exit(code=2)
 
-    ssh_adapter = KernelSSHAdapter()
-    adapters = AdapterRegistry({"kernel-ssh": ssh_adapter})
-    runner = ProbeRunner(adapters)
+    def _report(outcome: ProbeOutcome) -> None:
+        console.print(f"[cyan]→ {outcome.probe}[/cyan] v{outcome.version}")
+        if outcome.success:
+            console.print(f"  [green]ok[/green] - {outcome.observations} observation(s)")
+        else:
+            console.print(f"  [red]failed[/red] - {outcome.error}")
 
     async def _go() -> int:
         engine = make_engine(_database_url())
         try:
             sm = make_sessionmaker(engine)
-            total_observations = 0
-            failures = 0
             async with session_scope(sm) as session:
-                host = await _resolve_host(session, name, primary_ip)
-                connect_host = host.primary_ip or host.hostname or name
-                target = ProbeTarget(
-                    kind="host",
-                    host_id=str(host.id),
-                    hostname=host.hostname,
-                    primary_ip=host.primary_ip,
-                    ssh_user=ssh_user,
-                    ssh_key_path=str(ssh_key) if ssh_key else None,
-                    ssh_password=ssh_password,
-                    ssh_port=ssh_port,
+                result = await probe_host(
+                    session,
+                    HostProbeRequest(
+                        name=name,
+                        ssh_user=ssh_user,
+                        ssh_key_path=str(ssh_key) if ssh_key else None,
+                        ssh_password=ssh_password,
+                        primary_ip=primary_ip,
+                        ssh_port=ssh_port,
+                    ),
+                    probe_classes=probe_classes,
+                    on_probe=_report,
                 )
-
-                # One SSH connection shared across the whole probe batch.
-                try:
-                    async with ssh_adapter.shared_session(
-                        connect_host,
-                        user=ssh_user,
-                        key_path=str(ssh_key) if ssh_key else None,
-                        password=ssh_password,
-                        port=ssh_port,
-                    ):
-                        for cls in probe_classes:
-                            probe = cls()
-                            console.print(f"[cyan]→ {probe.name}[/cyan] v{probe.version}")
-                            _run_row, result = await runner.run(
-                                probe, target, session, host_id=host.id, triggered_by="manual"
-                            )
-                            if result.success:
-                                n = len(result.observations)
-                                total_observations += n
-                                console.print(f"  [green]ok[/green] - {n} observation(s)")
-                            else:
-                                failures += 1
-                                console.print(f"  [red]failed[/red] - {result.error}")
-                except Exception as exc:
-                    console.print(f"[red]could not establish SSH session:[/red] {exc}")
-                    failures += 1
-
-                _mark_kernel_probed(host, total_observations)
-
-                # Reconcile from whatever observations landed (partial runs are
-                # worth applying). reconcile_host is idempotent.
-                await _reconcile_and_report(session, host.id)
+                if result.session_error:
+                    console.print(
+                        f"[red]could not establish SSH session:[/red] {result.session_error}"
+                    )
+                if result.reconcile is not None:
+                    _report_reconcile(result.reconcile)
 
             console.print(
-                f"\nrun complete: [bold]{total_observations}[/bold] observation(s), "
-                f"[bold]{failures}[/bold] failure(s)"
+                f"\nrun complete: [bold]{result.observations}[/bold] observation(s), "
+                f"[bold]{result.failures}[/bold] failure(s)"
             )
-            return 0 if failures == 0 else 1
+            return 0 if result.failures == 0 else 1
         finally:
             await engine.dispose()
 
@@ -755,34 +719,50 @@ def discover_unifi(
 ) -> None:
     """Read a UniFi controller's DNS records, clients, and networks (read-only)."""
 
-    async def _go() -> int:
-        adapter = _load_unifi_adapter()
+    async def _read_one(adapter: UniFiAdapter) -> dict[str, Any] | None:
         try:
             ok, err = await adapter.health_check()
             if not ok:
-                console.print(f"[red]unifi unreachable:[/red] {err}")
-                return 1
-            dns = await adapter.list_dns_records()
-            clients = await adapter.list_clients()
-            networks = await adapter.list_networks()
+                console.print(
+                    f"[red]unifi[/red] [bold]{adapter.config.name}[/bold] unreachable: {err}"
+                )
+                return None
+            return {
+                "dns": await adapter.list_dns_records(),
+                "clients": await adapter.list_clients(),
+                "networks": await adapter.list_networks(),
+            }
         finally:
             await adapter.aclose()
 
-        console.print(
-            f"[cyan]unifi[/cyan]: {len(dns)} DNS record(s), {len(clients)} client(s), "
-            f"{len(networks)} network(s)"
-        )
-        table = Table(title="internal DNS")
-        for col in ("hostname", "value", "type", "enabled"):
-            table.add_column(col)
-        for r in sorted(dns, key=lambda d: str(d.get("hostname"))):
-            table.add_row(
-                str(r.get("hostname")),
-                str(r.get("value")),
-                str(r.get("record_type")),
-                str(r.get("enabled")),
+    async def _go() -> int:
+        adapters = _load_unifi_adapters()
+        reachable: list[tuple[UniFiAdapter, dict[str, Any]]] = []
+        for adapter in adapters:
+            data = await _read_one(adapter)
+            if data is not None:
+                reachable.append((adapter, data))
+        if not reachable:
+            return 1
+
+        for adapter, data in reachable:
+            cfg = adapter.config
+            console.print(
+                f"[cyan]unifi[/cyan] [bold]{cfg.name}[/bold] ({cfg.url}): "
+                f"{len(data['dns'])} DNS record(s), {len(data['clients'])} client(s), "
+                f"{len(data['networks'])} network(s)"
             )
-        console.print(table)
+            table = Table(title=f"internal DNS - {cfg.name}")
+            for col in ("hostname", "value", "type", "enabled"):
+                table.add_column(col)
+            for r in sorted(data["dns"], key=lambda d: str(d.get("hostname"))):
+                table.add_row(
+                    str(r.get("hostname")),
+                    str(r.get("value")),
+                    str(r.get("record_type")),
+                    str(r.get("enabled")),
+                )
+            console.print(table)
 
         if not persist:
             return 0
@@ -792,26 +772,34 @@ def discover_unifi(
             sm = make_sessionmaker(engine)
             async with session_scope(sm) as session:
                 now = datetime.now(UTC)
-                result = await reconcile_internal_endpoints(session, dns, when=now)
-                stray = await reconcile_stray_config(session, networks, clients, when=now)
+                for adapter, data in reachable:
+                    cfg = adapter.config
+                    # Each controller owns its own (scope, resolver) slice, so
+                    # one gateway's sync never reaps another's endpoints.
+                    result = await reconcile_internal_endpoints(
+                        session, data["dns"], resolver=cfg.resolver, when=now
+                    )
+                    stray = await reconcile_stray_config(
+                        session, data["networks"], data["clients"], when=now
+                    )
+                    console.print(
+                        f"[green]endpoints[/green] ({cfg.resolver}/internal): "
+                        f"{len(result.created)} created, {len(result.updated)} updated, "
+                        f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
+                    )
+                    console.print(
+                        f"[green]stray-config[/green] ({cfg.name}): {len(stray.opened)} opened, "
+                        f"{len(stray.reopened)} reopened, {len(stray.updated)} re-seen, "
+                        f"{len(stray.resolved)} resolved"
+                        + (
+                            f" ({stray.skipped_no_subnet} network(s) skipped)"
+                            if stray.skipped_no_subnet
+                            else ""
+                        )
+                    )
                 if dry_run:
                     await session.rollback()
-            console.print(
-                f"[green]endpoints[/green] (unifi/internal): "
-                f"{len(result.created)} created, {len(result.updated)} updated, "
-                f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
-                + (" [dim](dry-run, rolled back)[/dim]" if dry_run else "")
-            )
-            console.print(
-                f"[green]stray-config[/green]: {len(stray.opened)} opened, "
-                f"{len(stray.reopened)} reopened, {len(stray.updated)} re-seen, "
-                f"{len(stray.resolved)} resolved"
-                + (
-                    f" ({stray.skipped_no_subnet} network(s) skipped)"
-                    if stray.skipped_no_subnet
-                    else ""
-                )
-            )
+                    console.print("[dim](dry-run, rolled back)[/dim]")
         finally:
             await engine.dispose()
         return 0
@@ -995,7 +983,11 @@ def discover_omv() -> None:
                 )
             for e in smb:
                 detail = "ro" if e.get("readonly") else "rw"
-                exp_table.add_row("smb", str(e.get("name") or "—"), detail)
+                # OMV leaves `name` empty on SMB rows — the shared folder is the
+                # identifying label, same as the NFS side.
+                exp_table.add_row(
+                    "smb", str(e.get("name") or e.get("shared_folder") or "—"), detail
+                )
             console.print(exp_table)
 
         running = [s for s in services if s.get("running")]

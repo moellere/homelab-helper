@@ -271,9 +271,60 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [ ] **Conversational Discovery Agent** — interview-style host onboarding
   (P4-AC3).
 - [ ] **Skill Inferer** — passive per-domain trust hints from chat (P4-AC6).
-- [ ] **MCP host-discovery tool** — expose SSH host deep-probe via MCP once
-  credential handling over MCP is designed (P4-AC4's NetBox leg; needs a
-  credential-reference story, not raw secrets through tool args).
+- [x] **MCP host-discovery tool** (`probe_host`) — SSH deep-probe exposed over
+  MCP, so kernel-level facts are reachable conversationally and not just from
+  the CLI (`run_discovery` covers management planes only). Orchestration moved
+  out of the Typer command into `engine/host_probe.py` (`probe_host`,
+  `resolve_host`, `select_host_probes`) so both surfaces run the identical
+  sequence; the CLI passes an `on_probe` callback to stream progress. Credential
+  story: **key path or `HOMELAB_HELPER_SSH_KEY` only** — passwords are not
+  accepted through tool args at all, which is the "no raw secrets through MCP"
+  constraint this item was waiting on.
+- [x] **Config surface + `.env` loading** (`config.py` + rewritten `helper
+  config` + `config_status` MCP tool) — `python-dotenv` was a declared
+  dependency that nothing imported, so `.env` files were silently ignored.
+  Now loaded at both entry points (CLI callback and MCP module import) with
+  `override=False`, from a project `.env` (walk bounded at the `.git` root so a
+  stray ancestor file is never pulled into a process that talks to live infra)
+  then `~/.env`. `SOURCES` is the single declaration of each source's required/
+  optional/secret variables, rendered by both surfaces; secrets report as
+  set/unset and their values are never returned.
+- [x] **Findings lifecycle over MCP** — `ack_finding`, `resolve_finding`,
+  `suppress_finding`, sharing the CLI's fingerprint-prefix matching (ambiguity
+  reported, never guessed). Harness-DB writes only.
+- [ ] **Host retire + part merge** — the cleanup path that decommissioned and
+  repurposed hardware needs, and the reason stale rows currently accumulate.
+  `IntentState.DECOMMISSIONING` exists in the enum with **zero consumers**;
+  needs the OperationalIntent write path, reconciler consumption, a CLI verb,
+  and an MCP tool. Two cautions: it is really **Phase 2 intent work surfacing
+  late**, not native Phase 4; and it touches load-bearing invariant #1 — a
+  retire must close placements *explicitly* without weakening the rule that an
+  absent observation never auto-resolves. Motivating case: three Pi control-plane
+  nodes (`pi-cp1/2/3`) were reflashed and moved to the Wyola site as
+  `wyhome`/`wynode2`/`wynode3`. NIC lineage tracked the move by MAC, but the
+  disk placements stayed open on the retired hostnames because the USB
+  enclosures forge a shared WWN and Talos vs. Ubuntu report different serial
+  fields for the same drive — so no identity links the two eras. Part merge is
+  therefore operator-driven, not inferable.
+
+  **Second case — renaming a UniFi controller strands its resolver slice.**
+  `ServiceEndpoint` is keyed by `(service, scope, resolver, hostname)` and a
+  sync reaps only the `(scope, resolver)` slice it was called for — the scope
+  discipline that lets two gateways coexist without deleting each other's rows.
+  The cost is that changing a controller's name changes its resolver tag, and
+  the previous slice is left behind with nothing to ever reap it. Observed live:
+  a single-controller lab adopting the multi-controller form renamed `default` →
+  `covington`, so 107 endpoints under resolver `unifi` were silently superseded
+  by 107 identical rows under `unifi:covington`. Nothing errored, nothing
+  reported it, and the duplicates are invisible until someone groups endpoints
+  by resolver. Cleaned up by hand this time.
+
+  Same shape as the hardware case above: **an identity change strands rows that
+  no reconcile pass owns.** Whatever retire/merge verb lands should cover
+  resolver slices too, not just hosts and parts. Cheap partial mitigation
+  worth doing first — have the endpoint reconcile warn when it creates a slice
+  whose rows duplicate an existing slice's `(hostname, ip)` set, which turns a
+  silent orphan into a visible one without needing the full verb.
 
 ### Reconciler / assertions (landed)
 

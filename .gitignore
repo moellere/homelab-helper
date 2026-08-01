@@ -44,6 +44,11 @@ coverage.xml
 *.sqlite
 *.sqlite3
 *-journal
+*.db.*.bak
+
+# Logs — MCP servers launched with the repo as cwd drop these in the root
+# (proxmox_mcp.log is the one seen in practice)
+*.log
 
 # Alembic
 # (keep alembic/versions/*.py — they ARE the history)

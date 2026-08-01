@@ -33,6 +33,7 @@ from homelab_helper.cli.mcp import mcp_app
 from homelab_helper.cli.netbox import netbox_app
 from homelab_helper.cli.probes import probes_app
 from homelab_helper.cli.view import view_app
+from homelab_helper.config import load_env
 
 app = typer.Typer(name="helper", no_args_is_help=True, add_completion=False)
 app.add_typer(db_app)
@@ -54,6 +55,7 @@ console = Console()
 @app.callback()
 def _root() -> None:
     """homelab-helper - inventory, audit, and (eventually) recommendations."""
+    load_env()
 
 
 @app.command(name="version")

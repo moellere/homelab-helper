@@ -119,6 +119,37 @@ _STORAGE_PART_KINDS: tuple[PartKind, ...] = (
     PartKind.OTHER,
 )
 
+# WWN notation wrappers. Each source spells the same World Wide Name its own
+# way; normalize_wwn strips these (repeatedly — "nvme.eui." stacks two) to reach
+# the bare hex underneath.
+_WWN_NOTATION_PREFIXES: tuple[str, ...] = (
+    "wwn-",
+    "nvme.",
+    "nvme-",
+    "naa.",
+    "eui.",
+    "0x",
+)
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+# Kernel block-device name prefixes that mean "not a physical drive." lsblk
+# reports these with ``type == "disk"`` even though nothing backs them but the
+# network (rbd/nbd/drbd), RAM (zram/ram), or another layer of the storage stack
+# (zd/md/dm-/loop) — so they can never carry a WWN or serial and must not be
+# mistaken for a drive whose identity failed to read.
+_VIRTUAL_DISK_PREFIXES: tuple[str, ...] = (
+    "rbd",
+    "nbd",
+    "drbd",
+    "zram",
+    "ram",
+    "zd",
+    "md",
+    "dm-",
+    "loop",
+)
+
 # Interface-name prefixes that mean "software construct, not a physical NIC."
 # Heuristic — the existing probe doesn't carry a PCI address. A future probe
 # version emitting one would let us replace this with a positive
@@ -658,10 +689,15 @@ class Reconciler:
 
         Only top-level disks (``type == "disk"``) become PhysicalPart rows.
         Partitions, LVM volumes, and RAID arrays are logical subdivisions of
-        a disk, not first-class parts. Identity is **WWN preferred, serial
-        fallback** — many USB enclosures forge serials but expose WWN. Devices
-        with neither are counted in ``parts_skipped_no_identity`` and surface
-        an ``INVENTORY_GAP`` finding per device.
+        a disk, not first-class parts. Network- and RAM-backed block devices
+        (``rbd``/``nbd``/``zram``/… — see ``_VIRTUAL_DISK_PREFIXES``) also
+        report ``type == "disk"`` but have no drive behind them; they are
+        counted in ``parts_skipped_filtered`` and raise no finding, the same
+        way virtual interfaces are dropped from NIC lineage. Identity is
+        **WWN preferred, serial fallback** — many USB enclosures forge serials
+        but expose WWN. Devices with neither are counted in
+        ``parts_skipped_no_identity`` and surface an ``INVENTORY_GAP`` finding
+        per device.
 
         Forged-WWN guard: some enclosures invert the trade-off and expose a
         *constant* WWN across distinct drives while still carrying a unique
@@ -678,6 +714,7 @@ class Reconciler:
         result: dict[str, Any] = {
             "parts_upserted": 0,
             "parts_skipped_no_identity": 0,
+            "parts_skipped_filtered": 0,
             "placements_opened": [],
             "placements_closed": [],
         }
@@ -692,10 +729,10 @@ class Reconciler:
         for raw_entry in devices_raw:
             if not isinstance(raw_entry, dict):
                 continue
-            if raw_entry.get("type") != "disk":
-                continue  # partitions/LVM/RAID — not physical parts
-            name = raw_entry.get("name")
-            if not isinstance(name, str) or not name:
+            name, filtered = _classify_disk_entry(raw_entry)
+            if name is None:
+                if filtered:
+                    result["parts_skipped_filtered"] += 1
                 continue
             slot = f"/dev/{name}"
             identity = _storage_identity(raw_entry)
@@ -1210,11 +1247,13 @@ def _storage_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
     """Return ``("wwid", wwn)`` or ``("serial", serial)`` for a storage entry.
 
     WWN preferred — USB enclosures and consumer drives often fake serials but
-    expose stable WWN. Empty strings count as missing.
+    expose stable WWN. Empty strings count as missing. The WWN is normalized
+    (:func:`normalize_wwn`) so the same drive keys identically no matter which
+    source observed it.
     """
     wwn = entry.get("wwn")
-    if isinstance(wwn, str) and wwn:
-        return ("wwid", wwn)
+    if isinstance(wwn, str) and wwn.strip():
+        return ("wwid", normalize_wwn(wwn))
     serial = entry.get("serial")
     if isinstance(serial, str) and serial:
         return ("serial", serial)
@@ -1281,6 +1320,55 @@ def _is_real_nic(entry: dict[str, Any]) -> bool:
     if not isinstance(name, str) or not name:
         return False
     return not any(name.startswith(p) for p in _VIRTUAL_NIC_PREFIXES)
+
+
+def _is_virtual_disk(name: str) -> bool:
+    """Return True for block devices that no physical drive backs."""
+    return name.startswith(_VIRTUAL_DISK_PREFIXES)
+
+
+def normalize_wwn(raw: str) -> str:
+    """Canonicalize a WWN so one drive keys identically across probe sources.
+
+    The same disk is spelled ``0x5000000000000001`` by lsblk, ``naa.5000000000000001``
+    by Talos/COSI, and ``wwn-0x5000000000000001`` under ``/dev/disk/by-id`` —
+    three different part identities for one drive, so placements never closed on
+    a cross-source move. Strip the notation and separators down to bare lowercase
+    hex.
+
+    Only values that resolve to hex are rewritten. Anything else passes through
+    untouched — a missed match costs a duplicate part row, whereas rewriting an
+    identity we don't recognize risks merging two distinct drives onto one part
+    and corrupting lineage.
+    """
+    value = raw.strip().lower()
+    stripping = True
+    while stripping:
+        stripping = False
+        for prefix in _WWN_NOTATION_PREFIXES:
+            if value.startswith(prefix):
+                value = value[len(prefix) :]
+                stripping = True
+    candidate = value.replace("-", "").replace(":", "").replace(".", "")
+    if candidate and all(char in _HEX_DIGITS for char in candidate):
+        return candidate
+    return raw.strip()
+
+
+def _classify_disk_entry(entry: dict[str, Any]) -> tuple[str | None, bool]:
+    """Return ``(device_name, filtered)`` for one ``host.storage.devices`` entry.
+
+    ``device_name`` is None for anything that isn't a nameable top-level disk.
+    ``filtered`` distinguishes the deliberate skips — virtual block devices,
+    which are expected and raise no finding — from partitions and malformed
+    entries, which are simply not parts.
+    """
+    if entry.get("type") != "disk":
+        return None, False  # partitions/LVM/RAID — not physical parts
+    name = entry.get("name")
+    if not isinstance(name, str) or not name:
+        return None, False
+    return (None, True) if _is_virtual_disk(name) else (name, False)
 
 
 def _normalize_mac(mac: Any) -> str | None:

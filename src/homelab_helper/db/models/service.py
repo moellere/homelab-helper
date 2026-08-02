@@ -26,6 +26,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from homelab_helper.db.base import Base, now, uuid7
 from homelab_helper.db.enums import DiscoverySource, ResolutionScope
 
+_TUNNEL_SUFFIX = "cfargotunnel.com"
+"""A CNAME here means the name is published through a Cloudflare Tunnel."""
+
 
 class Service(Base):
     """A logical, name-resolvable service the harness tracks endpoints for."""
@@ -47,7 +50,13 @@ class Service(Base):
 
 
 class ServiceEndpoint(Base):
-    """One resolution path for a Service: a (scope, resolver, hostname) → ip."""
+    """One resolution path for a Service: a (scope, resolver, hostname) → where it goes.
+
+    "Where it goes" is an ``ip`` for an A/AAAA record, or a ``target`` hostname
+    for a CNAME. A tunnel-fronted service has no external A record at all — its
+    public name is a CNAME to ``<uuid>.cfargotunnel.com`` — so requiring an IP
+    would make exactly the interesting services invisible.
+    """
 
     __tablename__ = "service_endpoint"
 
@@ -57,6 +66,8 @@ class ServiceEndpoint(Base):
     scope: Mapped[ResolutionScope] = mapped_column(SAEnum(ResolutionScope), index=True)
     hostname: Mapped[str] = mapped_column(String(255), index=True)
     ip: Mapped[str | None] = mapped_column(String(45))
+    target: Mapped[str | None] = mapped_column(String(255))  # CNAME right-hand side
+    record_type: Mapped[str | None] = mapped_column(String(16))  # A | AAAA | CNAME
     resolver: Mapped[str] = mapped_column(String(32))  # "unifi" | "cloudflare" | "consul" | ...
     tls_provider: Mapped[str | None] = mapped_column(String(64))
 
@@ -76,6 +87,16 @@ class ServiceEndpoint(Base):
         ),
         Index("ix_endpoint_scope_host", "scope", "hostname"),
     )
+
+    @property
+    def resolution(self) -> str | None:
+        """What this name resolves to — an IP, or a CNAME target."""
+        return self.ip or self.target
+
+    @property
+    def is_tunnel(self) -> bool:
+        """True when the name is published through a Cloudflare Tunnel."""
+        return bool(self.target and self.target.lower().rstrip(".").endswith(_TUNNEL_SUFFIX))
 
 
 __all__ = ["Service", "ServiceEndpoint"]

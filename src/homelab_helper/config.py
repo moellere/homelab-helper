@@ -117,7 +117,11 @@ SOURCES: tuple[SourceConfig, ...] = (
     SourceConfig(
         name="cloudflare",
         required=("HOMELAB_HELPER_CLOUDFLARE_API_TOKEN",),
-        optional=("HOMELAB_HELPER_CLOUDFLARE_ZONE", "HOMELAB_HELPER_CLOUDFLARE_ZONE_ID"),
+        optional=(
+            "HOMELAB_HELPER_CLOUDFLARE_ZONE",
+            "HOMELAB_HELPER_CLOUDFLARE_ZONE_ID",
+            "HOMELAB_HELPER_CLOUDFLARE_ACCOUNT_ID",
+        ),
         secret=frozenset({"HOMELAB_HELPER_CLOUDFLARE_API_TOKEN"}),
     ),
     SourceConfig(

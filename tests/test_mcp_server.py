@@ -187,8 +187,11 @@ async def test_get_service_by_endpoint_hostname(seeded_db: str) -> None:
     out = await get_service("ha.example.com")
     assert out["name"] == "ha"
     assert out["split_brain"] == {
-        "internal_ips": ["10.0.1.50"],
-        "external_ips": ["203.0.113.9"],
+        "internal": ["10.0.1.50"],
+        "external": ["203.0.113.9"],
+        # Both sides are addresses that disagree — the classic case, not a tunnel.
+        "kind": "divergent-address",
+        "expected": False,
     }
     assert out["hosted"]["vm"] == "ha"
 

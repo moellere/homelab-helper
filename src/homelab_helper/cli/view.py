@@ -35,6 +35,7 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker
+from homelab_helper.engine.dns_reconcile import analyze_split_brain
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,37 +82,50 @@ def _print_endpoints(endpoints: list[ServiceEndpoint]) -> None:
     table.add_column("scope", no_wrap=True)
     table.add_column("resolver", no_wrap=True)
     table.add_column("hostname", overflow="fold")
-    table.add_column("ip", no_wrap=True)
+    table.add_column("type", no_wrap=True)
+    table.add_column("resolves to", overflow="fold")
     table.add_column("tls")
     # internal first, then external.
     order = {ResolutionScope.INTERNAL: 0, ResolutionScope.EXTERNAL: 1}
     for ep in sorted(endpoints, key=lambda e: (order.get(e.scope, 9), e.resolver)):
+        resolves = ep.resolution or "—"
+        if ep.is_tunnel:
+            resolves = f"{resolves} [dim](tunnel)[/dim]"
         table.add_row(
             ep.scope.value,
             ep.resolver,
             ep.hostname,
-            ep.ip or "—",
+            ep.record_type or "—",
+            resolves,
             ep.tls_provider or "—",
         )
     console.print(table)
 
 
 def _print_split_brain(endpoints: list[ServiceEndpoint]) -> None:
-    """Flag a service that resolves to different IPs internally vs externally.
+    """Flag a service that resolves differently internally vs externally.
 
     Compared at the service level, not per exact hostname — the internal and
     external resolvers name the same service with different suffixes
     (``ha.lan`` vs ``ha.example.com``), so pairing on the hostname string would
     miss it. Both sets of endpoints hang off one ``Service`` (see
-    ``dns_reconcile.service_key``); differing internal-vs-external IPs are the
-    split-brain.
+    ``dns_reconcile.service_key``); a differing internal-vs-external resolution
+    is the split-brain. A tunnel-published name always differs, so it is
+    reported as the design it is rather than as drift.
     """
-    internal = sorted({ep.ip for ep in endpoints if ep.scope == ResolutionScope.INTERNAL and ep.ip})
-    external = sorted({ep.ip for ep in endpoints if ep.scope == ResolutionScope.EXTERNAL and ep.ip})
-    if internal and external and internal != external:
+    sb = analyze_split_brain(endpoints)
+    if sb is None:
+        return
+    if sb.is_expected:
+        # Tunnel-fronted names always differ; saying "drift" would be wrong.
+        console.print(
+            f"\n[cyan]published via Cloudflare Tunnel[/cyan]: "
+            f"internal → {', '.join(sb.internal)}, external → {', '.join(sb.external)}"
+        )
+    else:
         console.print(
             f"\n[yellow]DNS split-brain[/yellow]: "
-            f"internal → {', '.join(internal)}, external → {', '.join(external)}"
+            f"internal → {', '.join(sb.internal)}, external → {', '.join(sb.external)}"
         )
 
 

@@ -48,6 +48,7 @@ from homelab_helper.db.models import (
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
 from homelab_helper.engine.dns_reconcile import (
+    analyze_split_brain,
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
 )
@@ -110,11 +111,16 @@ def _endpoint_dict(ep: ServiceEndpoint) -> dict[str, Any]:
 
 
 def _split_brain(endpoints: list[ServiceEndpoint]) -> dict[str, Any] | None:
-    internal = sorted({e.ip for e in endpoints if e.scope == ResolutionScope.INTERNAL and e.ip})
-    external = sorted({e.ip for e in endpoints if e.scope == ResolutionScope.EXTERNAL and e.ip})
-    if internal and external and internal != external:
-        return {"internal_ips": internal, "external_ips": external}
-    return None
+    """Internal-vs-external divergence, compared by resolution (IP or CNAME target)."""
+    sb = analyze_split_brain(endpoints)
+    if sb is None:
+        return None
+    return {
+        "internal": sb.internal,
+        "external": sb.external,
+        "kind": sb.kind,
+        "expected": sb.is_expected,
+    }
 
 
 async def _open_findings(session: AsyncSession) -> list[ReconciliationFinding]:

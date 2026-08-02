@@ -10,7 +10,8 @@ from homelab_helper.db.enums import ResolutionScope
 from homelab_helper.db.models import Service, ServiceEndpoint
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.dns_reconcile import (
-    _address_records,
+    _resolving_records,
+    analyze_split_brain,
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
     service_key,
@@ -36,25 +37,37 @@ def _rec(hostname: str, ip: str, record_type: str = "A", enabled: bool = True) -
 
 
 # ---------------------------------------------------------------------------
-# _address_records (pure)
+# _resolving_records (pure)
 # ---------------------------------------------------------------------------
 
 
-def test_address_records_keeps_only_address_types() -> None:
+def test_resolving_records_keeps_addresses_and_cnames_not_txt() -> None:
+    """CNAMEs resolve a name for a client; TXT/MX do not.
+
+    A tunnel-published service has no public A record at all, so excluding
+    CNAMEs hid exactly the names worth comparing across the network boundary.
+    """
     recs = [
         _rec("a.lan", "10.0.0.1", "A"),
         _rec("b.lan", "fd00::1", "AAAA"),
         _rec("c.lan", "a.lan", "CNAME"),
         {"hostname": "d.lan", "value": "text", "record_type": "TXT"},
+        {"hostname": "e.lan", "value": "mail.lan", "record_type": "MX"},
     ]
-    out = _address_records(recs)
-    assert out == {"a.lan": "10.0.0.1", "b.lan": "fd00::1"}
+    out = _resolving_records(recs)
+
+    assert sorted(out) == ["a.lan", "b.lan", "c.lan"]
+    assert (out["a.lan"].ip, out["a.lan"].target) == ("10.0.0.1", None)
+    assert (out["b.lan"].ip, out["b.lan"].target) == ("fd00::1", None)
+    # A CNAME carries a target, never an ip.
+    assert (out["c.lan"].ip, out["c.lan"].target) == (None, "a.lan")
 
 
-def test_address_records_skips_disabled_and_lowercases() -> None:
+def test_resolving_records_skips_disabled_and_lowercases() -> None:
     recs = [_rec("NAS.LAN", "10.0.0.5"), _rec("off.lan", "10.0.0.9", enabled=False)]
-    out = _address_records(recs)
-    assert out == {"nas.lan": "10.0.0.5"}
+    out = _resolving_records(recs)
+    assert sorted(out) == ["nas.lan"]
+    assert out["nas.lan"].ip == "10.0.0.5"
 
 
 # ---------------------------------------------------------------------------
@@ -237,3 +250,74 @@ async def test_differently_suffixed_names_pair_on_one_service(sessionmaker) -> N
         eps = (await s.execute(select(ServiceEndpoint))).scalars().all()
         assert {ep.hostname for ep in eps} == {"ha.lan", "ha.example.com"}  # full FQDNs kept
         assert {ep.scope for ep in eps} == {ResolutionScope.INTERNAL, ResolutionScope.EXTERNAL}
+
+
+# ---------------------------------------------------------------------------
+# split-brain analysis
+# ---------------------------------------------------------------------------
+
+
+def _ep(scope: ResolutionScope, hostname: str, *, ip=None, target=None, rtype="A"):
+    return ServiceEndpoint(
+        scope=scope, hostname=hostname, ip=ip, target=target, record_type=rtype, resolver="r"
+    )
+
+
+def test_split_brain_none_when_sides_agree() -> None:
+    eps = [
+        _ep(ResolutionScope.INTERNAL, "a.lan", ip="10.0.0.1"),
+        _ep(ResolutionScope.EXTERNAL, "a.example.com", ip="10.0.0.1"),
+    ]
+    assert analyze_split_brain(eps) is None
+
+
+def test_split_brain_none_when_one_side_missing() -> None:
+    eps = [_ep(ResolutionScope.INTERNAL, "a.lan", ip="10.0.0.1")]
+    assert analyze_split_brain(eps) is None
+
+
+def test_split_brain_divergent_addresses() -> None:
+    eps = [
+        _ep(ResolutionScope.INTERNAL, "a.lan", ip="10.0.0.1"),
+        _ep(ResolutionScope.EXTERNAL, "a.example.com", ip="203.0.113.9"),
+    ]
+    sb = analyze_split_brain(eps)
+    assert sb is not None
+    assert sb.kind == "divergent-address"
+    assert sb.is_expected is False
+    assert (sb.internal, sb.external) == (["10.0.0.1"], ["203.0.113.9"])
+
+
+def test_tunnel_fronted_is_detected_and_marked_expected() -> None:
+    """The dominant real pattern: internal A record, external tunnel CNAME.
+
+    These always differ by construction, so reporting them as drift would turn
+    a correct architecture into a wall of false findings.
+    """
+    eps = [
+        _ep(ResolutionScope.INTERNAL, "wyhome.lan", ip="10.254.0.41"),
+        _ep(
+            ResolutionScope.EXTERNAL,
+            "wyhome.example.com",
+            target="d3a71894-f38f-41bc-9b26-927abc.cfargotunnel.com",
+            rtype="CNAME",
+        ),
+    ]
+    sb = analyze_split_brain(eps)
+    assert sb is not None
+    assert sb.kind == "tunnel-fronted"
+    assert sb.is_expected is True
+    assert sb.internal == ["10.254.0.41"]
+    assert sb.external[0].endswith("cfargotunnel.com")
+
+
+def test_non_tunnel_cname_is_still_plain_divergence() -> None:
+    eps = [
+        _ep(ResolutionScope.INTERNAL, "s.lan", ip="10.0.0.7"),
+        _ep(
+            ResolutionScope.EXTERNAL, "s.example.com", target="ghs.googlehosted.com", rtype="CNAME"
+        ),
+    ]
+    sb = analyze_split_brain(eps)
+    assert sb is not None
+    assert sb.kind == "divergent-address"

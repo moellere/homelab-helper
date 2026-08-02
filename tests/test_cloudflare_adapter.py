@@ -218,3 +218,71 @@ async def test_health_check_reports_failure() -> None:
         await adapter.aclose()
     assert ok is False
     assert err is not None
+
+
+# ---------------------------------------------------------------------------
+# account-owned vs user tokens
+# ---------------------------------------------------------------------------
+
+
+def test_verify_path_depends_on_token_ownership() -> None:
+    """Account-owned tokens (cfat_ prefix) verify under /accounts/<id>/.
+
+    Asking /user/tokens/verify for one returns 401 "Invalid API Token" — a live,
+    correctly-scoped token reported as invalid.
+    """
+    user_tok = CloudflareConfig(api_token="t", zone="example.com")
+    assert user_tok.verify_path == "/user/tokens/verify"
+
+    acct_tok = CloudflareConfig(api_token="cfat_x", zone="example.com", account_id="acct123")
+    assert acct_tok.verify_path == "/accounts/acct123/tokens/verify"
+
+
+def test_config_from_env_reads_account_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOMELAB_HELPER_CLOUDFLARE_API_TOKEN", "cfat_x")
+    monkeypatch.setenv("HOMELAB_HELPER_CLOUDFLARE_ZONE", "example.com")
+    monkeypatch.setenv("HOMELAB_HELPER_CLOUDFLARE_ACCOUNT_ID", "acct123")
+    cfg = CloudflareConfig.from_env()
+    assert cfg.account_id == "acct123"
+    assert cfg.verify_path == "/accounts/acct123/tokens/verify"
+
+
+async def test_health_check_uses_the_account_verify_path() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path.endswith("/tokens/verify"):
+            return httpx.Response(200, json=_ok({"status": "active"}))
+        return httpx.Response(200, json=_ok([{"id": "z1", "name": "example.com"}]))
+
+    cfg = CloudflareConfig(api_token="cfat_x", zone="example.com", account_id="acct123")
+    adapter = _adapter(handler, config=cfg)
+    try:
+        ok, err = await adapter.health_check()
+    finally:
+        await adapter.aclose()
+
+    assert ok, err
+    assert "/client/v4/accounts/acct123/tokens/verify" in seen
+
+
+async def test_health_check_401_without_account_id_names_the_likely_cause() -> None:
+    """The bare 401 is unactionable — say what to set."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401, json={"success": False, "errors": [{"code": 1000, "message": "Invalid API Token"}]}
+        )
+
+    cfg = CloudflareConfig(api_token="cfat_x", zone="example.com")  # no account id
+    adapter = _adapter(handler, config=cfg)
+    try:
+        ok, err = await adapter.health_check()
+    finally:
+        await adapter.aclose()
+
+    assert not ok
+    assert err is not None
+    assert "HOMELAB_HELPER_CLOUDFLARE_ACCOUNT_ID" in err
+    assert "cfat_" in err

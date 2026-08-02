@@ -34,6 +34,7 @@ from typing import Any
 import httpx
 
 _HTTP_ERROR_THRESHOLD = 400
+_HTTP_UNAUTHORIZED = 401
 _API_BASE = "https://api.cloudflare.com/client/v4"
 _PAGE_SIZE = 100
 _MAX_PAGES = 50  # safety cap: 5000 records is far beyond any homelab zone
@@ -57,13 +58,28 @@ class CloudflareConfig:
     api_token: str
     zone: str | None = None
     zone_id: str | None = None
+    account_id: str | None = None
     timeout_s: float = 10.0
+
+    @property
+    def verify_path(self) -> str:
+        """Where this token's ``tokens/verify`` lives.
+
+        Account-owned tokens (the ``cfat_`` prefix Cloudflare now issues) verify
+        under ``/accounts/<id>/``; classic user tokens under ``/user/``. Asking
+        the wrong one returns 401 "Invalid API Token" for a perfectly live
+        token, so the account id is what distinguishes them.
+        """
+        if self.account_id:
+            return f"/accounts/{self.account_id}/tokens/verify"
+        return "/user/tokens/verify"
 
     @classmethod
     def from_env(cls) -> CloudflareConfig:
         token = os.environ.get("HOMELAB_HELPER_CLOUDFLARE_API_TOKEN")
         zone = os.environ.get("HOMELAB_HELPER_CLOUDFLARE_ZONE")
         zone_id = os.environ.get("HOMELAB_HELPER_CLOUDFLARE_ZONE_ID")
+        account_id = os.environ.get("HOMELAB_HELPER_CLOUDFLARE_ACCOUNT_ID")
         if not token:
             raise CloudflareConfigError(
                 "A Cloudflare API token is required. Set HOMELAB_HELPER_CLOUDFLARE_API_TOKEN."
@@ -73,7 +89,7 @@ class CloudflareConfig:
                 "A zone is required. Set HOMELAB_HELPER_CLOUDFLARE_ZONE (name) or "
                 "HOMELAB_HELPER_CLOUDFLARE_ZONE_ID."
             )
-        return cls(api_token=token, zone=zone, zone_id=zone_id)
+        return cls(api_token=token, zone=zone, zone_id=zone_id, account_id=account_id)
 
 
 def parse_dns_record(raw: dict[str, Any]) -> dict[str, Any]:
@@ -194,9 +210,17 @@ class CloudflareAdapter:
     async def health_check(self) -> tuple[bool, str | None]:
         """Verify the token is live and (if named) the zone resolves."""
         try:
-            await self._request("GET", "/user/tokens/verify")
+            await self._request("GET", self.config.verify_path)
             await self._resolve_zone_id()
-        except (CloudflareAPIError, CloudflareConfigError, httpx.HTTPError) as exc:
+        except CloudflareAPIError as exc:
+            if exc.status_code == _HTTP_UNAUTHORIZED and not self.config.account_id:
+                return False, (
+                    f"{exc} — if this is an account-owned token (the 'cfat_' prefix), it "
+                    "verifies under /accounts/<id>/ rather than /user/. Set "
+                    "HOMELAB_HELPER_CLOUDFLARE_ACCOUNT_ID."
+                )
+            return False, str(exc)
+        except (CloudflareConfigError, httpx.HTTPError) as exc:
             return False, str(exc)
         return True, None
 

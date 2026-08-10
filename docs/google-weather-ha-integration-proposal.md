@@ -3,6 +3,13 @@
 Status: proposal (L1 — nothing here changes harness behavior; this is a review
 and recommendation for the Home Assistant side of the homelab).
 
+Execution status (2026-08-10): Track A is in flight — library PR submitted as
+[tronikos/python-google-weather-api#11](https://github.com/tronikos/python-google-weather-api/pull/11);
+the matching core change is pushed to the
+[`google-weather-minute-forecast` branch of moellere/ha-core](https://github.com/moellere/ha-core/tree/google-weather-minute-forecast),
+to be opened as a draft `home-assistant/core` PR once the library releases.
+Track B lives in [moellere/hass-google-weather-maps](https://github.com/moellere/hass-google-weather-maps).
+
 Google enabled two new Weather API endpoints on Google Maps Platform:
 
 - [Minute forecast (Experimental)](https://developers.google.com/maps/documentation/weather/minute-forecast)

@@ -31,11 +31,14 @@ owns the underlying client library. The work splits into:
 3. Add a radar-style `camera` entity that stitches map tiles around each
    configured location (mirroring the `environment_canada` radar camera).
 
-Because both endpoints are **Experimental (pre-GA)**, core review may stall on
-API-stability grounds; the fallback is staging the same design as a HACS
-custom integration (`google_weather_extras`) and upstreaming when the
-endpoints go GA. An interim REST-sensor snippet for our own HA instance is at
-the end.
+The two features should **travel different routes** (detail in
+"Recommended track" below): the minute forecast goes upstream to core — it
+has a merged precedent (`openweathermap.get_minute_forecast`), a small diff,
+and one receptive maintainer controlling both repos — while the map-tile
+camera starts life as a HACS custom integration, because the unresolved ToS
+question, unpublished tile SKU pricing, and missing frame history would stall
+a core PR indefinitely. An interim REST-sensor snippet for our own HA
+instance is at the end.
 
 ## Why not `google_maps`
 
@@ -194,20 +197,53 @@ location, default-disabled.
 4. **Coverage gaps.** Minute forecast is populated-areas-only; the setup flow
    should surface a clean "not covered" error rather than a broken entity.
 
-## Recommended track
+## Recommended track: split by feature
+
+The two features have very different core-acceptance odds, so they take
+different routes.
+
+### Track A — minute forecast: upstream to core
 
 | Phase | What | Where |
 |---|---|---|
-| 1 | Open feature issue referencing this design; ToS question included | `home-assistant/core` + `tronikos/python-google-weather-api` |
-| 2 | Library PR: minute forecast + map tiles | `python-google-weather-api` |
-| 3 | Core PR: coordinator + sensors + `get_minute_forecast` service | `home-assistant/core` |
-| 4 | Core PR (separate): map-tile camera | `home-assistant/core` |
-| Fallback | Same design as HACS `google_weather_extras` if core defers pre-GA endpoints | custom repo |
+| A1 | Open feature issue referencing this design to gauge maintainer interest | `tronikos/python-google-weather-api` |
+| A2 | Library PR: `async_get_minute_forecast` + `MinuteForecastResponse` models | `python-google-weather-api` |
+| A3 | Core PR: coordinator + default-disabled nowcast sensors + `get_minute_forecast` service (one platform per PR — HA hard rule, so sensors and the service may land as separate PRs) | `home-assistant/core` |
+
+Why core is the right bet here: a merged precedent exists
+(`openweathermap.get_minute_forecast`), the diff is small (one coordinator
+subclass, a handful of sensor descriptions, one service registration), the
+response shape is simple enough to survive pre-GA churn inside the library,
+and @tronikos maintains both the library and the integration — one receptive
+person controls the whole path. Core also brings reauth, subentries,
+diagnostics redaction, and translations for free. Expect a few weeks to a
+couple of months of review for a non-codeowner PR.
+
+### Track B — map-tile camera: HACS first
+
+| Phase | What | Where |
+|---|---|---|
+| B1 | Custom integration with its own domain (e.g. `google_weather_maps`), own config entry + API key | new HACS repo |
+| B2 | Iterate on stitching grid, zoom, refresh cadence, US/EU selection while the endpoint is experimental | same |
+| B3 | Propose for core only if/when the endpoint goes GA, tile SKU pricing is published, frame history exists (real radar loops), and the ToS question has a clean answer | `home-assistant/core` |
+
+Why not core first: the ToS question (Google tile imagery rendered outside a
+Google map) reads as a blocker to core reviewers, not a footnote; the design
+choices (grid, basemap compositing, cadence against an unpublished SKU) need
+iteration speed core review doesn't allow; and the endpoint is the more
+volatile of the two — when Google adds timestamped frames, the design changes
+materially. Better to churn in HACS than in core's monthly release train.
+
+**Domain trap:** do not name the custom component's domain `google_weather` —
+a same-domain custom component *shadows* the core integration entirely,
+turning it into a fork that must track every monthly core release. A separate
+domain costs a second API-key entry and shared-quota awareness (keep the
+camera default-off or at a 30-min refresh), which is the cheaper price.
 
 The existing HACS integration
 [safepay/ha_google_weather](https://github.com/safepay/ha_google_weather) is
-an alternative contribution target, but upstream-first is the better bet given
-the official integration's momentum.
+an alternative contribution target for Track A if upstream stalls, but
+core-first is the better bet given the official integration's momentum.
 
 ## Interim: use it in our HA today (no integration work)
 

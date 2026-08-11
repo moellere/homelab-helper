@@ -326,6 +326,28 @@ The rest of Phase 1, and all of Phase 6, is below.
   whose rows duplicate an existing slice's `(hostname, ip)` set, which turns a
   silent orphan into a visible one without needing the full verb.
 
+  **Third case — one device, one Host row per interface.** The scan/UniFi
+  importers key a Host by `(hostname, primary_ip)`, so a multi-homed device
+  arrives as several rows. Observed live: `unifi.dorktool.com` ×3 (one per VLAN
+  interface), the Wyola gateway ×2, `HS210.dorktool.com` ×2, plus two rows the
+  importer disambiguated with a MAC suffix — `wyolora 69:bc` / `69:bd` and
+  `moellere-wyola a1:0e` / `f4:5b`. Five devices, eleven rows: a ~4% inflation
+  of the host count, and every per-host rollup (audit, capability queries) is
+  wrong by the same margin.
+
+  The reconciler already has the evidence needed to collapse these — a deep
+  probe of the ChirpStack gateway placed **both** its MACs (`dc:a6:32:1f:69:bc`
+  eth0, `…:bd` phy0-sta0) as NIC parts of one Host, which is exactly the
+  identity link the importer lacked. What is missing is a verb that applies that
+  retroactively: given two Host rows whose NIC parts belong to one device, merge
+  them (keeping the deep-probed row, folding the other's observations/placements
+  in, and closing the loser).
+
+  Note the MAC suffix is load-bearing until then — stripping it to tidy names
+  produces two identically-named rows and destroys the only field distinguishing
+  them. Renaming was done for the 11 non-colliding rows; the 2 colliding ones
+  were deliberately left suffixed.
+
 ### Reconciler / assertions (landed)
 
 - [x] **Forged-WWN collision guard** — `Reconciler._resolve_storage_identity` +

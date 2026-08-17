@@ -67,6 +67,7 @@ that `discover` verb (all are prefixed `HOMELAB_HELPER_`):
 | Kubernetes | `KUBECONFIG`, `KUBE_CONTEXT` |
 | OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
+| LLM (chat) | `LLM_PRIVACY` (`strict-local`/`prefer-local`/`open`), `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIER`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_BASE_URL` |
 
 Print the effective configuration (secrets shown only as set/unset, never
 printed):
@@ -96,6 +97,24 @@ uv run helper findings list
 ```
 
 Keep tokens and keys in the environment — never commit them.
+
+### Chat with your lab
+
+`helper chat` answers questions from the reconciled inventory — grounded in
+facts, never inventing hosts or findings. Runs against local **Ollama by
+default** (`localhost:11434`); add a BYOK cloud key to enable fallback, and
+control routing with `HOMELAB_HELPER_LLM_PRIVACY` (`strict-local` never sends
+anything to a cloud model — the router refuses rather than silently
+downgrading or leaking).
+
+```bash
+uv run helper chat "what hosts do I have?"     # one-shot
+uv run helper chat                             # REPL ('exit' to leave)
+uv run helper findings narrate                 # open findings as prose
+```
+
+Every reply is footed with the backend that served it, e.g.
+`[ollama: llama3.2 (small, local)]`.
 
 ### Using with Claude / MCP
 

@@ -23,6 +23,7 @@ from rich.console import Console
 from homelab_helper import __version__
 from homelab_helper.cli.assertion import assert_app
 from homelab_helper.cli.audit import audit_app
+from homelab_helper.cli.chat import chat_app
 from homelab_helper.cli.config import config_app
 from homelab_helper.cli.db import db_app
 from homelab_helper.cli.diff import diff_app
@@ -48,6 +49,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(view_app)
 app.add_typer(diff_app)
 app.add_typer(mcp_app)
+app.add_typer(chat_app)
 
 console = Console()
 

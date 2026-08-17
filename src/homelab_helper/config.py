@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
+from homelab_helper.llm import backends_from_env, privacy_from_env
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -228,6 +230,24 @@ def source_status(source: SourceConfig) -> dict[str, Any]:
     }
 
 
+def llm_status() -> dict[str, Any]:
+    """LLM router policy + backend roster — declared config only, no probes,
+    no secrets. A malformed env var reads as data so ``helper config`` still
+    renders."""
+    try:
+        policy = privacy_from_env().value
+        backends = backends_from_env()
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {
+        "privacy": policy,
+        "backends": [
+            {"backend": b.name, "model": b.model, "tier": b.tier.name.lower(), "local": b.local}
+            for b in backends
+        ],
+    }
+
+
 def config_status() -> dict[str, Any]:
     """Whole-harness configuration snapshot for the CLI and the MCP surface."""
     env_files = find_env_files()
@@ -245,6 +265,7 @@ def config_status() -> dict[str, Any]:
         "sources": sources,
         "configured_sources": [s["source"] for s in sources if s["configured"]],
         "unconfigured_sources": [s["source"] for s in sources if not s["configured"]],
+        "llm": llm_status(),
     }
 
 
@@ -255,6 +276,7 @@ __all__ = [
     "config_status",
     "database_url",
     "find_env_file",
+    "llm_status",
     "load_env",
     "source_status",
     "variable_status",

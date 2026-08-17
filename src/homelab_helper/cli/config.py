@@ -83,12 +83,28 @@ def _render_sources(status: dict) -> Table:
     return table
 
 
+def _render_llm(llm: dict) -> Table:
+    table = Table(title=f"llm backends (privacy: {llm.get('privacy', '?')})")
+    table.add_column("backend", no_wrap=True)
+    table.add_column("model", overflow="fold")
+    table.add_column("tier", no_wrap=True)
+    table.add_column("origin", no_wrap=True)
+    for b in llm.get("backends", []):
+        table.add_row(b["backend"], b["model"], b["tier"], "local" if b["local"] else "cloud")
+    return table
+
+
 @config_app.callback(invoke_without_command=True)
 def config() -> None:
     """Print the effective configuration."""
     status = config_status()
     console.print(_render_general(status))
     console.print(_render_sources(status))
+    llm = status["llm"]
+    if "error" in llm:
+        console.print(f"[red]llm config error:[/red] {llm['error']}")
+    else:
+        console.print(_render_llm(llm))
 
     ready = status["configured_sources"]
     blocked = [s for s in status["unconfigured_sources"] if s != "netbox"]

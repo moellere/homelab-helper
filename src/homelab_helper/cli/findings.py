@@ -20,12 +20,15 @@ from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
 from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus
 from homelab_helper.db.models import ReconciliationFinding
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.llm import LLMRouter, RouterRefusal, router_from_env
+from homelab_helper.llm.narrator import narrate_findings
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -347,3 +350,56 @@ def findings_suppress(
             await engine.dispose()
 
     asyncio.run(_go())
+
+
+def _load_router() -> LLMRouter:
+    """Factory (monkeypatched in tests)."""
+    return router_from_env()
+
+
+@findings_app.command(name="narrate")
+def findings_narrate(
+    fingerprints: list[str] = typer.Argument(
+        None, help="Fingerprint prefixes to narrate; omit for all open findings."
+    ),
+    status: str = typer.Option(
+        "active", "--status", help="Which findings to narrate when none are named."
+    ),
+) -> None:
+    """Narrate findings as prose via the LLM router (Narrator agent)."""
+
+    async def _go() -> int:
+        engine = make_engine(_database_url())
+        router = _load_router()
+        try:
+            sm = make_sessionmaker(engine)
+            async with sm() as session:
+                if fingerprints:
+                    rows = [await _resolve_fingerprint(session, p) for p in fingerprints]
+                else:
+                    stmt = select(ReconciliationFinding).where(
+                        ReconciliationFinding.status.in_(_parse_status_filter(status))
+                    )
+                    rows = list((await session.execute(stmt)).scalars().all())
+                if not rows:
+                    console.print("no findings to narrate")
+                    return 0
+                try:
+                    result = await narrate_findings(router, rows)
+                except RouterRefusal as refusal:
+                    console.print(f"[red]refused:[/red] {refusal}")
+                    return 2
+                console.print(result.text)
+                origin = "local" if result.local else "cloud"
+                footer = (
+                    f"[{result.backend}: {result.model} "
+                    f"({result.tier.name.lower()}, {origin}) — "
+                    f"{len(rows)} finding(s)]"
+                )
+                console.print(f"[dim]{escape(footer)}[/dim]")
+                return 0
+        finally:
+            await router.aclose()
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))

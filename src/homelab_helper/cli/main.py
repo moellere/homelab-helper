@@ -33,6 +33,7 @@ from homelab_helper.cli.host import host_app
 from homelab_helper.cli.mcp import mcp_app
 from homelab_helper.cli.netbox import netbox_app
 from homelab_helper.cli.probes import probes_app
+from homelab_helper.cli.skills import skills_app
 from homelab_helper.cli.view import view_app
 from homelab_helper.config import load_env
 
@@ -51,6 +52,7 @@ app.add_typer(diff_app)
 app.add_typer(mcp_app)
 app.add_typer(chat_app)
 app.add_typer(onboard_app)
+app.add_typer(skills_app)
 
 console = Console()
 

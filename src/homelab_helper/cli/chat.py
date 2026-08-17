@@ -22,6 +22,11 @@ from homelab_helper.config import database_url
 from homelab_helper.db.models import Host
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.host_probe import HostProbeRequest, probe_host
+from homelab_helper.engine.skill_inferer import (
+    get_profile,
+    observe_text,
+    render_profile_for_prompt,
+)
 from homelab_helper.llm import LLMRouter, PrivacyPolicy, RouterRefusal, TaskClass, router_from_env
 from homelab_helper.llm.context import build_lab_context
 from homelab_helper.llm.discovery import (
@@ -60,9 +65,22 @@ async def _lab_system_prompt() -> str:
         sm = make_sessionmaker(engine)
         async with sm() as session:
             context = await build_lab_context(session)
+            profile_line = render_profile_for_prompt(await get_profile(session))
     finally:
         await engine.dispose()
-    return _SYSTEM_TEMPLATE.format(context=context)
+    system = _SYSTEM_TEMPLATE.format(context=context)
+    return f"{system}\n\n{profile_line}" if profile_line else system
+
+
+async def _observe_skills(text: str) -> None:
+    """Passive Skill Inferer hook — every operator message is free signal."""
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            await observe_text(session, text)
+    finally:
+        await engine.dispose()
 
 
 def _footer(backend: str, model: str, tier_name: str, local: bool) -> str:
@@ -89,6 +107,7 @@ def chat(
 
             async def _ask(text: str) -> int:
                 history.append({"role": "user", "content": text})
+                await _observe_skills(text)
                 try:
                     result = await router.complete(TaskClass.CHAT, system, history)
                 except RouterRefusal as refusal:

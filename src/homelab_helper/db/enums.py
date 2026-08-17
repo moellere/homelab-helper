@@ -261,6 +261,27 @@ class ResolutionScope(StrEnum):
     EXTERNAL = "external"
 
 
+# ---------------------------------------------------------------------------
+# Skill profile (Phase 4 — feeds the Phase-6 trust gradient's per-domain hints)
+# ---------------------------------------------------------------------------
+
+
+class SkillLevel(StrEnum):
+    """Operator proficiency ladder for one domain."""
+
+    NOVICE = "novice"
+    BASIC = "basic"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+
+
+class SkillSource(StrEnum):
+    """How a profile row was established. MANUAL always wins over INFERRED."""
+
+    INFERRED = "inferred"
+    MANUAL = "manual"
+
+
 __all__ = [
     "Architecture",
     "AssertionKind",
@@ -279,4 +300,6 @@ __all__ = [
     "PrivilegeLevel",
     "ProposalOutcome",
     "ResolutionScope",
+    "SkillLevel",
+    "SkillSource",
 ]

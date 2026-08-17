@@ -111,7 +111,14 @@ downgrading or leaking).
 uv run helper chat "what hosts do I have?"     # one-shot
 uv run helper chat                             # REPL ('exit' to leave)
 uv run helper findings narrate                 # open findings as prose
+uv run helper onboard "a new mini-PC"          # conversational host onboarding
 ```
+
+`helper onboard` interviews you about a new machine, then **validates and asks
+for confirmation before writing anything** — the model proposes, deterministic
+code decides. It collects at most an SSH username and key *path* (never key
+material or passwords); add `--probe` to kick off warm SSH discovery right
+after registration.
 
 Every reply is footed with the backend that served it, e.g.
 `[ollama: llama3.2 (small, local)]`.

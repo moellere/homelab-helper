@@ -287,8 +287,22 @@ The rest of Phase 1, and all of Phase 6, is below.
   the prompt; narration cites fingerprints so prose is presentation, never the
   source of truth. `narrate` takes fingerprint prefixes or a status filter
   (P4-AC2's machinery; the Ceph demo needs the populated fleet).
-- [ ] **Conversational Discovery Agent** — interview-style host onboarding
-  (P4-AC3).
+- [x] **Conversational Discovery Agent** (`llm/discovery.py` + `helper
+  onboard`) — interview-style host onboarding (P4-AC3). The first agent that
+  leads to a harness-DB write, so the trust split is the design: the **LLM
+  interviews and proposes; deterministic Python validates; the operator
+  confirms; only then is anything written.** Protocol: one JSON object per
+  model turn (`{"say", "proposal", "done"}`), tolerantly parsed (fences,
+  prose) with corrective retries and a bail-out after 3 consecutive protocol
+  failures. `validate_proposal` enforces what the model cannot waive: hostname
+  syntax, IP syntax, arch enum, duplicate host/IP detection, and **rejection of
+  anything that looks like key material** — the agent collects an SSH username
+  and key *path* only (stored as `Host.credentials_ref`), never secrets.
+  Confirmed hosts land as `discovery_source=manual` with role in capabilities;
+  `--probe` then runs the shared `engine/host_probe.py` warm-discovery path,
+  otherwise the exact `helper discover host` command is printed. Top-level verb
+  (`helper onboard`, not a chat subcommand) because a click group callback with
+  a positional argument is ambiguous with subcommand resolution.
 - [ ] **Skill Inferer** — passive per-domain trust hints from chat (P4-AC6).
 - [x] **MCP host-discovery tool** (`probe_host`) — SSH deep-probe exposed over
   MCP, so kernel-level facts are reachable conversationally and not just from

@@ -262,12 +262,31 @@ The rest of Phase 1, and all of Phase 6, is below.
   errors return `{"error": ...}` payloads so LLM callers can react instead of
   hitting protocol faults. Registers with Claude Code via
   `claude mcp add homelab -- uv run --directory <repo> helper mcp serve`.
-- [ ] **LLMRouter** — task-class → privacy → capability tier → backend selection;
-  Ollama default, BYOK Anthropic/OpenAI/OpenAI-compatible; refuses cleanly when
-  policy can't be satisfied (strict-local + Frontier ask → clear refusal).
-- [ ] **`helper chat`** — CLI chat loop over the router with read-only engine
-  access (P4-AC1).
-- [ ] **Narrator agent** — findings → prose (P4-AC2 Ceph narration).
+- [x] **LLMRouter** (`llm/router.py` + `llm/backends.py`) — the single entry
+  point for every LLM call: task class → minimum capability tier
+  (Tiny/Small/Mid/Frontier) → privacy policy → backend. Backends: Ollama
+  (default, always present at `localhost:11434`, availability-probed, model
+  pulled-check), BYOK Anthropic + OpenAI (only built when a key is set), and
+  OpenAI-compatible for local vLLM/llama.cpp/LM Studio (counts as local).
+  Policies: `strict-local` (cloud is not a candidate at all), `prefer-local`
+  (default; capable local before capable cloud), `open` (most capable first,
+  local wins ties) via `HOMELAB_HELPER_LLM_PRIVACY`. Failover on
+  unavailable/erroring backends; **never a silent downgrade** — no capable
+  backend → `RouterRefusal` naming the task, needed tier, policy, what each
+  backend offered, and the operator's options (P4-AC5). Local tiers are
+  operator-declared (`*_TIER` env vars). `helper config` shows the roster.
+- [x] **`helper chat`** (`cli/chat.py`) — one-shot and REPL chat grounded in
+  `llm/context.py`'s bounded fact sheet (hosts, guests, services + split-brain,
+  open findings with fingerprints) — the synthesized-view trust boundary: no
+  raw probe output, no secrets. Multi-turn history in the REPL; every reply
+  prints a `[backend: model (tier, local/cloud)]` footer; refusals exit 2 with
+  the router's message (P4-AC1).
+- [x] **Narrator agent** (`llm/narrator.py` + `helper findings narrate`) —
+  findings → prose at `TaskClass.NARRATION` (Tiny+). Renders reconciled finding
+  rows (fingerprint, severity, description, proposed actions, affected) into
+  the prompt; narration cites fingerprints so prose is presentation, never the
+  source of truth. `narrate` takes fingerprint prefixes or a status filter
+  (P4-AC2's machinery; the Ceph demo needs the populated fleet).
 - [ ] **Conversational Discovery Agent** — interview-style host onboarding
   (P4-AC3).
 - [ ] **Skill Inferer** — passive per-domain trust hints from chat (P4-AC6).

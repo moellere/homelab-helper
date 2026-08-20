@@ -1,0 +1,735 @@
+# Workload profile starter library (Phase 5, AC1).
+#
+# Baselines are *starter estimates* for a small homelab deployment — enough to
+# reason about placement, not benchmarks. Operators override by copying an
+# entry into their own library file and editing; community contributions
+# adjust these in place.
+#
+# Fields per entry:
+#   category      media | automation | network | files | monitoring | nvr |
+#                 dev | database | downloads | misc
+#   cpu_cores     baseline sustained cores (float; bursts excluded)
+#   ram_mb        baseline resident memory
+#   storage_gb    app + config footprint (NOT the data it manages — see
+#                 data_gravity for that)
+#   scaling       flat | with-users | with-data | with-cameras | with-devices
+#   arch          supported CPU architectures
+#   gpu           none | optional | required
+#   gpu_purpose   what the GPU buys (only when gpu != none)
+#   depends_on    other workloads it needs running
+#   data_gravity  the large dataset it wants to live near (null if none)
+#   artifacts     common deployment forms
+
+workloads:
+  # ----------------------------------------------------------------- media
+  plex:
+    category: media
+    description: Media server with hardware-transcode support.
+    cpu_cores: 2.0
+    ram_mb: 2048
+    storage_gb: 5
+    scaling: with-users
+    arch: [amd64]
+    gpu: optional
+    gpu_purpose: hardware transcoding
+    data_gravity: media-library
+    artifacts: [docker, lxc]
+  jellyfin:
+    category: media
+    description: Open-source media server.
+    cpu_cores: 2.0
+    ram_mb: 2048
+    storage_gb: 5
+    scaling: with-users
+    arch: [amd64, arm64]
+    gpu: optional
+    gpu_purpose: hardware transcoding
+    data_gravity: media-library
+    artifacts: [docker, k8s, lxc]
+  emby:
+    category: media
+    description: Media server (freemium).
+    cpu_cores: 2.0
+    ram_mb: 2048
+    storage_gb: 5
+    scaling: with-users
+    arch: [amd64, arm64]
+    gpu: optional
+    gpu_purpose: hardware transcoding
+    data_gravity: media-library
+    artifacts: [docker]
+  navidrome:
+    category: media
+    description: Music streaming server (Subsonic-compatible).
+    cpu_cores: 0.5
+    ram_mb: 256
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64, arm]
+    gpu: none
+    data_gravity: music-library
+    artifacts: [docker, k8s]
+  immich:
+    category: media
+    description: Photo/video backup with ML tagging and face recognition.
+    cpu_cores: 2.0
+    ram_mb: 4096
+    storage_gb: 10
+    scaling: with-data
+    arch: [amd64]
+    gpu: optional
+    gpu_purpose: ML photo tagging / face recognition
+    depends_on: [postgres, redis]
+    data_gravity: photo-library
+    artifacts: [docker, k8s]
+  photoprism:
+    category: media
+    description: AI-powered photo management.
+    cpu_cores: 2.0
+    ram_mb: 4096
+    storage_gb: 5
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: optional
+    gpu_purpose: TensorFlow photo classification
+    data_gravity: photo-library
+    artifacts: [docker]
+  audiobookshelf:
+    category: media
+    description: Audiobook and podcast server.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 2
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: audiobook-library
+    artifacts: [docker, k8s]
+  calibre-web:
+    category: media
+    description: Ebook library web UI.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: ebook-library
+    artifacts: [docker]
+  tautulli:
+    category: media
+    description: Plex usage analytics.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    depends_on: [plex]
+    artifacts: [docker]
+  jellyseerr:
+    category: media
+    description: Request management for Jellyfin/Plex libraries.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-users
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+
+  # ------------------------------------------------------------ automation
+  home-assistant:
+    category: automation
+    description: Home automation hub.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 5
+    scaling: with-devices
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s, lxc]
+  esphome:
+    category: automation
+    description: ESP firmware builder/updater dashboard.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 2
+    scaling: with-devices
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker]
+  zigbee2mqtt:
+    category: automation
+    description: Zigbee bridge to MQTT.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: with-devices
+    arch: [amd64, arm64, arm]
+    gpu: none
+    depends_on: [mosquitto]
+    artifacts: [docker]
+  node-red:
+    category: automation
+    description: Flow-based automation programming.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, k8s]
+  mosquitto:
+    category: automation
+    description: MQTT broker.
+    cpu_cores: 0.25
+    ram_mb: 128
+    storage_gb: 1
+    scaling: with-devices
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, k8s]
+
+  # --------------------------------------------------------------- network
+  pihole:
+    category: network
+    description: DNS sinkhole / ad blocker.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, lxc]
+  adguard-home:
+    category: network
+    description: DNS filtering server.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, lxc]
+  unbound:
+    category: network
+    description: Recursive DNS resolver.
+    cpu_cores: 0.25
+    ram_mb: 128
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, lxc]
+  wireguard:
+    category: network
+    description: VPN endpoint.
+    cpu_cores: 0.5
+    ram_mb: 128
+    storage_gb: 1
+    scaling: with-users
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, lxc]
+  traefik:
+    category: network
+    description: Reverse proxy with automatic service discovery.
+    cpu_cores: 0.5
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  nginx-proxy-manager:
+    category: network
+    description: Reverse proxy with a web UI.
+    cpu_cores: 0.5
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker]
+  caddy:
+    category: network
+    description: HTTPS-by-default web server / reverse proxy.
+    cpu_cores: 0.25
+    ram_mb: 128
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, k8s]
+  cloudflared:
+    category: network
+    description: Cloudflare Tunnel connector.
+    cpu_cores: 0.25
+    ram_mb: 128
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, k8s]
+
+  # ----------------------------------------------------------------- files
+  nextcloud:
+    category: files
+    description: File sync/share + groupware.
+    cpu_cores: 2.0
+    ram_mb: 2048
+    storage_gb: 10
+    scaling: with-users
+    arch: [amd64, arm64]
+    gpu: none
+    depends_on: [postgres, redis]
+    data_gravity: user-files
+    artifacts: [docker, k8s, lxc]
+  syncthing:
+    category: files
+    description: Peer-to-peer file synchronization.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64, arm]
+    gpu: none
+    data_gravity: user-files
+    artifacts: [docker, k8s]
+  minio:
+    category: files
+    description: S3-compatible object storage.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 2
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: object-store
+    artifacts: [docker, k8s]
+  seafile:
+    category: files
+    description: File sync with block-level dedup.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 5
+    scaling: with-users
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: user-files
+    artifacts: [docker]
+  filebrowser:
+    category: files
+    description: Web file manager.
+    cpu_cores: 0.25
+    ram_mb: 128
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker]
+  paperless-ngx:
+    category: files
+    description: Document scanning, OCR, and archive.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 5
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    depends_on: [postgres, redis]
+    data_gravity: document-archive
+    artifacts: [docker, k8s]
+
+  # ------------------------------------------------------------ monitoring
+  grafana:
+    category: monitoring
+    description: Dashboards and visualization.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 2
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  prometheus:
+    category: monitoring
+    description: Metrics collection and alerting.
+    cpu_cores: 1.0
+    ram_mb: 2048
+    storage_gb: 20
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: metrics-tsdb
+    artifacts: [docker, k8s]
+  influxdb:
+    category: monitoring
+    description: Time-series database.
+    cpu_cores: 1.0
+    ram_mb: 2048
+    storage_gb: 20
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: metrics-tsdb
+    artifacts: [docker, k8s]
+  loki:
+    category: monitoring
+    description: Log aggregation.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 20
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: log-store
+    artifacts: [docker, k8s]
+  uptime-kuma:
+    category: monitoring
+    description: Uptime monitoring with status pages.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker]
+  netdata:
+    category: monitoring
+    description: Real-time per-host metrics.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 2
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, lxc]
+
+  # ------------------------------------------------------------------- nvr
+  frigate:
+    category: nvr
+    description: NVR with real-time object detection.
+    cpu_cores: 2.0
+    ram_mb: 2048
+    storage_gb: 5
+    scaling: with-cameras
+    arch: [amd64, arm64]
+    gpu: optional
+    gpu_purpose: object detection (or Coral TPU) + decode
+    depends_on: [mosquitto]
+    data_gravity: camera-recordings
+    artifacts: [docker]
+  scrypted:
+    category: nvr
+    description: Camera hub with HomeKit Secure Video bridging.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 2
+    scaling: with-cameras
+    arch: [amd64, arm64]
+    gpu: optional
+    gpu_purpose: video decode
+    data_gravity: camera-recordings
+    artifacts: [docker]
+
+  # ------------------------------------------------------------------- dev
+  gitea:
+    category: dev
+    description: Lightweight git forge.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 5
+    scaling: with-data
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, k8s]
+  forgejo:
+    category: dev
+    description: Community git forge (Gitea fork).
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 5
+    scaling: with-data
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, k8s]
+  jenkins:
+    category: dev
+    description: CI server.
+    cpu_cores: 2.0
+    ram_mb: 2048
+    storage_gb: 10
+    scaling: with-users
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  woodpecker:
+    category: dev
+    description: Container-native CI (Drone fork).
+    cpu_cores: 1.0
+    ram_mb: 512
+    storage_gb: 2
+    scaling: with-users
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  code-server:
+    category: dev
+    description: VS Code in the browser.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 5
+    scaling: with-users
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  harbor:
+    category: dev
+    description: Container registry with scanning.
+    cpu_cores: 2.0
+    ram_mb: 4096
+    storage_gb: 20
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    depends_on: [postgres, redis]
+    data_gravity: image-store
+    artifacts: [docker, k8s]
+
+  # -------------------------------------------------------------- database
+  postgres:
+    category: database
+    description: Relational database.
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 5
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s, lxc]
+  mariadb:
+    category: database
+    description: Relational database (MySQL-compatible).
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 5
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s, lxc]
+  mongodb:
+    category: database
+    description: Document database.
+    cpu_cores: 1.0
+    ram_mb: 2048
+    storage_gb: 5
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  redis:
+    category: database
+    description: In-memory cache / message broker.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, k8s]
+
+  # ------------------------------------------------------------- downloads
+  qbittorrent:
+    category: downloads
+    description: Torrent client with web UI.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64, arm]
+    gpu: none
+    data_gravity: media-library
+    artifacts: [docker]
+  transmission:
+    category: downloads
+    description: Lightweight torrent client.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64, arm]
+    gpu: none
+    data_gravity: media-library
+    artifacts: [docker]
+  sabnzbd:
+    category: downloads
+    description: Usenet downloader.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: media-library
+    artifacts: [docker]
+  sonarr:
+    category: downloads
+    description: TV automation.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: media-library
+    artifacts: [docker, k8s]
+  radarr:
+    category: downloads
+    description: Movie automation.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: media-library
+    artifacts: [docker, k8s]
+  prowlarr:
+    category: downloads
+    description: Indexer manager for the *arr stack.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  lidarr:
+    category: downloads
+    description: Music automation.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: music-library
+    artifacts: [docker]
+
+  # ------------------------------------------------------------------ misc
+  vaultwarden:
+    category: misc
+    description: Bitwarden-compatible password server.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: with-users
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker, k8s]
+  homepage:
+    category: misc
+    description: Service dashboard.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  homarr:
+    category: misc
+    description: Service dashboard with integrations.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker]
+  mealie:
+    category: misc
+    description: Recipe manager and meal planner.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker, k8s]
+  freshrss:
+    category: misc
+    description: RSS aggregator.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: flat
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker]
+  wallabag:
+    category: misc
+    description: Read-it-later article archive.
+    cpu_cores: 0.25
+    ram_mb: 256
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker]
+  bookstack:
+    category: misc
+    description: Wiki organized as books.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 2
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    depends_on: [mariadb]
+    artifacts: [docker]
+  wikijs:
+    category: misc
+    description: Modern wiki.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 2
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    depends_on: [postgres]
+    artifacts: [docker, k8s]
+  duplicati:
+    category: misc
+    description: Encrypted backup client.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    artifacts: [docker]
+  kopia:
+    category: misc
+    description: Fast deduplicating backup.
+    cpu_cores: 0.5
+    ram_mb: 512
+    storage_gb: 1
+    scaling: with-data
+    arch: [amd64, arm64, arm]
+    gpu: none
+    artifacts: [docker]
+  ollama:
+    category: misc
+    description: Local LLM inference server.
+    cpu_cores: 4.0
+    ram_mb: 8192
+    storage_gb: 30
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: optional
+    gpu_purpose: inference acceleration (VRAM sizes the model)
+    data_gravity: model-store
+    artifacts: [docker, lxc]

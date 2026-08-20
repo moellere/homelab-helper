@@ -371,6 +371,42 @@ The rest of Phase 1, and all of Phase 6, is below.
   whose rows duplicate an existing slice's `(hostname, ip)` set, which turns a
   silent orphan into a visible one without needing the full verb.
 
+### Phase 5 — planning & recommendations (started)
+
+- [x] **WorkloadProfile schema + starter library** (`engine/workloads.py` +
+  `fixtures/workload-library.yaml`) — the planner's unit of reasoning:
+  baselines (cores/RAM/footprint), scaling shape, arch support, gpu
+  none/optional/required (+purpose), dependencies, **data gravity** (the large
+  dataset a workload wants to live near — distinct from its own footprint),
+  deployment artifacts. 57 starter entries across media/automation/network/
+  files/monitoring/nvr/dev/database/downloads/misc (P5-AC1's ≥50); baselines
+  are starter estimates. `HOMELAB_HELPER_WORKLOAD_LIBRARY` layers an operator
+  file on top, same-named entries winning — the community-contribution path.
+- [x] **Placement recommender** (`engine/placement.py` + `helper plan
+  add-workload`, P5-AC2) — deterministic and explainable: hard constraints
+  reject with a stated reason (arch, RAM vs baseline + 1 GiB OS reserve, GPU
+  required but absent, decommissioning intent — the first IntentState
+  consumer); survivors scored on RAM headroom, CPU threads, optional-GPU
+  bonus, data-gravity affinity to bulk storage, minus a running-guest load
+  penalty — every score component carries a reason. Unknown facts are caveats,
+  not rejections ("we don't know" ≠ "it doesn't fit"). Reconciler now projects
+  `host.gpu.count/vendors` → `gpu_count`/`gpu_vendors` capabilities.
+- [x] **Planner agent** (`llm/planner.py`) — narrates the finished report at
+  `TaskClass.PLANNING` (Mid+); it cannot reorder, add, or drop candidates.
+  `--narrate` refusals degrade to the already-printed deterministic table.
+- [ ] **NetworkPath abstraction** — typed link graph (cables, tunnels,
+  wireless) with characteristic inheritance from the worst link in a path;
+  P5-AC6's Wyola↔Covington VPN case is the acceptance target.
+- [ ] **Rebalance solver** (`helper plan rebalance`, P5-AC3) — multi-workload
+  placement over the whole fleet; likely the point OR-Tools earns its way in
+  as a dependency (single-workload placement deliberately didn't need it).
+- [ ] **Bottleneck analyzer** (`helper bottlenecks`, P5-AC4) — pattern library
+  (Ceph link asymmetry, scheduler pressure, NFS saturation) generating the
+  day-one report's mitigations from data, not hardcoded.
+- [ ] **Reconfiguration reasoner** (P5-AC5) — placement history + capability
+  gaps → "move this DIMM / spin these VMs back up / declare capacity-reserve
+  intent" proposals.
+
 ### Reconciler / assertions (landed)
 
 - [x] **Forged-WWN collision guard** — `Reconciler._resolve_storage_identity` +

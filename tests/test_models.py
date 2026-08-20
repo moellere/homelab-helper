@@ -73,6 +73,8 @@ async def test_expected_tables_in_metadata() -> None:
         # Phase 3 service-endpoint slice
         "service",
         "service_endpoint",
+        # Phase 4 skill inferer
+        "skill_profile",
     }
     assert set(Base.metadata.tables.keys()) == expected
 

@@ -120,6 +120,11 @@ code decides. It collects at most an SSH username and key *path* (never key
 material or passwords); add `--probe` to kick off warm SSH discovery right
 after registration.
 
+As you chat, a **skill profile** builds passively (deterministic keyword
+inference, no extra LLM calls): `helper skills` shows it, `helper skills set
+storage advanced` pins a domain so inference can't change it. The profile
+tunes how much chat explains — and later feeds per-domain trust hints.
+
 Every reply is footed with the backend that served it, e.g.
 `[ollama: llama3.2 (small, local)]`.
 

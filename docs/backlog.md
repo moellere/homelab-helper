@@ -303,7 +303,19 @@ The rest of Phase 1, and all of Phase 6, is below.
   otherwise the exact `helper discover host` command is printed. Top-level verb
   (`helper onboard`, not a chat subcommand) because a click group callback with
   a positional argument is ambiguous with subcommand resolution.
-- [ ] **Skill Inferer** — passive per-domain trust hints from chat (P4-AC6).
+- [x] **Skill Inferer** (`engine/skill_inferer.py` + `skill_profile` table +
+  `helper skills`) — passive per-domain proficiency from chat (P4-AC6).
+  Deliberately **deterministic**: a curated lexicon maps terms to domains
+  (storage / container-orchestration / networking / virtualization /
+  linux-admin), basic terms weight 1 and advanced terms 3; levels
+  (novice→advanced) are thresholds over accumulated evidence. No LLM in the
+  path — the profile feeds the Phase-6 trust gradient's per-domain *hints*, so
+  keeping model judgment out of anything trust-adjacent is the point (an
+  LLM-assessed refinement can layer later). Every `helper chat` message is
+  observed passively; levels only ratchet up; `helper skills set` pins a
+  domain (`source=manual`) that inference can never change. The profile is
+  injected into the chat system prompt so answers match the operator's depth.
+  Migration `e5a2c8f1b9d0`.
 - [x] **MCP host-discovery tool** (`probe_host`) — SSH deep-probe exposed over
   MCP, so kernel-level facts are reachable conversationally and not just from
   the CLI (`run_discovery` covers management planes only). Orchestration moved

@@ -1,0 +1,30 @@
+# Network topology — operator-declared (no probe can see that the route to
+# your second site rides a VPN over consumer cable).
+#
+# Copy this file, edit it to match your lab, and point
+# HOMELAB_HELPER_NETWORK_TOPOLOGY at it. Hosts not listed anywhere are assumed
+# co-located on one LAN with everything else (the single-site default).
+#
+# Link fields:
+#   kind            cable | fiber | lan | wireless | vpn | wan
+#   bandwidth_mbps  usable throughput, not the marketing number
+#   latency_ms      typical round-trip between the sites
+#   reliability     high | normal | best-effort
+#
+# Path characteristics inherit from the WORST links on the route: bandwidth is
+# the minimum, latency the sum, reliability the worst — one VPN hop makes the
+# whole path VPN-grade, which is why sync-replicated workloads refuse to span it.
+
+sites:
+  covington:
+    hosts: [node0, node1, node2, nas]
+  wyola:
+    hosts: [wyhome, wynode2, wynode3]
+
+links:
+  - a: covington
+    b: wyola
+    kind: vpn
+    bandwidth_mbps: 40
+    latency_ms: 28
+    reliability: best-effort

@@ -19,7 +19,16 @@ from rich.table import Table
 
 from homelab_helper.config import database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker
-from homelab_helper.engine.placement import PlacementReport, recommend_placement
+from homelab_helper.engine.network_path import (
+    TOPOLOGY_ENV_VAR,
+    TopologyError,
+    load_topology,
+)
+from homelab_helper.engine.placement import (
+    PlacementReport,
+    network_verdict,
+    recommend_placement,
+)
 from homelab_helper.engine.workloads import (
     WorkloadLibraryError,
     WorkloadProfile,
@@ -143,6 +152,56 @@ def plan_add_workload(
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))
+
+
+@plan_app.command(name="path")
+def plan_path(
+    host_a: str = typer.Argument(..., help="First hostname."),
+    host_b: str = typer.Argument(..., help="Second hostname."),
+    workload: str | None = typer.Option(
+        None, "--workload", help="Judge the path for this workload's network class."
+    ),
+) -> None:
+    """Show the network path between two hosts and what it inherits (AC6)."""
+    try:
+        topology = load_topology()
+    except (TopologyError, OSError) as exc:
+        console.print(f"[red]topology error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    if topology is None:
+        console.print(
+            "[dim]no topology declared — all hosts assumed on one LAN. "
+            f"Set {TOPOLOGY_ENV_VAR} to a topology file "
+            "(see fixtures/network-topology.example.yaml).[/dim]"
+        )
+        raise typer.Exit(code=0)
+
+    path = topology.path(host_a, host_b)
+    if path is None:
+        console.print(f"[red]no route between {host_a} and {host_b} in the topology[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold]{host_a} ↔ {host_b}[/bold]: {path.describe()}")
+    for link in path.links:
+        console.print(
+            f"  [dim]{link.a} ↔ {link.b}: {link.kind}, {link.bandwidth_mbps:.0f} Mbps, "
+            f"{link.latency_ms:.1f} ms, {link.reliability}[/dim]"
+        )
+    console.print(f"LAN-grade: {'yes' if path.lan_grade else 'no'}")
+
+    if workload is not None:
+        profile = _library().get(workload)
+        if profile is None:
+            console.print(f"[red]no workload named {workload!r} in the library[/red]")
+            raise typer.Exit(code=2)
+        verdict, message = network_verdict(profile, path)
+        if verdict == "refuse":
+            console.print(f"[red]refused:[/red] {message}")
+            raise typer.Exit(code=1)
+        if verdict == "warn":
+            console.print(f"[yellow]degraded:[/yellow] {message}")
+        else:
+            console.print(f"[green]ok[/green]: path suits {profile.name}")
 
 
 __all__ = ["plan_app"]

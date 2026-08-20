@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 
 _VALID_GPU = {"none", "optional", "required"}
+_VALID_NETWORK = {"any", "lan-preferred", "lan-required"}
 _VALID_SCALING = {"flat", "with-users", "with-data", "with-cameras", "with-devices"}
 
 DEFAULT_LIBRARY_PATH = Path(__file__).resolve().parents[3] / "fixtures" / "workload-library.yaml"
@@ -48,6 +49,9 @@ class WorkloadProfile:
     gpu_purpose: str | None = None
     depends_on: tuple[str, ...] = ()
     data_gravity: str | None = None
+    network_class: str = "any"
+    """Path sensitivity: lan-required = sync replication, replicas must be
+    LAN-grade of each other; lan-preferred = degraded-but-works cross-site."""
     artifacts: tuple[str, ...] = field(default=())
 
 
@@ -64,6 +68,9 @@ def _parse_entry(name: str, raw: dict[str, Any]) -> WorkloadProfile:
     scaling = str(raw.get("scaling", "flat")).lower()
     if scaling not in _VALID_SCALING:
         raise fail(f"scaling {scaling!r} must be one of {sorted(_VALID_SCALING)}")
+    network_class = str(raw.get("network_class", "any")).lower()
+    if network_class not in _VALID_NETWORK:
+        raise fail(f"network_class {network_class!r} must be one of {sorted(_VALID_NETWORK)}")
     try:
         cpu_cores = float(raw["cpu_cores"])
         ram_mb = int(raw["ram_mb"])
@@ -86,6 +93,7 @@ def _parse_entry(name: str, raw: dict[str, Any]) -> WorkloadProfile:
         gpu_purpose=raw.get("gpu_purpose"),
         depends_on=tuple(raw.get("depends_on") or ()),
         data_gravity=raw.get("data_gravity"),
+        network_class=network_class,
         artifacts=tuple(raw.get("artifacts") or ()),
     )
 

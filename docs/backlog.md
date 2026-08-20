@@ -394,9 +394,21 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [x] **Planner agent** (`llm/planner.py`) — narrates the finished report at
   `TaskClass.PLANNING` (Mid+); it cannot reorder, add, or drop candidates.
   `--narrate` refusals degrade to the already-printed deterministic table.
-- [ ] **NetworkPath abstraction** — typed link graph (cables, tunnels,
-  wireless) with characteristic inheritance from the worst link in a path;
-  P5-AC6's Wyola↔Covington VPN case is the acceptance target.
+- [x] **NetworkPath abstraction** (`engine/network_path.py` + `helper plan
+  path`, P5-AC6) — typed site/link graph, **operator-declared YAML** (no probe
+  can see that the inter-site route rides a VPN; see
+  `fixtures/network-topology.example.yaml`, pointed at by
+  `HOMELAB_HELPER_NETWORK_TOPOLOGY`). Path characteristics inherit the only
+  honest way: bandwidth = min, latency = sum, **reliability = worst link** —
+  one VPN hop makes the whole path VPN-grade. Dijkstra by latency; no
+  topology declared = single-site assumption, nothing degrades. Workload
+  profiles gained `network_class` (any / lan-preferred / lan-required;
+  ceph-osd + etcd added as lan-required, media servers marked lan-preferred)
+  and placement now folds path verdicts in: **lan-required across a
+  non-LAN-grade path to the data-gravity anchor is refused** with the
+  worst-link explanation (AC6's Wyola↔Covington case, verified through the
+  real CLI), lan-preferred takes a penalty + caveat. `helper plan path A B
+  [--workload X]` shows hops, inheritance, and the verdict.
 - [ ] **Rebalance solver** (`helper plan rebalance`, P5-AC3) — multi-workload
   placement over the whole fleet; likely the point OR-Tools earns its way in
   as a dependency (single-workload placement deliberately didn't need it).

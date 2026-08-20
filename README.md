@@ -123,12 +123,18 @@ after registration.
 ### Placement recommendations
 
 "If I add Immich, where should it run?" — `helper plan` answers from a
-57-service workload library plus your reconciled inventory. Hard constraints
+67-service workload library plus your reconciled inventory. Hard constraints
 (arch, RAM, GPU) reject with reasons; survivors are ranked on headroom,
 GPU optionality, and data gravity. Deterministic first; `--narrate` adds the
 Planner agent's prose on top.
 
+Declare your sites and inter-site links (VPNs, wireless hops) in a topology
+file — see `fixtures/network-topology.example.yaml` — and placement becomes
+network-aware: a path inherits **the worst of its links**, so sync-replicated
+workloads (Ceph, etcd) are refused across a VPN, with the reason spelled out.
+
 ```bash
+uv run helper plan path node0 wyhome --workload ceph-osd   # path verdict
 uv run helper plan workloads                    # browse the library
 uv run helper plan add-workload immich          # ranked hosts + reasons
 uv run helper plan add-workload immich --narrate

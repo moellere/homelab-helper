@@ -33,6 +33,7 @@ workloads:
     gpu: optional
     gpu_purpose: hardware transcoding
     data_gravity: media-library
+    network_class: lan-preferred
     artifacts: [docker, lxc]
   jellyfin:
     category: media
@@ -45,6 +46,7 @@ workloads:
     gpu: optional
     gpu_purpose: hardware transcoding
     data_gravity: media-library
+    network_class: lan-preferred
     artifacts: [docker, k8s, lxc]
   emby:
     category: media
@@ -420,6 +422,7 @@ workloads:
     gpu_purpose: object detection (or Coral TPU) + decode
     depends_on: [mosquitto]
     data_gravity: camera-recordings
+    network_class: lan-preferred
     artifacts: [docker]
   scrypted:
     category: nvr
@@ -733,3 +736,28 @@ workloads:
     gpu_purpose: inference acceleration (VRAM sizes the model)
     data_gravity: model-store
     artifacts: [docker, lxc]
+
+  # -------------------------------------------------- storage / cluster infra
+  ceph-osd:
+    category: storage-infra
+    description: Ceph object storage daemon (one per data disk).
+    cpu_cores: 1.0
+    ram_mb: 4096
+    storage_gb: 5
+    scaling: with-data
+    arch: [amd64, arm64]
+    gpu: none
+    data_gravity: ceph-cluster
+    network_class: lan-required
+    artifacts: [lxc, docker]
+  etcd:
+    category: storage-infra
+    description: Consensus key-value store (K8s control plane backing).
+    cpu_cores: 1.0
+    ram_mb: 1024
+    storage_gb: 5
+    scaling: flat
+    arch: [amd64, arm64]
+    gpu: none
+    network_class: lan-required
+    artifacts: [docker, k8s]

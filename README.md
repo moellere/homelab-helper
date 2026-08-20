@@ -2,7 +2,10 @@
 
 > An OSS framework for homelab planning, inventory, audit, and (eventually) recommendations.
 
-**Status:** Pre-alpha, Phase 1 in progress. Not yet usable.
+**Status:** Pre-alpha, run-from-source. The read-only product (Phases 1–5:
+inventory, audit, chat, placement/rebalancing recommendations) is built and
+under live-fleet validation; Phase 6 (gated execution behind the trust
+gradient) is in design. APIs and schemas are still unstable.
 
 `homelab-helper` is a framework for people who run their own infrastructure at home.
 It discovers what you have, maintains a coherent inventory across the many sources
@@ -17,9 +20,7 @@ See [`architecture.md`](./docs/architecture.md) for the architecture document,
 [`roadmap.md`](./docs/roadmap.md) for the phased delivery plan, and
 [`backlog.md`](./docs/backlog.md) for the concrete task list of what's left.
 
-## Phase 1 — Inventory & Discovery
-
-The current MVP wedge. After Phase 1, the framework can:
+## What it does today
 
 - Scan a network and fingerprint live hosts
 - Deep-probe Linux hosts over SSH (CPU, memory, storage, network, PCI, GPU, services)
@@ -52,10 +53,10 @@ uv run helper db status
 # uv run helper db reset --yes   # DESTRUCTIVE — dev only
 ```
 
-**3. Configure source credentials.** Credentials are read from the process
-environment — there is no `.env` auto-loading, so `export` them or pass
-`uv run --env-file .env …`. Each source only needs its variables when you run
-that `discover` verb (all are prefixed `HOMELAB_HELPER_`):
+**3. Configure source credentials.** A `.env` at the repo root (gitignored)
+is auto-loaded, then `~/.env`; explicit exports always win. Each source only
+needs its variables when you run that `discover` verb (all are prefixed
+`HOMELAB_HELPER_`):
 
 | Source | Variables |
 |---|---|
@@ -155,10 +156,12 @@ Every reply is footed with the backend that served it, e.g.
 
 The harness ships a native **MCP server** (the first Phase-4 deliverable) that
 exposes its query surface as tools for Claude Desktop / Claude Code / Cursor:
-`list_hosts`, `get_host`, `list_findings`, `get_finding`, `list_services`,
-`get_service`, `audit_summary`, and `run_discovery` (management-plane sources
-only — reads the live source, persists to the harness DB, never writes to the
-lab).
+queries (`list_hosts`, `get_host`, `list_findings`, `get_finding`,
+`list_services`, `get_service`, `audit_summary`, `config_status`), the
+findings lifecycle (`ack_finding`, `resolve_finding`, `suppress_finding` —
+harness-DB writes only), `run_discovery` over the management-plane sources,
+and `probe_host` (SSH deep discovery; key path or env reference only — no
+secrets through tool arguments). Nothing writes to the lab itself.
 
 ```bash
 uv run helper mcp tools    # list the tool roster

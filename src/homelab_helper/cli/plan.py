@@ -30,13 +30,14 @@ from homelab_helper.engine.placement import (
     recommend_placement,
 )
 from homelab_helper.engine.rebalance import RebalanceReport, plan_rebalance
+from homelab_helper.engine.reconfigure import SurplusHit, analyze_surplus
 from homelab_helper.engine.workloads import (
     WorkloadLibraryError,
     WorkloadProfile,
     load_workload_library,
 )
 from homelab_helper.llm import LLMRouter, RouterRefusal, router_from_env
-from homelab_helper.llm.planner import narrate_placement, narrate_rebalance
+from homelab_helper.llm.planner import narrate_placement, narrate_rebalance, narrate_surplus
 
 plan_app = typer.Typer(
     name="plan",
@@ -263,6 +264,61 @@ def plan_rebalance_cmd(
         finally:
             await router.aclose()
         console.print()
+        console.print(result.text)
+        origin = "local" if result.local else "cloud"
+        footer = f"[{result.backend}: {result.model} ({result.tier.name.lower()}, {origin})]"
+        console.print(f"[dim]{escape(footer)}[/dim]")
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+def _print_surplus(hits: list[SurplusHit]) -> None:
+    if not hits:
+        console.print("[green]no surplus capacity worth reconfiguring[/green]")
+        return
+    for hit in hits:
+        cpu = f", {hit.cpu_model}" if hit.cpu_model else ""
+        console.print(
+            f"[bold]{hit.hostname}[/bold]: {hit.ram_gb:.0f} GiB RAM at "
+            f"{hit.ratio:.0%} commitment{cpu}"
+        )
+        if hit.stopped_vms:
+            console.print(f"  [dim]stopped VMs: {', '.join(hit.stopped_vms)}[/dim]")
+        if hit.spare_dimm_gb:
+            sizes = ", ".join(f"{d:.0f} GiB" for d in hit.spare_dimm_gb)
+            console.print(f"  [dim]spare DIMMs: {sizes}[/dim]")
+        for i, option in enumerate(hit.options, 1):
+            console.print(f"  {i}. {option}")
+        console.print()
+
+
+@plan_app.command(name="surplus")
+def plan_surplus(
+    narrate: bool = typer.Option(False, "--narrate", help="Narrate via the Planner agent."),
+) -> None:
+    """Flag surplus capacity and propose reconfiguration options (AC5)."""
+
+    async def _go() -> int:
+        engine = make_engine(database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with sm() as session:
+                hits = await analyze_surplus(session)
+        finally:
+            await engine.dispose()
+
+        _print_surplus(hits)
+        if not narrate or not hits:
+            return 0
+        router = _load_router()
+        try:
+            result = await narrate_surplus(router, hits)
+        except RouterRefusal as refusal:
+            console.print(f"[yellow]narration unavailable:[/yellow] {refusal}")
+            return 0
+        finally:
+            await router.aclose()
         console.print(result.text)
         origin = "local" if result.local else "cloud"
         footer = f"[{result.backend}: {result.model} ({result.tier.name.lower()}, {origin})]"

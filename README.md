@@ -139,6 +139,8 @@ uv run helper plan workloads                    # browse the library
 uv run helper plan add-workload immich          # ranked hosts + reasons
 uv run helper plan add-workload immich --narrate
 uv run helper plan rebalance --narrate     # 3 candidate plans with tradeoffs
+uv run helper bottlenecks --persist        # known patterns → findings + mitigations
+uv run helper plan surplus                 # idle capacity → reconfiguration options
 ```
 
 As you chat, a **skill profile** builds passively (deterministic keyword

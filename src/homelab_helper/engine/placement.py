@@ -24,6 +24,7 @@ from sqlalchemy import select
 
 from homelab_helper.db.enums import IntentState
 from homelab_helper.db.models import Host, OperationalIntent, VirtualMachine
+from homelab_helper.engine.network_path import PathCharacteristics, Topology, load_topology
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -130,10 +131,100 @@ def _evaluate(
     return candidate
 
 
-async def recommend_placement(session: AsyncSession, profile: WorkloadProfile) -> PlacementReport:
-    """Rank every known host for one workload, with reasons either way."""
+def network_verdict(profile: WorkloadProfile, path: PathCharacteristics) -> tuple[str, str | None]:
+    """('ok' | 'warn' | 'refuse', message) for one path under one profile.
+
+    This is P5-AC6's rule: a sync-replicated workload (``lan-required``) is
+    *refused* across a non-LAN-grade path, and the message explains the
+    worst-link inheritance rather than just saying no.
+    """
+    if path.same_site or path.lan_grade:
+        return "ok", None
+    worst = path.worst_link
+    assert worst is not None  # non-LAN-grade implies at least one link
+    detail = (
+        f"{path.describe()}; worst link {worst.a}↔{worst.b} is {worst.kind} "
+        f"({worst.latency_ms:.0f} ms, {worst.reliability})"
+    )
+    if profile.network_class == "lan-required":
+        return "refuse", (
+            f"{profile.name} replicates synchronously — every replica must be "
+            f"LAN-grade of its peers, and this path is not: {detail}. A path "
+            "inherits latency and reliability from its worst link, so the VPN "
+            "hop sets the character of the whole route."
+        )
+    if profile.network_class == "lan-preferred" or profile.data_gravity:
+        return "warn", f"cross-site path is degraded: {detail}"
+    return "ok", None
+
+
+def _gravity_anchor(hosts: list[Host], profile: WorkloadProfile) -> Host | None:
+    """The host most plausibly carrying this workload's dataset today."""
+    if not profile.data_gravity:
+        return None
+    carriers = [
+        h
+        for h in hosts
+        if (_cap(h, "total_disk_bytes") or 0)
+        and int(_cap(h, "total_disk_bytes")) >= _BULK_STORAGE_BYTES
+    ]
+    if not carriers:
+        return None
+    return max(carriers, key=lambda h: int(_cap(h, "total_disk_bytes")))
+
+
+def _apply_network(
+    report: PlacementReport,
+    hosts: list[Host],
+    profile: WorkloadProfile,
+    topology: Topology,
+) -> None:
+    """Fold path verdicts into an already-scored report (AC6)."""
+    anchor = _gravity_anchor(hosts, profile)
+    surviving: list[PlacementCandidate] = []
+    for candidate in report.candidates:
+        if anchor is not None and anchor.hostname != candidate.hostname:
+            path = topology.path(candidate.hostname, anchor.hostname)
+            if path is None:
+                report.rejected.append(
+                    (candidate.hostname, f"no network route to {anchor.hostname} in the topology")
+                )
+                continue
+            verdict, message = network_verdict(profile, path)
+            if verdict == "refuse":
+                report.rejected.append((candidate.hostname, message or "network unsuitable"))
+                continue
+            if verdict == "warn" and message:
+                candidate.score -= 8.0
+                candidate.caveats.append(message)
+        surviving.append(candidate)
+    report.candidates = surviving
+
+    if profile.network_class == "lan-required" and anchor is None:
+        sites = {topology.site_of(c.hostname) for c in report.candidates}
+        if len(sites) > 1:
+            for candidate in report.candidates:
+                candidate.caveats.append(
+                    "sync-replicated workload: keep every replica within one "
+                    f"site (candidates span {len(sites)} sites)"
+                )
+
+
+async def recommend_placement(
+    session: AsyncSession,
+    profile: WorkloadProfile,
+    *,
+    topology: Topology | None = None,
+) -> PlacementReport:
+    """Rank every known host for one workload, with reasons either way.
+
+    ``topology`` defaults to the operator's declared file (env); no topology
+    means the single-site assumption and no network filtering.
+    """
     report = PlacementReport(workload=profile.name)
-    hosts = (await session.execute(select(Host).order_by(Host.hostname))).scalars().all()
+    hosts = list((await session.execute(select(Host).order_by(Host.hostname))).scalars().all())
+    if topology is None:
+        topology = load_topology()
 
     guests: dict[Any, int] = {}
     for vm in (await session.execute(select(VirtualMachine))).scalars().all():
@@ -156,8 +247,16 @@ async def recommend_placement(session: AsyncSession, profile: WorkloadProfile) -
         else:
             report.rejected.append(outcome)
 
+    if topology is not None:
+        _apply_network(report, hosts, profile, topology)
+
     report.candidates.sort(key=lambda c: (-c.score, c.hostname))
     return report
 
 
-__all__ = ["PlacementCandidate", "PlacementReport", "recommend_placement"]
+__all__ = [
+    "PlacementCandidate",
+    "PlacementReport",
+    "network_verdict",
+    "recommend_placement",
+]

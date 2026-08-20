@@ -23,6 +23,7 @@ from rich.console import Console
 from homelab_helper import __version__
 from homelab_helper.cli.assertion import assert_app
 from homelab_helper.cli.audit import audit_app
+from homelab_helper.cli.bottlenecks import bottlenecks_app
 from homelab_helper.cli.chat import chat_app, onboard_app
 from homelab_helper.cli.config import config_app
 from homelab_helper.cli.db import db_app
@@ -55,6 +56,7 @@ app.add_typer(chat_app)
 app.add_typer(onboard_app)
 app.add_typer(skills_app)
 app.add_typer(plan_app)
+app.add_typer(bottlenecks_app)
 
 console = Console()
 

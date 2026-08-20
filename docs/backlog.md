@@ -424,12 +424,34 @@ The rest of Phase 1, and all of Phase 6, is below.
   RAM hosts are excluded from the math and listed, never treated as empty.
   Balanced fleets produce no plans. Narration via `narrate_rebalance` at
   planning tier.
-- [ ] **Bottleneck analyzer** (`helper bottlenecks`, P5-AC4) — pattern library
-  (Ceph link asymmetry, scheduler pressure, NFS saturation) generating the
-  day-one report's mitigations from data, not hardcoded.
-- [ ] **Reconfiguration reasoner** (P5-AC5) — placement history + capability
-  gaps → "move this DIMM / spin these VMs back up / declare capacity-reserve
-  intent" proposals.
+- [x] **Bottleneck analyzer** (`engine/bottlenecks.py` + `helper bottlenecks
+  [--persist] [--narrate]`, P5-AC4) — deterministic pattern library over the
+  reconciled fleet; the *patterns* are curated, the *output* is constructed
+  from detected facts (hosts, speeds, VMs — never canned text). Patterns:
+  **cluster-link-asymmetry** → `CEPH_BOTTLENECK` (nodes of one cluster with
+  differing fastest-NIC speeds; generates the four classic mitigations from
+  the detected facts — CRUSH-reweight away from the slow node, upgrade its
+  link to the observed fleet speed, relocate OSDs to a named full-speed node,
+  accept as a tier — AC4's four, verified through the real CLI);
+  **memory-pressure** → `CHOKEPOINT` (>90% committed; migrate the named
+  largest VM to the named idle host / add RAM / accept);
+  **storage-single-uplink** → `CHOKEPOINT` (bulk-storage host on a single
+  ≤1 GbE NIC serving a multi-consumer fleet). `--persist` uses the standard
+  fingerprint + reopen lifecycle; because every pattern runs every call, a
+  previously open analyzer finding whose condition cleared resolves (category
+  observed — not absence-auto-resolve), and findings from other generators
+  sharing these kinds are never touched (evidence-tag scoped). Mitigations
+  land as `proposed_actions` so chat/narrator can cite them (the P4-AC2 Ceph
+  narration path).
+- [x] **Reconfiguration reasoner** (`engine/reconfigure.py` + `helper plan
+  surplus [--narrate]`, P5-AC5) — the mirror image: hosts with low commitment
+  AND reconfigurable slack (stopped VMs, spare DIMMs beyond a kept minimum).
+  Options generated from facts: spin the named stopped VMs back up; move the
+  named spare DIMMs to the actually-loaded host (pointing at `helper plan
+  rebalance`); accept — declare the reserve deliberate via OperationalIntent /
+  stopped-by-design so it stops resurfacing. AC5's node2 case (24 GB RAM, two
+  stopped VMs, named CPU) verified through the real CLI. Low commitment alone
+  is not a hit — there must be something to reconfigure.
 
 ### Reconciler / assertions (landed)
 

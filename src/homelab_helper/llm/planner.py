@@ -18,8 +18,10 @@ from typing import TYPE_CHECKING
 from homelab_helper.llm.router import TaskClass
 
 if TYPE_CHECKING:
+    from homelab_helper.engine.bottlenecks import BottleneckHit
     from homelab_helper.engine.placement import PlacementReport
     from homelab_helper.engine.rebalance import RebalanceReport
+    from homelab_helper.engine.reconfigure import SurplusHit
     from homelab_helper.engine.workloads import WorkloadProfile
     from homelab_helper.llm.router import LLMRouter, RouterResult
 
@@ -94,4 +96,49 @@ async def narrate_rebalance(router: LLMRouter, report: RebalanceReport) -> Route
     return await router.complete(TaskClass.PLANNING, _SYSTEM, [{"role": "user", "content": prompt}])
 
 
-__all__ = ["narrate_placement", "narrate_rebalance"]
+def _render_bottlenecks(hits: list[BottleneckHit]) -> str:
+    lines = []
+    for hit in hits:
+        lines.append(f"[{hit.severity.value}] {hit.title}")
+        lines.append(f"  {hit.description}")
+        lines.extend(f"  option: {m}" for m in hit.mitigations)
+    return "\n".join(lines)
+
+
+async def narrate_bottlenecks(router: LLMRouter, hits: list[BottleneckHit]) -> RouterResult:
+    prompt = (
+        "Narrate these detected bottlenecks for the operator — explain each "
+        "pattern's practical impact and compare the candidate mitigations:\n\n"
+        + _render_bottlenecks(hits)
+    )
+    return await router.complete(TaskClass.PLANNING, _SYSTEM, [{"role": "user", "content": prompt}])
+
+
+def _render_surplus(hits: list[SurplusHit]) -> str:
+    lines = []
+    for hit in hits:
+        cpu = f", {hit.cpu_model}" if hit.cpu_model else ""
+        lines.append(f"{hit.hostname}: {hit.ram_gb:.0f} GiB RAM at {hit.ratio:.0%} commitment{cpu}")
+        if hit.stopped_vms:
+            lines.append(f"  stopped VMs: {', '.join(hit.stopped_vms)}")
+        if hit.spare_dimm_gb:
+            lines.append("  spare DIMMs: " + ", ".join(f"{d:.0f} GiB" for d in hit.spare_dimm_gb))
+        lines.extend(f"  option: {o}" for o in hit.options)
+    return "\n".join(lines)
+
+
+async def narrate_surplus(router: LLMRouter, hits: list[SurplusHit]) -> RouterResult:
+    prompt = (
+        "Narrate this surplus-capacity analysis for the operator — what the "
+        "idle hardware could be doing and which option you'd start with:\n\n"
+        + _render_surplus(hits)
+    )
+    return await router.complete(TaskClass.PLANNING, _SYSTEM, [{"role": "user", "content": prompt}])
+
+
+__all__ = [
+    "narrate_bottlenecks",
+    "narrate_placement",
+    "narrate_rebalance",
+    "narrate_surplus",
+]

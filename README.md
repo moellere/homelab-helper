@@ -120,6 +120,20 @@ code decides. It collects at most an SSH username and key *path* (never key
 material or passwords); add `--probe` to kick off warm SSH discovery right
 after registration.
 
+### Placement recommendations
+
+"If I add Immich, where should it run?" — `helper plan` answers from a
+57-service workload library plus your reconciled inventory. Hard constraints
+(arch, RAM, GPU) reject with reasons; survivors are ranked on headroom,
+GPU optionality, and data gravity. Deterministic first; `--narrate` adds the
+Planner agent's prose on top.
+
+```bash
+uv run helper plan workloads                    # browse the library
+uv run helper plan add-workload immich          # ranked hosts + reasons
+uv run helper plan add-workload immich --narrate
+```
+
 As you chat, a **skill profile** builds passively (deterministic keyword
 inference, no extra LLM calls): `helper skills` shows it, `helper skills set
 storage advanced` pins a domain so inference can't change it. The profile

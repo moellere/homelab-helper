@@ -280,6 +280,11 @@ _NETWORK_RULES: tuple[HostProjectionRule, ...] = (
 # K8s-only facts (no kernel-probe equivalent) — surfaced from a management-plane
 # source. The overlapping facts a node also reports (kernel, arch, cpu, memory)
 # project through the rules above and lose to kernel VERIFIED data by precedence.
+_GPU_RULES: tuple[HostProjectionRule, ...] = (
+    HostProjectionRule(key="host.gpu.count", capability="gpu_count"),
+    HostProjectionRule(key="host.gpu.vendors", capability="gpu_vendors"),
+)
+
 _K8S_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.k8s.node_name", capability="k8s_node_name"),
     HostProjectionRule(key="host.k8s.kubelet_version", capability="k8s_kubelet_version"),
@@ -288,7 +293,13 @@ _K8S_RULES: tuple[HostProjectionRule, ...] = (
 )
 
 _HOST_RULES: tuple[HostProjectionRule, ...] = (
-    _IDENTITY_RULES + _CPU_RULES + _MEMORY_RULES + _STORAGE_RULES + _NETWORK_RULES + _K8S_RULES
+    _IDENTITY_RULES
+    + _CPU_RULES
+    + _MEMORY_RULES
+    + _STORAGE_RULES
+    + _NETWORK_RULES
+    + _GPU_RULES
+    + _K8S_RULES
 )
 
 

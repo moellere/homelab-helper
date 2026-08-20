@@ -138,6 +138,7 @@ uv run helper plan path node0 wyhome --workload ceph-osd   # path verdict
 uv run helper plan workloads                    # browse the library
 uv run helper plan add-workload immich          # ranked hosts + reasons
 uv run helper plan add-workload immich --narrate
+uv run helper plan rebalance --narrate     # 3 candidate plans with tradeoffs
 ```
 
 As you chat, a **skill profile** builds passively (deterministic keyword

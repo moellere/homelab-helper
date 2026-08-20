@@ -409,9 +409,21 @@ The rest of Phase 1, and all of Phase 6, is below.
   worst-link explanation (AC6's Wyola↔Covington case, verified through the
   real CLI), lan-preferred takes a penalty + caveat. `helper plan path A B
   [--workload X]` shows hops, inheritance, and the verdict.
-- [ ] **Rebalance solver** (`helper plan rebalance`, P5-AC3) — multi-workload
-  placement over the whole fleet; likely the point OR-Tools earns its way in
-  as a dependency (single-workload placement deliberately didn't need it).
+- [x] **Rebalance solver** (`engine/rebalance.py` + `helper plan rebalance
+  [--narrate]`, P5-AC3) — fleet load model (per-host RAM capacity vs running
+  VMs' committed memory, from the reconciled DB) plus **three candidate plans
+  spanning three cost classes**: current-hardware (VM migrations only),
+  one-dimm-move (smallest spare DIMM from the emptiest donor with ≥2 DIMMs →
+  the constrained host, then fewer migrations), one-part-purchase (smallest
+  standard DIMM that relieves the constrained host). Every plan carries typed
+  steps, tradeoffs, and the resulting per-host load. Deterministic bounded
+  greedy — each move must strictly improve the pairwise max ratio (the
+  oscillation guard) — not OR-Tools; the plan/step shapes are solver-agnostic
+  if constraint interactions ever outgrow greedy. Migrations respect cluster
+  membership and **never cross a non-LAN-grade path** (NetworkPath). Unknown-
+  RAM hosts are excluded from the math and listed, never treated as empty.
+  Balanced fleets produce no plans. Narration via `narrate_rebalance` at
+  planning tier.
 - [ ] **Bottleneck analyzer** (`helper bottlenecks`, P5-AC4) — pattern library
   (Ceph link asymmetry, scheduler pressure, NFS saturation) generating the
   day-one report's mitigations from data, not hardcoded.

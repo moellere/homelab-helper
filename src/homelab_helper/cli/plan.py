@@ -29,13 +29,14 @@ from homelab_helper.engine.placement import (
     network_verdict,
     recommend_placement,
 )
+from homelab_helper.engine.rebalance import RebalanceReport, plan_rebalance
 from homelab_helper.engine.workloads import (
     WorkloadLibraryError,
     WorkloadProfile,
     load_workload_library,
 )
 from homelab_helper.llm import LLMRouter, RouterRefusal, router_from_env
-from homelab_helper.llm.planner import narrate_placement
+from homelab_helper.llm.planner import narrate_placement, narrate_rebalance
 
 plan_app = typer.Typer(
     name="plan",
@@ -202,6 +203,73 @@ def plan_path(
             console.print(f"[yellow]degraded:[/yellow] {message}")
         else:
             console.print(f"[green]ok[/green]: path suits {profile.name}")
+
+
+def _print_rebalance(report: RebalanceReport) -> None:
+    table = Table(title="fleet load")
+    for col in ("host", "committed", "capacity", "load", "vms"):
+        table.add_column(col, no_wrap=True)
+    for h in report.hosts:
+        ratio = f"{h.ratio:.0%}" if h.ratio is not None else "—"
+        table.add_row(
+            h.hostname,
+            f"{h.committed / 1024**3:.0f} GiB",
+            f"{(h.mem_total or 0) / 1024**3:.0f} GiB",
+            ratio,
+            str(len(h.vms)),
+        )
+    console.print(table)
+    for name in report.unknown_hosts:
+        console.print(f"[dim]{name}: RAM unknown (not deep-probed) — excluded[/dim]")
+
+    if report.balanced:
+        console.print("[green]fleet is balanced — no plan needed[/green]")
+        return
+    for i, plan in enumerate(report.plans, 1):
+        console.print(f"\n[bold]plan {i} — {plan.name}[/bold]: {plan.summary}")
+        for step in plan.steps:
+            console.print(f"  {step.description}")
+        for t in plan.tradeoffs:
+            console.print(f"  [dim]tradeoff: {t}[/dim]")
+        after = ", ".join(f"{host} {ratio:.0%}" for host, ratio in plan.resulting_ratios.items())
+        console.print(f"  [dim]resulting load: {after}[/dim]")
+
+
+@plan_app.command(name="rebalance")
+def plan_rebalance_cmd(
+    narrate: bool = typer.Option(False, "--narrate", help="Narrate via the Planner agent."),
+) -> None:
+    """Candidate rebalancing plans with tradeoffs (AC3). Proposals only."""
+
+    async def _go() -> int:
+        engine = make_engine(database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with sm() as session:
+                report = await plan_rebalance(session)
+        finally:
+            await engine.dispose()
+
+        _print_rebalance(report)
+        if not narrate or report.balanced:
+            return 0
+
+        router = _load_router()
+        try:
+            result = await narrate_rebalance(router, report)
+        except RouterRefusal as refusal:
+            console.print(f"[yellow]narration unavailable:[/yellow] {refusal}")
+            return 0
+        finally:
+            await router.aclose()
+        console.print()
+        console.print(result.text)
+        origin = "local" if result.local else "cloud"
+        footer = f"[{result.backend}: {result.model} ({result.tier.name.lower()}, {origin})]"
+        console.print(f"[dim]{escape(footer)}[/dim]")
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
 
 
 __all__ = ["plan_app"]

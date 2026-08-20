@@ -19,6 +19,7 @@ from homelab_helper.llm.router import TaskClass
 
 if TYPE_CHECKING:
     from homelab_helper.engine.placement import PlacementReport
+    from homelab_helper.engine.rebalance import RebalanceReport
     from homelab_helper.engine.workloads import WorkloadProfile
     from homelab_helper.llm.router import LLMRouter, RouterResult
 
@@ -65,4 +66,32 @@ async def narrate_placement(
     return await router.complete(TaskClass.PLANNING, _SYSTEM, [{"role": "user", "content": prompt}])
 
 
-__all__ = ["narrate_placement"]
+def _render_rebalance(report: RebalanceReport) -> str:
+    lines = ["FLEET LOAD:"]
+    for h in report.hosts:
+        ratio = f"{h.ratio:.0%}" if h.ratio is not None else "?"
+        lines.append(
+            f"- {h.hostname}: {h.committed / 1024**3:.0f} GiB committed of "
+            f"{(h.mem_total or 0) / 1024**3:.0f} GiB ({ratio}), {len(h.vms)} running VM(s)"
+        )
+    for name in report.unknown_hosts:
+        lines.append(f"- {name}: RAM unknown (not deep-probed) — excluded from the math")
+    lines.append(f"commitment spread: {report.spread:.0%}")
+    for i, plan in enumerate(report.plans, 1):
+        lines.append(f"\nPLAN {i} — {plan.name}: {plan.summary}")
+        lines.extend(f"  step: {s.description}" for s in plan.steps)
+        lines.extend(f"  tradeoff: {t}" for t in plan.tradeoffs)
+        after = ", ".join(f"{host} {ratio:.0%}" for host, ratio in plan.resulting_ratios.items())
+        lines.append(f"  resulting load: {after}")
+    return "\n".join(lines)
+
+
+async def narrate_rebalance(router: LLMRouter, report: RebalanceReport) -> RouterResult:
+    prompt = (
+        "Narrate these rebalancing options for the operator — compare the "
+        f"plans' tradeoffs and recommend a starting point:\n\n{_render_rebalance(report)}"
+    )
+    return await router.complete(TaskClass.PLANNING, _SYSTEM, [{"role": "user", "content": prompt}])
+
+
+__all__ = ["narrate_placement", "narrate_rebalance"]

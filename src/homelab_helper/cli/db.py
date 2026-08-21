@@ -7,6 +7,7 @@ operations as named verbs. Config defaults to the project-local
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from pathlib import Path
@@ -18,6 +19,8 @@ from rich.console import Console
 from sqlalchemy.engine.url import make_url
 
 from homelab_helper.cli._probe_sync import sync_probes_sync
+from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.trust import seed_domains
 
 db_app = typer.Typer(
     name="db",
@@ -71,7 +74,25 @@ def db_init(
         console.print("[cyan]syncing probe entry points...[/cyan]")
         inserted, updated = sync_probes_sync(_database_url())
         console.print(f"  inserted: [green]{inserted}[/green], updated: [yellow]{updated}[/yellow]")
+    console.print("[cyan]seeding trust domains...[/cyan]")
+    seeded = _seed_trust_domains_sync(_database_url())
+    console.print(f"  created: [green]{seeded}[/green] (idempotent)")
     console.print("[green]done[/green]")
+
+
+def _seed_trust_domains_sync(url: str) -> int:
+    """Seed the trust-domain taxonomy (idempotent; SECRETS ships absolute)."""
+
+    async def _go() -> int:
+        engine = make_engine(url)
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                return await seed_domains(session)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(_go())
 
 
 @db_app.command(name="status")

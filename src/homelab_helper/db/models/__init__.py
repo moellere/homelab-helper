@@ -18,13 +18,17 @@ from .probe import Probe
 from .proposal import ProposalLog
 from .service import Service, ServiceEndpoint
 from .skill import SkillProfile
+from .trust import CellTrust, Domain, ElevationWindow, TrustBoundary, TrustHistory
 from .virtualization import Cluster, VirtualMachine
 
 __all__ = [
     "AssertionRun",
+    "CellTrust",
     "Cluster",
     "ConfigurationAssertion",
     "DiscoveryRun",
+    "Domain",
+    "ElevationWindow",
     "Host",
     "Observation",
     "OperationalIntent",
@@ -36,5 +40,7 @@ __all__ = [
     "Service",
     "ServiceEndpoint",
     "SkillProfile",
+    "TrustBoundary",
+    "TrustHistory",
     "VirtualMachine",
 ]

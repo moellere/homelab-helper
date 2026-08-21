@@ -75,6 +75,12 @@ async def test_expected_tables_in_metadata() -> None:
         "service_endpoint",
         # Phase 4 skill inferer
         "skill_profile",
+        # Phase 6 trust gradient
+        "trust_domain",
+        "cell_trust",
+        "trust_boundary",
+        "elevation_window",
+        "trust_history",
     }
     assert set(Base.metadata.tables.keys()) == expected
 

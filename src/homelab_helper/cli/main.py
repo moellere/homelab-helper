@@ -36,6 +36,7 @@ from homelab_helper.cli.netbox import netbox_app
 from homelab_helper.cli.plan import plan_app
 from homelab_helper.cli.probes import probes_app
 from homelab_helper.cli.skills import skills_app
+from homelab_helper.cli.trust import trust_app
 from homelab_helper.cli.view import view_app
 from homelab_helper.config import load_env
 
@@ -57,6 +58,7 @@ app.add_typer(onboard_app)
 app.add_typer(skills_app)
 app.add_typer(plan_app)
 app.add_typer(bottlenecks_app)
+app.add_typer(trust_app)
 
 console = Console()
 

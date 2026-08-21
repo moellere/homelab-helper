@@ -520,9 +520,23 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 
 ### Schema & policy core
 
-- [ ] Enums `AutonomyLevel`, `TrustDomain`
-- [ ] Tables + migration: `Domain`, `CellTrust`, `TrustBoundary`, `ElevationWindow`, `TrustHistory`
-- [ ] **`decide(action, context) → BLOCK|PROPOSE|CONFIRM|AUTONOMOUS`** — pure, deterministic; **no LLM in the authorization path**. _P6-AC1: with every cell at `PROPOSE`, nothing executes; Phases 1–5 behaviour unchanged._
+- [x] Enums `AutonomyLevel`, `TrustDomain`
+- [x] Tables + migration `f7b3d9a2c4e1`: `Domain`, `CellTrust`, `TrustBoundary`,
+  `ElevationWindow`, `TrustHistory` — per the forward spec; domains seeded
+  idempotently by `helper db init` (every default PROPOSE; SECRETS absolute
+  with a PROPOSE ceiling)
+- [x] **`decide(action, context) → BLOCK|PROPOSE|CONFIRM|AUTONOMOUS`**
+  (`engine/trust.py`) — pure function over frozen dataclasses
+  (`load_trust_context` does the DB reads, `decide` judges); walks the three
+  floor tiers (cell level → domain max + boundary ceilings + verified-rollback
+  → absolute floors), windows lift only the soft-hard tier, every clamp
+  carries a human-readable reason. **No LLM in the authorization path** is a
+  regression test (subprocess import check), not a comment. Probation caps at
+  CONFIRM. _P6-AC1 groundwork: with every cell at `PROPOSE`, decide() returns
+  PROPOSE and no executor exists; Phases 1–5 behaviour unchanged._
+- [x] CLI first slice: `helper trust show|grant` — grants are
+  operator-attributed (`HOMELAB_HELPER_OPERATOR`, OS-user fallback), refused
+  above the domain ceiling, recorded in `TrustHistory`
 
 ### Execution
 
@@ -540,7 +554,7 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 
 ### Surface & audit
 
-- [ ] CLI: `helper trust grant|show`, `helper window open|revoke`, `helper exec`
+- [ ] CLI remainder: `helper window open|revoke`, `helper exec` (trust grant|show landed with PR A)
 - [ ] Receipts + audit spine: write-back to `ProposalLog` (outcome, restore handle); `TrustHistory` append-only for every grant / auto-promote / demote / override / window open+revoke
 - [ ] Decide the `AuditLog`/receipt detail beyond `ProposalLog` + `TrustHistory`
 

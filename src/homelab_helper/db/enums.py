@@ -282,11 +282,40 @@ class SkillSource(StrEnum):
     MANUAL = "manual"
 
 
+# ---------------------------------------------------------------------------
+# Trust gradient (Phase 6 — L2 authorization; see architecture.md)
+# ---------------------------------------------------------------------------
+
+
+class AutonomyLevel(StrEnum):
+    """What the framework may do with a proposed action. Ordered by authority
+    (see ``engine.trust.AUTONOMY_ORDER``); L1 is every cell at PROPOSE."""
+
+    BLOCK = "block"
+    PROPOSE = "propose"
+    CONFIRM = "confirm"
+    AUTONOMOUS = "autonomous"
+
+
+class TrustDomain(StrEnum):
+    """Action-authority taxonomy. SECRETS ships absolute — see Domain.is_absolute."""
+
+    INVENTORY_METADATA = "inventory-metadata"
+    CONTAINERS = "containers"
+    DNS = "dns"
+    NETWORK_FABRIC = "network-fabric"
+    STORAGE = "storage"
+    HYPERVISOR = "hypervisor"
+    HOST_OS = "host-os"
+    SECRETS = "secrets"
+
+
 __all__ = [
     "Architecture",
     "AssertionKind",
     "AssertionScope",
     "AssertionStatus",
+    "AutonomyLevel",
     "Confidence",
     "DiscoverySource",
     "FindingKind",
@@ -302,4 +331,5 @@ __all__ = [
     "ResolutionScope",
     "SkillLevel",
     "SkillSource",
+    "TrustDomain",
 ]

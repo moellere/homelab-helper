@@ -4,9 +4,9 @@ The first management-plane adapter: it reads cluster + VM/LXC + node + storage
 state from the Proxmox REST API (``/api2/json``) so the harness can reconcile a
 hypervisor's view against kernel-probe ground truth and propose it into NetBox.
 
-**Read-only at L1.** Per the architecture, management-plane adapters expose only
-reads until the Phase-6 trust gradient gates writes; there are deliberately no
-mutate methods here.
+**Read-only at L1**, with one Phase-6 exception: the guest power methods under
+the "writes" section exist solely for ``engine/executor.py``, which routes
+every call through ``engine.trust.decide()`` first. Nothing else may call them.
 
 Auth is an API token (no ticket/cookie dance): the ``Authorization:
 PVEAPIToken=<id>=<secret>`` header. Proxmox ships a self-signed cert, so
@@ -173,6 +173,29 @@ class ProxmoxAdapter:
         payload = response.json()
         # Proxmox wraps the real payload under "data".
         return payload.get("data") if isinstance(payload, dict) else payload
+
+    # ----------------------------------------------------------------- writes
+    #
+    # The ONLY write surface at L2, and it exists solely for the executor:
+    # every call site must have routed through engine.trust.decide() first.
+    # Nothing else in the codebase may call these — the executor is the gate's
+    # enforcement point, and grep-ability is part of the safety story.
+
+    async def vm_current_status(self, node: str, vmid: int, kind: str) -> dict[str, Any]:
+        """Live power state for one guest — rollback capture + verification."""
+        return await self._request("GET", f"/nodes/{node}/{kind}/{vmid}/status/current") or {}
+
+    async def vm_power(self, node: str, vmid: int, kind: str, action: str) -> Any:
+        """Dispatch one power action (start|stop|shutdown|reboot) to a guest.
+
+        ``kind`` is "qemu" or "lxc". Returns the Proxmox task UPID. Executor
+        use only — see the block comment above.
+        """
+        if kind not in {"qemu", "lxc"}:
+            raise ValueError(f"kind must be qemu or lxc, not {kind!r}")
+        if action not in {"start", "stop", "shutdown", "reboot"}:
+            raise ValueError(f"unsupported power action {action!r}")
+        return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/status/{action}")
 
     # ------------------------------------------------------------------ reads
 

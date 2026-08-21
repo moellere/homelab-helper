@@ -2,8 +2,9 @@
 
 The concrete, actionable task list. `roadmap.md` is the narrative (phases,
 rationale, stop-here value); this is the punch list of what's actually left,
-grounded in the current state of `src/`. Two scopes are tracked here today:
-the remaining **Phase 1** work, and the **Phase 6** trust-gradient build.
+grounded in the current state of `src/`. All phases are tracked here:
+remaining **Phase 1** items, the landed **Phase 3–5** slices (with their
+queued follow-ups), and the **Phase 6** trust-gradient build.
 
 Priorities are *within* a phase: **P0** = on the critical path, **P1** =
 needed to meet the phase's acceptance criteria, **P2** = strengthens but
@@ -14,10 +15,12 @@ doesn't block. Acceptance-criterion references (AC1–AC5, P6-AC1–6) point at
 
 ## Current status snapshot
 
-**Phase 1 ≈ 30–40% by effort.** The evidence-collection half is built; the
-make-sense-of-it half is not.
+**Phases 1 (core), 3, 4, and 5 are build-complete; Phase 2 (continuous
+agent / time-series) is deliberately deferred; Phase 6 is in design.** Full
+suite: 650+ tests green. Live-fleet validation of the Phase 4–5 ACs is the
+outstanding sign-off gate.
 
-Built and green (42 tests passing):
+Phase-1 foundation, built and green:
 
 - [x] Slice 1 schema — all 11 models + Alembic initial migration
 - [x] Probe plugin SDK (`probes/base.py`, `registry.py`, entry-point registration) — meets AC5
@@ -545,6 +548,6 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 
 ## Not tracked here
 
-Phases 2–5 are in `roadmap.md` but not yet broken into backlog items — they
-get exploded into tasks as Phase 1 closes out. Post-roadmap (Phase 7+) items
-are deliberately not tracked.
+Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but
+deliberately deferred — several planners note the temporal signals they gain
+when it lands. Post-roadmap (Phase 7+) items are deliberately not tracked.

@@ -21,13 +21,19 @@ when making implementation decisions.
 
 ```
 src/homelab_helper/
-├── adapters/       NetBox, KernelSSH (P1); Proxmox/K8s/UniFi/CF land later
-├── cli/            Typer apps; entry point in main.py
+├── adapters/       NetBox, KernelSSH, Proxmox, K8s, UniFi, Cloudflare,
+│                   Argo CD, OpenMediaVault — all read-only at L1
+├── cli/            Typer apps; entry point in main.py (18 verbs)
 ├── db/             Models, enums, async session
-├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint
+├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
+│                   placement/rebalance/bottlenecks/network_path planners
+├── llm/            LLMRouter + backends, chat context, Narrator/Planner/
+│                   Discovery agents (LLM never in any authorization path)
 └── probes/         host.* + network.* plugins; register via entry points
+mcp_server.py       MCP tools over stdio (helper mcp serve)
 tests/              pytest, asyncio_mode = "auto"
-fixtures/           operator-editable YAML (assertion library, future example)
+fixtures/           operator-editable YAML (assertions, workload library,
+                    network topology example)
 alembic/            migrations
 ```
 
@@ -62,16 +68,16 @@ red commits.
 
 ## Workflow
 
-- **Branches:** the long-lived PR #2 lives on `claude/reconciler`. For a new
-  unit of work, branch from `main` with a descriptive name (e.g.
-  `claude/dmidecode-probe`).
+- **Branches:** one unit of work per branch, cut fresh from `main` with a
+  descriptive `claude/*` name. Squash-merge means a merged branch holds only
+  merged history — restart it from `main` for the next unit.
 - **Commits:** never amend an existing commit unless explicitly asked. Pre-
   commit hooks live in `.pre-commit-config.yaml`; install with
   `uv run pre-commit install` if you want them local.
-- **Don't open a PR unless asked.** Push to the branch; the user opens / merges.
+- **PRs are drafts until the user says merge.** Open the draft, report CI,
+  wait for the word; the user merges (or says "merge when green").
 - **Never commit secrets.** No `.env` files, no NetBox tokens, no SSH keys.
-- The two `_resolve_host` mypy errors in `cli/discover.py` are fixed as of
-  commit `acb7515` — keep them clean.
+  (`.env` at the repo root is auto-loaded at runtime and gitignored.)
 
 ## Load-bearing architecture invariants
 
@@ -162,7 +168,7 @@ LLMs may *draft* manifests; policy decides whether they run. See
 
 ## Don't do
 
-- Don't push to `main` directly; everything goes through PR #2 (or a fresh PR).
+- Don't push to `main` directly; everything goes through a PR.
 - Don't open a PR without the user asking.
 - Don't bypass pre-commit / `--no-verify`. If a hook fails, fix the issue.
 - Don't add destructive operations (`rm -rf`, `git reset --hard`, force-push)
@@ -175,29 +181,21 @@ LLMs may *draft* manifests; policy decides whether they run. See
   doc-string-as-spec at the top of new modules, no comments that just restate
   the code.
 
-## Phase 1 status snapshot (as of PR #2)
+## Status snapshot
 
-| AC | Status |
+Build state by phase (see `docs/backlog.md` for the authoritative punch list):
+
+| Phase | State |
 |---|---|
-| AC1 — `helper discover network` | ⚠️ network probes ship; full NetBox push works for known Devices |
-| AC2 — `helper discover host` + NetBox push | ⚠️ host probes + reconciler + CF push + InventoryItem mirroring all wired |
-| AC3 — `helper audit` produces 11+ findings | ⚠️ framework + starter assertion library in place; needs a populated fleet for the demo |
-| AC4 — Idempotent re-runs | ✅ |
-| AC5 — "Write a probe in 50 lines" SDK test | ✅ |
+| 1 — Inventory & discovery | Core complete; a few probes open (`host.raid`, dmidecode DIMM depth, example replay fixture) |
+| 2 — Continuous agent / time-series | **Deliberately deferred** (several planners note "lands with Phase-2 time-series") |
+| 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
+| 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
+| 5 — Planning & recommendations | Build complete (all six ACs implemented) |
+| 6 — L2 execution & trust gradient | In design; PR sequence agreed (schema+`decide()` first) |
 
-Remaining backlog items at the top of `docs/backlog.md`:
-
-- Multi-source precedence (reconciler) — blocked on first non-SSH adapter
-- `NETBOX_DIVERGENCE` finding generation
-- Interfaces / IPs / VLANs / Prefixes / Clusters / VMs / Services CRUD on
-  NetBoxAdapter
-- `helper config` CLI verb
-- example replayable integration fixture (`fixtures/example.yaml`)
-- Python 3.13 matrix in CI (optional)
-- Per-assertion arch/role filters in the YAML loader (for cluster-aware
-  starter packs)
-- dmidecode-driven DIMM probe (so DIMM lineage populates without sudo
-  workarounds)
+Live-fleet validation of Phases 4–5 ACs is the outstanding sign-off gate, and
+required before any Phase-6 execution path runs against real infrastructure.
 
 When in doubt, search `docs/backlog.md` — every committed-but-incomplete item
 has a sub-list of what's left.

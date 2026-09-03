@@ -18,6 +18,7 @@ from homelab_helper.db.base import Base
 from homelab_helper.db.enums import AutonomyLevel, TrustDomain
 from homelab_helper.db.models import ProposalLog
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.escalation import PROMOTION_STREAK
 from homelab_helper.engine.trust import grant_cell, seed_domains
 
 if TYPE_CHECKING:
@@ -85,6 +86,63 @@ async def exec_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return proposal_id
 
 
+async def _seed_db(
+    url: str, monkeypatch: pytest.MonkeyPatch, proposals: list[dict], *, grant: bool
+) -> list[str]:
+    """Create the schema, seed domains, optionally grant AC2's cell, add proposals."""
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
+    engine = make_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sm = make_sessionmaker(engine)
+    ids: list[str] = []
+    async with session_scope(sm) as s:
+        await seed_domains(s)
+        if grant:
+            await grant_cell(
+                s,
+                TrustDomain.CONTAINERS,
+                "restart",
+                "single-host",
+                AutonomyLevel.CONFIRM,
+                actor="enoch",
+            )
+        for artifact in proposals:
+            proposal = ProposalLog(
+                title="Restart web01",
+                artifact=artifact,
+                blast_radius="single-host",
+                proposed_by="agent:planner",
+            )
+            s.add(proposal)
+            await s.flush()
+            ids.append(str(proposal.id))
+    await engine.dispose()
+    return ids
+
+
+@pytest.fixture
+async def nogrant_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Domains seeded, no grants — every cell sits at the PROPOSE floor."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'nogrant.db'}"
+    return (await _seed_db(url, monkeypatch, [_ARTIFACT], grant=False))[0]
+
+
+@pytest.fixture
+async def shopping_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """One non-executable proposal — no action manifest, so no cell."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'shopping.db'}"
+    artifact = {"kind": "shopping-list", "items": ["USB 2.5GbE NIC"]}
+    return (await _seed_db(url, monkeypatch, [artifact], grant=False))[0]
+
+
+@pytest.fixture
+async def promotion_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Exactly one full streak of pending action proposals on the same cell."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'promotion.db'}"
+    return await _seed_db(url, monkeypatch, [_ARTIFACT] * PROMOTION_STREAK, grant=False)
+
+
 def test_exec_list_shows_pending_action(exec_db: str) -> None:
     result = runner.invoke(app, ["exec", "list"])
     assert result.exit_code == 0
@@ -127,35 +185,10 @@ def test_exec_run_declined_dispatches_nothing(
 
 
 def test_exec_run_refuses_at_propose_without_grant(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    nogrant_db: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Fresh DB with no grants: the gate refuses and the adapter is never built."""
-    db_path = tmp_path / "nogrant.db"
-    url = f"sqlite+aiosqlite:///{db_path}"
-    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
-
-    import asyncio
-
-    async def seed() -> str:
-        engine = make_engine(url)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        sm = make_sessionmaker(engine)
-        async with session_scope(sm) as s:
-            await seed_domains(s)
-            proposal = ProposalLog(
-                title="Restart web01",
-                artifact=_ARTIFACT,
-                blast_radius="single-host",
-            )
-            s.add(proposal)
-            await s.flush()
-            pid = str(proposal.id)
-        await engine.dispose()
-        return pid
-
-    proposal_id = asyncio.run(seed())
-
+    proposal_id = nogrant_db
     requests: list[httpx.Request] = []
     monkeypatch.setattr(
         "homelab_helper.cli.execute._build_adapter", lambda: _mock_adapter(requests)
@@ -170,6 +203,46 @@ def test_exec_run_unknown_id(exec_db: str) -> None:
     result = runner.invoke(app, ["exec", "run", "ffffffff"])
     assert result.exit_code == 1
     assert "no pending proposal" in result.output
+
+
+def test_exec_accept_credits_the_cell(exec_db: str) -> None:
+    """Accepting a hand-applied proposal is one clean approval toward the rung."""
+    result = runner.invoke(app, ["exec", "accept", exec_db[:8], "--note", "did it by hand"])
+    assert result.exit_code == 0, result.output
+    assert "accepted" in result.output
+    assert f"1/{PROMOTION_STREAK}" in result.output
+
+    listing = runner.invoke(app, ["exec", "list"])
+    assert "0 proposal(s)" in listing.output, "accepted proposals leave the pending queue"
+
+
+def test_exec_reject_resets_the_streak(exec_db: str) -> None:
+    result = runner.invoke(app, ["exec", "reject", exec_db[:8], "--note", "wrong guest"])
+    assert result.exit_code == 0, result.output
+    assert "rejected" in result.output
+    assert "streak reset" in result.output
+
+
+def test_exec_accept_non_action_proposal_credits_nothing(shopping_db: str) -> None:
+    """A shopping-list proposal has no cell, so acceptance credits no trust."""
+    result = runner.invoke(app, ["exec", "accept", shopping_db[:8]])
+    assert result.exit_code == 0
+    assert "no cell to credit" in result.output
+
+
+def test_trust_history_shows_promotions(promotion_db: list[str]) -> None:
+    """A full streak of accepted proposals promotes the cell; the spine says so."""
+    for proposal_id in promotion_db:
+        # Full ids here: uuid7 is time-ordered, so same-run proposals share a prefix.
+        accepted = runner.invoke(app, ["exec", "accept", proposal_id])
+        assert accepted.exit_code == 0, accepted.output
+
+    history = runner.invoke(app, ["trust", "history"])
+    assert history.exit_code == 0
+    assert "auto-promote" in history.output
+
+    show = runner.invoke(app, ["trust", "show"])
+    assert "confirm" in show.output
 
 
 def test_exec_run_yes_flag_preconsents(exec_db: str, monkeypatch: pytest.MonkeyPatch) -> None:

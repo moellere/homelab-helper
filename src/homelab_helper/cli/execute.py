@@ -10,6 +10,7 @@ is ever dispatched past the gate.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import typer
@@ -23,6 +24,11 @@ from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.escalation import (
+    EscalationResult,
+    record_clean_outcome,
+    record_rejection,
+)
 from homelab_helper.engine.executor import (
     ExecutionRefused,
     ManifestError,
@@ -76,6 +82,39 @@ async def _pending_action_proposals(session: AsyncSession) -> list[tuple[Proposa
     return out
 
 
+async def _resolve_pending(session: AsyncSession, prefix: str) -> ProposalLog | None:
+    """One PENDING proposal by id prefix, or None with the reason printed."""
+    candidates = (
+        (
+            await session.execute(
+                select(ProposalLog).where(ProposalLog.outcome == ProposalOutcome.PENDING)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    matches = [p for p in candidates if str(p.id).startswith(prefix.lower())]
+    if not matches:
+        console.print(f"[red]no pending proposal matches[/red] {escape(prefix)}")
+        return None
+    if len(matches) > 1:
+        console.print(f"[red]ambiguous prefix[/red] — {len(matches)} matches")
+        return None
+    return matches[0]
+
+
+def _report_escalation(result: EscalationResult) -> None:
+    if result.promoted:
+        console.print(
+            f"[green]cell promoted[/green] {result.previous_level.value} → {result.level.value}: "
+            f"{escape(result.reason)}"
+        )
+    elif result.demoted:
+        console.print(f"[red]cell demoted[/red] — {escape(result.reason)}")
+    else:
+        console.print(f"[dim]{escape(result.reason)}[/dim]")
+
+
 @exec_app.command(name="list")
 def exec_list() -> None:
     """List pending, executable action proposals."""
@@ -123,31 +162,12 @@ def exec_run(
             return True
         return bool(typer.confirm("dispatch?", default=False))
 
-    async def _resolve(session: AsyncSession) -> ProposalLog | None:
-        candidates = (
-            (
-                await session.execute(
-                    select(ProposalLog).where(ProposalLog.outcome == ProposalOutcome.PENDING)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        matches = [p for p in candidates if str(p.id).startswith(proposal_id.lower())]
-        if not matches:
-            console.print(f"[red]no pending proposal matches[/red] {escape(proposal_id)}")
-            return None
-        if len(matches) > 1:
-            console.print(f"[red]ambiguous prefix[/red] — {len(matches)} matches")
-            return None
-        return matches[0]
-
     async def _go() -> int:
         engine = make_engine(database_url())
         try:
             sm = make_sessionmaker(engine)
             async with session_scope(sm) as session:
-                proposal = await _resolve(session)
+                proposal = await _resolve_pending(session, proposal_id)
                 if proposal is None:
                     return 1
 
@@ -181,12 +201,104 @@ def exec_run(
                         f"[green]executed[/green] at {result.decision.level.value} "
                         f"in {result.duration_ms} ms — receipt {result.receipt_id}"
                     )
+                    if result.escalation is not None:
+                        _report_escalation(result.escalation)
                     return 0
                 console.print(
                     f"[red]dispatch failed:[/red] {escape(result.error or 'unknown')} "
                     f"— receipt {result.receipt_id}; proposal left pending"
                 )
+                if result.escalation is not None:
+                    _report_escalation(result.escalation)
                 return 4
+        finally:
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@exec_app.command(name="accept")
+def exec_accept(
+    proposal_id: str = typer.Argument(..., help="Proposal id (or unique prefix)."),
+    note: str = typer.Option("", "--note", help="Why you accepted, for the record."),
+) -> None:
+    """Record that you applied a proposal by hand (the PROPOSE-rung evidence).
+
+    This is how a propose-only cell earns its first rung: each accepted
+    proposal is one clean approval toward `PROMOTION_STREAK`.
+    """
+
+    async def _go() -> int:
+        engine = make_engine(database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                proposal = await _resolve_pending(session, proposal_id)
+                if proposal is None:
+                    return 1
+                actor = operator_identity()
+                proposal.outcome = ProposalOutcome.USER_ACCEPTED
+                proposal.outcome_at = datetime.now(UTC)
+                proposal.outcome_by = actor
+                proposal.outcome_notes = note or "applied by hand"
+                console.print(f"[green]accepted[/green] {escape(proposal.title)}")
+
+                try:
+                    manifest = parse_manifest(proposal)
+                except ManifestError:
+                    console.print("[dim]not an executable action — no cell to credit[/dim]")
+                    return 0
+                _report_escalation(
+                    await record_clean_outcome(
+                        session,
+                        domain=manifest.domain,
+                        action_kind=manifest.action_kind,
+                        blast_radius=manifest.blast_radius,
+                        actor=actor,
+                        proposal_id=proposal.id,
+                    )
+                )
+                return 0
+        finally:
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@exec_app.command(name="reject")
+def exec_reject(
+    proposal_id: str = typer.Argument(..., help="Proposal id (or unique prefix)."),
+    note: str = typer.Option("", "--note", help="Why you rejected, for the record."),
+) -> None:
+    """Reject a proposal: breaks the cell's clean streak, never demotes it."""
+
+    async def _go() -> int:
+        engine = make_engine(database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                proposal = await _resolve_pending(session, proposal_id)
+                if proposal is None:
+                    return 1
+                proposal.outcome = ProposalOutcome.USER_REJECTED
+                proposal.outcome_at = datetime.now(UTC)
+                proposal.outcome_by = operator_identity()
+                proposal.outcome_notes = note or None
+                console.print(f"[yellow]rejected[/yellow] {escape(proposal.title)}")
+
+                try:
+                    manifest = parse_manifest(proposal)
+                except ManifestError:
+                    return 0
+                _report_escalation(
+                    await record_rejection(
+                        session,
+                        domain=manifest.domain,
+                        action_kind=manifest.action_kind,
+                        blast_radius=manifest.blast_radius,
+                    )
+                )
+                return 0
         finally:
             await engine.dispose()
 

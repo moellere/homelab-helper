@@ -13,13 +13,21 @@ from datetime import UTC, datetime
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import AutonomyLevel, TrustDomain
-from homelab_helper.db.models import CellTrust, Domain, ElevationWindow, TrustBoundary
+from homelab_helper.db.models import (
+    CellTrust,
+    Domain,
+    ElevationWindow,
+    TrustBoundary,
+    TrustHistory,
+)
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.escalation import PROMOTION_STREAK, is_promotable
 from homelab_helper.engine.trust import GrantError, grant_cell, operator_identity
 
 trust_app = typer.Typer(
@@ -82,7 +90,11 @@ def trust_show() -> None:
             for col in ("domain", "action", "blast radius", "level", "granted by", "streak"):
                 ct.add_column(col, no_wrap=True)
             for c in cells:
-                streak = str(c.clean_streak) + (" [red](probation)[/red]" if c.on_probation else "")
+                streak = f"{c.clean_streak}/{PROMOTION_STREAK}"
+                if c.on_probation:
+                    streak += " [red](probation)[/red]"
+                elif not is_promotable(c.action_kind, c.blast_radius):
+                    streak += " [dim](grant-only)[/dim]"
                 ct.add_row(
                     c.domain.value,
                     c.action_kind,
@@ -109,6 +121,65 @@ def trust_show() -> None:
             )
             state = "open" if (w.revoked_at is None and now < expires) else "closed"
             console.print(f"[dim]window {w.id} ({state}): {w.reason} — scope {w.scope}[/dim]")
+
+    asyncio.run(_go())
+
+
+@trust_app.command(name="history")
+def trust_history(
+    limit: int = typer.Option(30, "--limit", help="Most recent events to show."),
+) -> None:
+    """Print the append-only audit spine, newest first."""
+
+    async def _go() -> None:
+        engine = make_engine(database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with sm() as session:
+                rows = (
+                    (
+                        await session.execute(
+                            select(TrustHistory)
+                            .order_by(TrustHistory.at.desc())
+                            .limit(max(limit, 1))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+        finally:
+            await engine.dispose()
+
+        table = Table(title="trust history")
+        for col in ("at", "actor", "event", "domain", "detail"):
+            table.add_column(col, no_wrap=col in {"at", "event"})
+        for row in rows:
+            detail = row.detail or {}
+            if row.event in {"auto-promote", "demote"}:
+                summary = (
+                    f"{detail.get('action_kind')}/{detail.get('blast_radius')}: "
+                    f"{detail.get('from')} → {detail.get('to')}"
+                )
+                cause = detail.get("cause")
+                if cause:
+                    summary += f" ({cause})"
+            elif row.event == "grant":
+                summary = (
+                    f"{detail.get('action_kind')}/{detail.get('blast_radius')} = "
+                    f"{detail.get('level')}"
+                )
+            else:
+                summary = ", ".join(f"{k}={v}" for k, v in detail.items())
+            style = {"auto-promote": "green", "demote": "red"}.get(row.event, "white")
+            table.add_row(
+                row.at.strftime("%Y-%m-%d %H:%M"),
+                escape(row.actor),
+                f"[{style}]{row.event}[/{style}]",
+                row.domain.value if row.domain else "",
+                escape(summary),
+            )
+        console.print(table)
+        console.print(f"{len(rows)} event(s)")
 
     asyncio.run(_go())
 

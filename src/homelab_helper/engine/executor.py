@@ -17,6 +17,10 @@ Phase 6 PR B. The contract, per ``docs/architecture.md``:
 - Every dispatch — success or failure — writes exactly one
   ``ExecutionReceipt``. Success also closes the proposal (USER_ACCEPTED);
   failure leaves it PENDING so it can be retried.
+- Every dispatch feeds the cell's trust record (``engine/escalation.py``):
+  success extends the clean streak, failure demotes the cell to PROPOSE and
+  flags probation. The feedback is one-way — escalation writes levels that a
+  *later* ``decide()`` reads; it never influences the decision in flight.
 
 The only write surface today is Proxmox guest power
 (start | stop | shutdown | restart), AC2's ``containers/restart/single-host``
@@ -34,6 +38,11 @@ from typing import TYPE_CHECKING, Any
 from homelab_helper.adapters.proxmox import ProxmoxAPIError
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog
+from homelab_helper.engine.escalation import (
+    EscalationResult,
+    record_bad_outcome,
+    record_clean_outcome,
+)
 from homelab_helper.engine.trust import ActionRequest, Decision, decide, load_trust_context
 
 if TYPE_CHECKING:
@@ -95,6 +104,8 @@ class ExecutionResult:
     outcome: str
     error: str | None
     duration_ms: int
+    escalation: EscalationResult | None = None
+    """What this outcome did to the cell's floor — see engine/escalation.py."""
 
 
 def parse_manifest(proposal: ProposalLog) -> ActionManifest:
@@ -261,6 +272,24 @@ async def execute_proposal(
         proposal.outcome_at = datetime.now(UTC)
         proposal.outcome_by = actor
         proposal.outcome_notes = f"executed at {decision.level.value}; receipt {receipt.id}"
+        escalation = await record_clean_outcome(
+            session,
+            domain=manifest.domain,
+            action_kind=manifest.action_kind,
+            blast_radius=manifest.blast_radius,
+            actor=actor,
+            proposal_id=proposal.id,
+        )
+    else:
+        escalation = await record_bad_outcome(
+            session,
+            domain=manifest.domain,
+            action_kind=manifest.action_kind,
+            blast_radius=manifest.blast_radius,
+            actor=actor,
+            reason=error or "dispatch failed",
+            proposal_id=proposal.id,
+        )
     await session.flush()
 
     return ExecutionResult(
@@ -269,6 +298,7 @@ async def execute_proposal(
         outcome=outcome,
         error=error,
         duration_ms=duration_ms,
+        escalation=escalation,
     )
 
 

@@ -562,7 +562,19 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 
 ### Trust dynamics
 
-- [ ] **Auto-escalation engine** — per-cell clean-streak tracking; promote reversible + low-blast cells after N clean approvals; instant demotion + probation on one bad outcome. _P6-AC3._
+- [x] **Auto-escalation engine** (`engine/escalation.py`) — per-cell
+  clean-streak tracking; **N = 5** clean approvals buy **one rung**
+  (PROPOSE → CONFIRM → AUTONOMOUS) for eligible cells only (reversible action
+  kind *and* `blast ∈ {metadata-only, single-host}`); one bad outcome drops
+  the cell straight to PROPOSE with probation, and only an explicit
+  `trust grant` clears it. A blocked cell banks nothing — on probation the
+  streak stays at zero, and any other block (domain ceiling, top of ladder,
+  ineligible) holds it at N, so lifting a block never backdates credit.
+  Promotions/demotions are `TrustHistory` events (`auto-promote` / `demote`
+  with cause); `granted_by` is NULL on an auto-promotion so grants stay
+  distinguishable. Fed by the executor (success/failure) and by
+  `helper exec accept|reject` (hand-applied proposals — the PROPOSE rung's
+  evidence). Rejection resets the streak but never demotes. _P6-AC3._
 - [ ] **Override** — per-action, owner-only, interactive, high-friction, logged as a `TrustHistory` event; never agent-invokable, never self-invoked by autonomous execution
 - [ ] **Elevation window** — scoped (cells/hosts), hard expiry, no auto-renew, best-effort snapshot under elevation, receipts tagged with window id; outside any window, autonomous-meets-floor degrades to `CONFIRM`. _P6-AC5._
 - [ ] **Kill switch** — revoke all open windows instantly; halt in-flight autonomous actions at the next checkpoint. _P6-AC5._
@@ -571,7 +583,8 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 ### Surface & audit
 
 - [ ] CLI remainder: `helper window open|revoke` (`helper exec
-  list|run|receipts` landed with PR B; trust grant|show with PR A)
+  list|run|receipts` landed with PR B, `exec accept|reject` +
+  `trust history` with PR C; trust grant|show with PR A)
 - [x] Receipts + audit spine: `ExecutionReceipt` (decision level + full
   reason trace + window id + rollback state + outcome/error/duration) with
   write-back to `ProposalLog`; `TrustHistory` append-only for grants (the

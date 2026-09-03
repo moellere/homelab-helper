@@ -20,6 +20,7 @@ from homelab_helper.db.base import Base
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.escalation import PROMOTION_STREAK
 from homelab_helper.engine.executor import (
     ExecutionRefused,
     ManifestError,
@@ -367,6 +368,78 @@ async def test_qemu_guest_uses_hypervisor_domain_cell(sessionmaker) -> None:
         with pytest.raises(ExecutionRefused, match="hypervisor/restart/single-host"):
             await execute_proposal(s, p, adapter, actor="enoch")
         assert requests == [], "the containers grant must not leak to hypervisor actions"
+    await adapter.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Auto-escalation feedback (PR C) — the loop from execution back to the floor
+# ---------------------------------------------------------------------------
+
+
+async def test_clean_executions_promote_the_cell(sessionmaker) -> None:
+    """Five clean confirmed runs move containers/restart/single-host to autonomous."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests)
+
+    async def confirm(manifest, decision) -> bool:
+        return True
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.CONFIRM,
+            actor="enoch",
+        )
+        for _ in range(PROMOTION_STREAK - 1):
+            p = await make_proposal(s, make_artifact())
+            result = await execute_proposal(s, p, adapter, actor="enoch", confirm_cb=confirm)
+            assert result.escalation is not None
+            assert not result.escalation.promoted
+
+        p = await make_proposal(s, make_artifact())
+        result = await execute_proposal(s, p, adapter, actor="enoch", confirm_cb=confirm)
+        assert result.escalation is not None
+        assert result.escalation.promoted
+        assert result.escalation.level is AutonomyLevel.AUTONOMOUS
+
+        # The next proposal now runs without a confirmer — but only with a
+        # verified rollback, since the unverified path still degrades to CONFIRM.
+        p = await make_proposal(s, make_artifact(rollback_verified=True))
+        result = await execute_proposal(s, p, adapter, actor="enoch")
+        assert result.decision.level is AutonomyLevel.AUTONOMOUS
+    await adapter.aclose()
+
+
+async def test_failed_dispatch_demotes_the_cell(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests, power_status=500)
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.AUTONOMOUS,
+            actor="enoch",
+        )
+        p = await make_proposal(s, make_artifact(rollback_verified=True))
+        result = await execute_proposal(s, p, adapter, actor="enoch")
+
+        assert result.outcome == "failed"
+        assert result.escalation is not None
+        assert result.escalation.demoted
+        assert result.escalation.level is AutonomyLevel.PROPOSE
+        assert result.escalation.on_probation
+
+        # And the very next attempt is refused by the gate it just lowered.
+        p2 = await make_proposal(s, make_artifact(rollback_verified=True))
+        with pytest.raises(ExecutionRefused, match="propose"):
+            await execute_proposal(s, p2, adapter, actor="enoch")
     await adapter.aclose()
 
 

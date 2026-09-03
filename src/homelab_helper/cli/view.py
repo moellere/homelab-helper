@@ -17,7 +17,6 @@ than making the operator join it by hand.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import TYPE_CHECKING
 
 import typer
@@ -25,6 +24,7 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import or_, select
 
+from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.enums import FindingStatus, ResolutionScope
 from homelab_helper.db.models import (
     Cluster,
@@ -46,10 +46,6 @@ view_app = typer.Typer(
 )
 
 console = Console()
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
 # ---------------------------------------------------------------------------

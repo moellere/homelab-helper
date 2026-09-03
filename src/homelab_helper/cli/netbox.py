@@ -12,7 +12,6 @@ Reads credentials from the environment (``HOMELAB_HELPER_NETBOX_URL`` and
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -33,6 +32,7 @@ from homelab_helper.adapters.netbox import (
     PartPlacement,
     SyncInventoryResult,
 )
+from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.models import Cluster, Host, PhysicalPart, Placement
 from homelab_helper.db.session import make_engine, make_sessionmaker
 from homelab_helper.engine.netbox_vm_sync import sync_cluster_to_netbox
@@ -44,10 +44,6 @@ netbox_app = typer.Typer(
 )
 
 console = Console()
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
 def _load_adapter() -> NetBoxAdapter:

@@ -106,10 +106,6 @@ server = MCPServer(
 load_env()
 
 
-def _database_url() -> str:
-    return database_url()
-
-
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
@@ -161,7 +157,7 @@ async def _open_findings(session: AsyncSession) -> list[ReconciliationFinding]:
 @server.tool()
 async def list_hosts() -> list[dict[str, Any]]:
     """List every host the harness knows: hostname, IP, arch, discovery source."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -184,7 +180,7 @@ async def list_hosts() -> list[dict[str, Any]]:
 async def get_host(hostname: str) -> dict[str, Any]:
     """Full record for one host: identity, capabilities, guests it runs, service
     endpoints resolving to it, and its open findings."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -246,7 +242,7 @@ async def list_findings(
 ) -> list[dict[str, Any]]:
     """List findings, optionally filtered by status (open/acknowledged/resolved/
     suppressed), kind (e.g. stray-config, drift-candidate), or severity."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -269,7 +265,7 @@ async def list_findings(
 @server.tool()
 async def get_finding(fingerprint: str) -> dict[str, Any]:
     """Full detail for one finding by its stable fingerprint."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -294,7 +290,7 @@ async def get_finding(fingerprint: str) -> dict[str, Any]:
 @server.tool()
 async def list_services() -> list[dict[str, Any]]:
     """List services with endpoint counts per scope and a DNS split-brain flag."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -333,7 +329,7 @@ async def list_services() -> list[dict[str, Any]]:
 async def get_service(name: str) -> dict[str, Any]:
     """Synthesized record for one service (by name or endpoint hostname):
     internal/external endpoints, DNS split-brain, and the VM/host carrying it."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -385,7 +381,7 @@ async def get_service(name: str) -> dict[str, Any]:
 async def audit_summary() -> dict[str, Any]:
     """Rollup of the harness DB: host/cluster/VM/service counts and findings
     grouped by status, kind, and severity."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -626,7 +622,7 @@ async def run_discovery(source: str) -> dict[str, Any]:
     discoverer = _DISCOVERERS.get(source)
     if discoverer is None:
         return {"error": f"unknown source {source!r}; expected one of {sorted(_DISCOVERERS)}"}
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as session:
@@ -683,7 +679,7 @@ async def _transition_finding(
     apply: Any,
 ) -> dict[str, Any]:
     """Resolve a fingerprint prefix, mutate the finding, return its new state."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as session:
@@ -853,7 +849,7 @@ async def probe_host(
     key_path = ssh_key_path or os.environ.get("HOMELAB_HELPER_SSH_KEY")
     if not key_path:
         return {"error": "an SSH key is required: pass ssh_key_path or set HOMELAB_HELPER_SSH_KEY"}
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as session:
@@ -927,7 +923,7 @@ async def recommend_placement(workload: str) -> dict[str, Any]:
             "error": f"no workload named {workload!r} in the library",
             "did_you_mean": close,
         }
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -945,7 +941,7 @@ async def plan_rebalance() -> dict[str, Any]:
     across cost classes (VM migrations only; one DIMM move; one DIMM purchase),
     each with steps, tradeoffs, and resulting load. Proposals only — the
     operator migrates, moves, or buys by hand."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -964,7 +960,7 @@ async def analyze_bottlenecks(persist: bool = False) -> dict[str, Any]:
     mitigations built from the detected facts. ``persist`` records hits as
     findings in the harness DB (reopen/resolve lifecycle); nothing touches the
     lab."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -989,7 +985,7 @@ async def analyze_surplus() -> dict[str, Any]:
     """Hosts with capacity to spare and something reconfigurable about it
     (stopped VMs, spare DIMMs), each with the honest options: use it, move it,
     or declare the reserve deliberate."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -1053,7 +1049,7 @@ async def probe_talos(
     different ``node`` is refused); an unknown host must match a glob in
     HOMELAB_HELPER_MCP_PROBE_ALLOW.
     """
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as session:
@@ -1095,7 +1091,7 @@ async def trust_status() -> dict[str, Any]:
 
     Read-only. Nothing here can change authority — use the CLI for that.
     """
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -1165,7 +1161,7 @@ async def trust_status() -> dict[str, Any]:
 @server.tool()
 async def list_receipts(limit: int = 20) -> list[dict[str, Any]]:
     """Recent execution receipts — what actually ran, at what level, and how it ended."""
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
@@ -1209,7 +1205,7 @@ async def pending_actions() -> list[dict[str, Any]]:
     a read-only query tool has no business touching infrastructure. A real run
     may therefore land one level higher. Nothing here executes anything.
     """
-    engine = make_engine(_database_url())
+    engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:

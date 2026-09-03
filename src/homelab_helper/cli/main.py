@@ -42,7 +42,7 @@ from homelab_helper.cli.view import view_app
 from homelab_helper.cli.window import window_app
 from homelab_helper.config import load_env
 
-app = typer.Typer(name="helper", no_args_is_help=True, add_completion=False)
+app = typer.Typer(name="helper", no_args_is_help=True)
 app.add_typer(db_app)
 app.add_typer(discover_app)
 app.add_typer(findings_app)

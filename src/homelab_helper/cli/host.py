@@ -9,7 +9,6 @@ share this file's session pattern.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -18,6 +17,7 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import select
 
+from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.enums import FindingStatus
 from homelab_helper.db.models import (
     Host,
@@ -37,10 +37,6 @@ host_app = typer.Typer(
 )
 
 console = Console()
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
 async def _load_host(session: AsyncSession, hostname: str) -> Host:

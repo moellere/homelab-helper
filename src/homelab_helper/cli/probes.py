@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 import typer
 from rich.console import Console
@@ -11,6 +10,7 @@ from rich.table import Table
 from sqlalchemy import select
 
 from homelab_helper.cli._probe_sync import sync_probes_sync
+from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.models import Probe as ProbeRow
 from homelab_helper.db.session import make_engine, make_sessionmaker
 
@@ -21,10 +21,6 @@ probes_app = typer.Typer(
 )
 
 console = Console()
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
 @probes_app.command(name="list")

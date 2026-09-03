@@ -31,32 +31,43 @@ See [`architecture.md`](./docs/architecture.md) for the architecture document,
 
 ## Running it locally
 
-> Pre-alpha, run-from-source. There's no packaged release or server to deploy
-> yet (the HTTP API and agent layers are later phases). "Running it locally"
-> means installing from source, initializing a local SQLite database, and
-> driving the `helper` CLI. Everything is **read-only (L1) — it proposes, never
-> applies.**
+> Pre-alpha. Everything is **read-only (L1) — it proposes, never applies** —
+> until you raise a trust cell yourself (Phase 6, opt-in).
 
-**1. Install** (see [Development](#development) for the full toolchain):
+**1. Install.** As a tool on your PATH (no checkout needed):
+
+```bash
+uv tool install git+https://github.com/moellere/homelab-helper   # or: pipx install ...
+helper --install-completion                                       # bash / zsh / fish
+```
+
+Or from a checkout for development (see [Development](#development)), where
+every command below is prefixed with `uv run`:
 
 ```bash
 uv sync --all-extras --group dev
 ```
 
-**2. Initialize the database** — a SQLite file `./homelab.db` by default
-(override with `HOMELAB_HELPER_DATABASE_URL`; a `postgres` extra is available
-for Postgres):
+**2. Initialize.** State lives in a per-user directory, not the working
+directory: the database under `~/.local/share/homelab-helper/` and your
+credentials under `~/.config/homelab-helper/.env` (XDG variables are honoured;
+`HOMELAB_HELPER_HOME` puts both in one place, e.g. a container volume).
+`HOMELAB_HELPER_DATABASE_URL` overrides the database entirely; a `postgres`
+extra is available.
 
 ```bash
-uv run helper db init      # alembic upgrade + register entry-point probes
-uv run helper db status
-# uv run helper db reset --yes   # DESTRUCTIVE — dev only
+helper config init         # writes the commented .env template
+helper db init             # alembic upgrade + register entry-point probes
+helper db status
+helper config              # what the harness will actually talk to
+# helper db reset --yes    # DESTRUCTIVE — dev only
 ```
 
-**3. Configure source credentials.** A `.env` at the repo root (gitignored)
-is auto-loaded, then `~/.env`; explicit exports always win. Each source only
-needs its variables when you run that `discover` verb (all are prefixed
-`HOMELAB_HELPER_`):
+**3. Configure source credentials.** Uncomment what you use in the `.env`
+that `helper config init` wrote. A project `.env` (repo checkout, gitignored)
+is loaded first, then the per-user file, then `~/.env`; explicit exports
+always win. Each source only needs its variables when you run that `discover`
+verb (all are prefixed `HOMELAB_HELPER_`):
 
 | Source | Variables |
 |---|---|
@@ -71,32 +82,25 @@ needs its variables when you run that `discover` verb (all are prefixed
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
 | LLM (chat) | `LLM_PRIVACY` (`strict-local`/`prefer-local`/`open`), `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIER`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_BASE_URL` |
 
-Print the effective configuration (secrets shown only as set/unset, never
-printed):
-
-```bash
-uv run helper config
-```
-
 **4. Run.** Discovery is read-only; add `--persist` to write to the DB and
 `--dry-run` to preview:
 
 ```bash
-uv run helper --help
+helper --help
 
-uv run helper discover host <name> --ssh-user <u> --ssh-key <path>
-uv run helper discover unifi --persist
-uv run helper discover cloudflare --persist
-uv run helper discover argocd
-uv run helper discover proxmox --persist
-uv run helper discover omv             # OpenMediaVault NAS: filesystems, disks, shares, services
-uv run helper discover hass --persist  # Home Assistant: version, integrations, entity summary
+helper discover host <name> --ssh-user <u> --ssh-key <path>
+helper discover unifi --persist
+helper discover cloudflare --persist
+helper discover argocd
+helper discover proxmox --persist
+helper discover omv             # OpenMediaVault NAS: filesystems, disks, shares, services
+helper discover hass --persist  # Home Assistant: version, integrations, entity summary
 
-uv run helper view service <name>      # internal/external endpoints + DNS split-brain
-uv run helper view host <name>         # guests, endpoints, findings
-uv run helper diff git-vs-cluster --persist   # Argo CD drift → DRIFT_CANDIDATE findings
-uv run helper audit
-uv run helper findings list
+helper view service <name>      # internal/external endpoints + DNS split-brain
+helper view host <name>         # guests, endpoints, findings
+helper diff git-vs-cluster --persist   # Argo CD drift → DRIFT_CANDIDATE findings
+helper audit
+helper findings list
 ```
 
 Keep tokens and keys in the environment — never commit them.
@@ -111,10 +115,10 @@ anything to a cloud model — the router refuses rather than silently
 downgrading or leaking).
 
 ```bash
-uv run helper chat "what hosts do I have?"     # one-shot
-uv run helper chat                             # REPL ('exit' to leave)
-uv run helper findings narrate                 # open findings as prose
-uv run helper onboard "a new mini-PC"          # conversational host onboarding
+helper chat "what hosts do I have?"     # one-shot
+helper chat                             # REPL ('exit' to leave)
+helper findings narrate                 # open findings as prose
+helper onboard "a new mini-PC"          # conversational host onboarding
 ```
 
 `helper onboard` interviews you about a new machine, then **validates and asks
@@ -137,13 +141,13 @@ network-aware: a path inherits **the worst of its links**, so sync-replicated
 workloads (Ceph, etcd) are refused across a VPN, with the reason spelled out.
 
 ```bash
-uv run helper plan path node0 wyhome --workload ceph-osd   # path verdict
-uv run helper plan workloads                    # browse the library
-uv run helper plan add-workload immich          # ranked hosts + reasons
-uv run helper plan add-workload immich --narrate
-uv run helper plan rebalance --narrate     # 3 candidate plans with tradeoffs
-uv run helper bottlenecks --persist        # known patterns → findings + mitigations
-uv run helper plan surplus                 # idle capacity → reconfiguration options
+helper plan path node0 wyhome --workload ceph-osd   # path verdict
+helper plan workloads                    # browse the library
+helper plan add-workload immich          # ranked hosts + reasons
+helper plan add-workload immich --narrate
+helper plan rebalance --narrate     # 3 candidate plans with tradeoffs
+helper bottlenecks --persist        # known patterns → findings + mitigations
+helper plan surplus                 # idle capacity → reconfiguration options
 ```
 
 As you chat, a **skill profile** builds passively (deterministic keyword
@@ -170,11 +174,13 @@ as deterministic reports (`list_workloads`, `recommend_placement`,
 that the client's own model narrates. Nothing writes to the lab itself.
 
 ```bash
-uv run helper mcp tools    # list the tool roster
-uv run helper mcp serve    # stdio server (launched by a client)
+helper mcp tools    # list the tool roster
+helper mcp serve    # stdio server (launched by a client)
 
 # Register with Claude Code:
-claude mcp add homelab -- uv run --directory /path/to/homelab-helper helper mcp serve
+claude mcp add homelab -- helper mcp serve
+# from a checkout instead:
+# claude mcp add homelab -- uv run --directory /path/to/homelab-helper helper mcp serve
 ```
 
 For Claude Desktop, add the same command under `mcpServers` in its config.

@@ -1,8 +1,8 @@
 """Alembic environment for homelab-helper.
 
 Takes the URL from the ``sqlalchemy.url`` option when the caller set one
-(``homelab_helper.db.migrate.alembic_config`` does), else from
-``HOMELAB_HELPER_DATABASE_URL``, else a local SQLite file (``./homelab.db``). Supports both online (with a
+(``homelab_helper.db.migrate.alembic_config`` does), else the
+harness default (``HOMELAB_HELPER_DATABASE_URL`` or the per-user data directory). Supports both online (with a
 live engine) and offline (SQL-emitting) modes.
 
 Async note: Alembic itself runs sync; for an async URL we create an
@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 import homelab_helper.db.models
 
 # Ensure all models are imported so Base.metadata is fully populated.
+from homelab_helper.config import database_url
 from homelab_helper.db.base import Base
 
 config = context.config

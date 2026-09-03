@@ -5,7 +5,7 @@ from __future__ import annotations
 from typer.testing import CliRunner
 
 from homelab_helper.cli.main import app
-from homelab_helper.config import find_env_files
+from homelab_helper.config import config_status, find_env_files
 
 runner = CliRunner()
 
@@ -44,7 +44,9 @@ def test_config_shows_defaults_when_env_unset(monkeypatch) -> None:
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert "database url" in result.stdout
-    assert "homelab.db" in result.stdout  # default sqlite path
+    # The per-user path is long and folds under CliRunner's narrow terminal, so
+    # check the value itself rather than the rendered cell.
+    assert config_status()["database_url"].endswith("homelab.db")
     assert "not configured" in result.stdout  # sources without credentials
 
 

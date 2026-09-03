@@ -36,8 +36,9 @@ src/homelab_helper/
 │                   at the root is a dev convenience only)
 mcp_server.py       MCP tools over stdio (helper mcp serve)
 tests/              pytest, asyncio_mode = "auto"
-fixtures/           operator-editable YAML (assertions, workload library,
-                    network topology example)
+├── data/           starter workload library (ships in the wheel)
+fixtures/           operator-editable YAML examples (assertion starter,
+                    network topology, example lab)
 ```
 
 ## Toolchain — every command goes through `uv`
@@ -60,6 +61,7 @@ uv run ruff format src tests
 uv run helper <verb>
 
 # DB lifecycle
+uv run helper config init  # per-user .env template (~/.config/homelab-helper)
 uv run helper db init      # alembic upgrade + register entry-point probes
 uv run helper db status
 uv run helper db reset --yes  # DESTRUCTIVE; dev only

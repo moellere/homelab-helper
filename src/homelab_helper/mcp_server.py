@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from mcp.server.mcpserver import MCPServer
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from homelab_helper.adapters.argocd import ArgoCDAdapter
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
@@ -34,8 +35,8 @@ from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
+from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
-from homelab_helper.config import database_url, load_env
 from homelab_helper.db.enums import FindingStatus, ResolutionScope
 from homelab_helper.db.models import (
     Cluster,
@@ -699,6 +700,79 @@ async def suppress_finding(
     return await _transition_finding(fingerprint, _apply)
 
 
+def _matches_any(value: str | None, patterns: tuple[str, ...]) -> bool:
+    return value is not None and any(fnmatchcase(value.lower(), p.lower()) for p in patterns)
+
+
+def _known_host_refusal(
+    hostname: str, primary_ip: str | None, known: Host, patterns: tuple[str, ...]
+) -> str | None:
+    if primary_ip and known.primary_ip and primary_ip != known.primary_ip:
+        return (
+            f"{hostname!r} is recorded at {known.primary_ip}; refusing to probe it at "
+            f"{primary_ip}. If the host moved, update it from the CLI first."
+        )
+    if primary_ip and not known.primary_ip and not _matches_any(primary_ip, patterns):
+        return (
+            f"{hostname!r} has no recorded address and {primary_ip!r} matches no pattern "
+            f"in {PROBE_ALLOW_VAR}; omit primary_ip to connect by name, or allow the address."
+        )
+    return None
+
+
+def _unknown_host_refusal(
+    hostname: str, primary_ip: str | None, patterns: tuple[str, ...]
+) -> str | None:
+    if not patterns:
+        return (
+            f"{hostname!r} is not a known host and {PROBE_ALLOW_VAR} is unset: the MCP surface "
+            "only probes hosts already in the harness DB. Add it with `helper discover host` "
+            f"or `helper onboard`, or set {PROBE_ALLOW_VAR} to comma-separated hostname/IP globs."
+        )
+    if not _matches_any(hostname, patterns):
+        return f"{hostname!r} matches no pattern in {PROBE_ALLOW_VAR}"
+    if primary_ip and not _matches_any(primary_ip, patterns):
+        return (
+            f"{primary_ip!r} matches no pattern in {PROBE_ALLOW_VAR}; an unknown host must "
+            "connect by a name or address the allow list covers"
+        )
+    return None
+
+
+def probe_target_refusal(
+    hostname: str,
+    primary_ip: str | None,
+    known: Host | None,
+    patterns: tuple[str, ...],
+) -> str | None:
+    """Why an MCP caller may not probe this target, or ``None`` when it may.
+
+    The tool authenticates with the operator's SSH key, so the set of targets
+    it can be steered at is the whole attack surface. A known host is always
+    probeable, but only at its recorded address — a caller can't aim a trusted
+    hostname at some other IP. An unknown host (or a caller-supplied address for
+    a host that has none recorded) must match a glob in
+    ``HOMELAB_HELPER_MCP_PROBE_ALLOW``; with the variable unset, only known
+    hosts probe. Pure, so the policy is unit-testable without a server.
+    """
+    if known is not None:
+        return _known_host_refusal(hostname, primary_ip, known, patterns)
+    return _unknown_host_refusal(hostname, primary_ip, patterns)
+
+
+async def _known_host(session: AsyncSession, hostname: str, primary_ip: str | None) -> Host | None:
+    """The row ``resolve_host`` would reuse for this request, if any."""
+    conditions = [Host.hostname == hostname]
+    if primary_ip:
+        conditions.append(Host.primary_ip == primary_ip)
+    row: Host | None = (
+        (await session.execute(select(Host).where(or_(*conditions)).order_by(Host.created_at)))
+        .scalars()
+        .first()
+    )
+    return row
+
+
 @server.tool()
 async def probe_host(
     hostname: str,
@@ -716,8 +790,12 @@ async def probe_host(
 
     Authenticates by key: pass ssh_key_path, or set HOMELAB_HELPER_SSH_KEY.
     Passwords are deliberately not accepted here. A full suite takes ~30s.
-    Creates the Host row if the harness doesn't know it yet; pass primary_ip
-    when the name doesn't resolve.
+
+    Scoped: a host already in the harness DB is probed at its recorded address
+    (a different primary_ip is refused). A host the harness doesn't know is
+    refused unless its name — and primary_ip, when given — match a glob in
+    HOMELAB_HELPER_MCP_PROBE_ALLOW (e.g. "*.lan,10.0.1.*"). Add new hosts from
+    the CLI (`helper discover host`, `helper onboard`) or widen the allow list.
     """
     key_path = ssh_key_path or os.environ.get("HOMELAB_HELPER_SSH_KEY")
     if not key_path:
@@ -726,6 +804,10 @@ async def probe_host(
     try:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as session:
+            known = await _known_host(session, hostname, primary_ip)
+            refusal = probe_target_refusal(hostname, primary_ip, known, probe_allow_patterns())
+            if refusal is not None:
+                return {"hostname": hostname, "error": refusal}
             result = await _probe_host(
                 session,
                 HostProbeRequest(
@@ -751,4 +833,4 @@ def main() -> None:
     server.run(transport="stdio")
 
 
-__all__ = ["main", "server"]
+__all__ = ["main", "probe_target_refusal", "server"]

@@ -22,11 +22,13 @@ when making implementation decisions.
 ```
 src/homelab_helper/
 ├── adapters/       NetBox, KernelSSH, Proxmox, K8s, UniFi, Cloudflare,
-│                   Argo CD, OpenMediaVault — all read-only at L1
+│                   Argo CD, OpenMediaVault — read-only at L1, except the
+│                   Proxmox guest-power writes reserved for the executor
 ├── cli/            Typer apps; entry point in main.py (19 verbs)
 ├── db/             Models, enums, async session
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
-│                   placement/rebalance/bottlenecks/network_path planners
+│                   placement/rebalance/bottlenecks/network_path planners,
+│                   trust (decide) + executor + escalation (Phase 6)
 ├── llm/            LLMRouter + backends, chat context, Narrator/Planner/
 │                   Discovery agents (LLM never in any authorization path)
 └── probes/         host.* + network.* plugins; register via entry points
@@ -120,10 +122,18 @@ invisible to the diff.
 
 ### 5. L2 / trust gradient — deterministic, never an LLM in the gate
 
-There is no `decide()` function in code yet, but the principle holds for any
-future write path: action authorization is deterministic Python, never an LLM.
-LLMs may *draft* manifests; policy decides whether they run. See
-`docs/architecture.md` "Trust gradient (L2 authorization model)".
+`engine/trust.py::decide()` is the gate, and it is a pure function over frozen
+dataclasses: action authorization is deterministic Python, never an LLM. LLMs
+may *draft* manifests; policy decides whether they run. Two mechanical
+regression tests enforce it (`test_decide_path_never_imports_llm`,
+`test_executor_path_never_imports_llm`) — a subprocess asserts neither module
+transitively imports `homelab_helper.llm`.
+
+Every write path routes through `engine/executor.py`, which is the only caller
+of an adapter's mutate methods; adapter writes carry a block comment saying so.
+`engine/escalation.py` moves the cell floors *after* the fact — it never
+participates in a decision in flight. See `docs/architecture.md` "Trust
+gradient (L2 authorization model)".
 
 ## Test patterns
 
@@ -192,7 +202,7 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
-| 6 — L2 execution & trust gradient | In progress: schema + `decide()` (PR A) and executor + receipts + Proxmox power write path (PR B) built; escalation, windows CLI, rollback orchestrator remain |
+| 6 — L2 execution & trust gradient | In progress: schema + `decide()` (PR A), executor + receipts + Proxmox power write path (PR B), auto-escalation (PR C) built; windows CLI, override, rollback orchestrator remain |
 
 Live-fleet validation of Phases 4–5 ACs is the outstanding sign-off gate, and
 required before any Phase-6 execution path runs against real infrastructure.

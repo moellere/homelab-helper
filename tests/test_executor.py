@@ -29,7 +29,7 @@ from homelab_helper.engine.executor import (
     rollback_receipt,
 )
 from homelab_helper.engine.rollback import RollbackError
-from homelab_helper.engine.trust import grant_cell, seed_domains
+from homelab_helper.engine.trust import grant_cell, kill_switch, open_window, seed_domains
 
 _CONFIG = ProxmoxConfig(url="https://pve.test:8006", token_id="t@pam!x", token_secret="s")
 
@@ -615,6 +615,86 @@ async def test_rollback_refuses_a_failed_receipt(sessionmaker) -> None:
 
         with pytest.raises(RollbackError, match="nothing to undo"):
             await rollback_receipt(s, receipt, adapter, actor="enoch")
+    await adapter.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Elevation windows + the kill switch (PR E)
+# ---------------------------------------------------------------------------
+
+
+async def test_window_lets_an_unverifiable_action_run_autonomously(sessionmaker) -> None:
+    """AC5: under a window, autonomy crosses the reversibility floor..."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests, status_code=500)  # rollback cannot be verified
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.AUTONOMOUS,
+            actor="enoch",
+        )
+        await open_window(
+            s,
+            reason="cluster maintenance",
+            minutes=60,
+            actor="enoch",
+            domains=[TrustDomain.CONTAINERS],
+        )
+        p = await make_proposal(s, make_artifact())
+        result = await execute_proposal(s, p, adapter, actor="enoch")
+
+        assert result.decision.level is AutonomyLevel.AUTONOMOUS
+        assert result.outcome == "succeeded"
+
+        receipt = await s.get(ExecutionReceipt, result.receipt_id)
+        assert receipt.window_id is not None, "receipts under a window carry its id"
+        # ...and a best-effort snapshot is attempted even though rollback is unverified.
+        assert any(r.url.path.endswith("/snapshot") for r in requests)
+    await adapter.aclose()
+
+
+async def test_kill_switch_halts_an_authorized_run_at_the_checkpoint(sessionmaker) -> None:
+    """AC5: revoking mid-flight stops the dispatch that the window authorized."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests, status_code=500)
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.CONFIRM,
+            actor="enoch",
+        )
+        await open_window(
+            s,
+            reason="cluster maintenance",
+            minutes=60,
+            actor="enoch",
+            domains=[TrustDomain.CONTAINERS],
+        )
+        p = await make_proposal(s, make_artifact())
+
+        # The operator is looking at the confirm prompt, thinks better of it,
+        # and hits the kill switch — the last suspension point between the
+        # decision and the dispatch.
+        async def confirm(manifest, decision) -> bool:
+            assert decision.window_id is not None
+            await kill_switch(s, actor="enoch")
+            return True
+
+        with pytest.raises(ExecutionRefused, match="halting"):
+            await execute_proposal(s, p, adapter, actor="enoch", confirm_cb=confirm)
+
+        assert writes(requests) == [], "the kill switch stopped it before any change"
+        assert (await s.execute(select(ExecutionReceipt))).scalars().all() == []
+        assert p.outcome is ProposalOutcome.PENDING
     await adapter.aclose()
 
 

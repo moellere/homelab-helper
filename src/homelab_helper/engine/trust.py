@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import getpass
 import os
+import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -50,6 +51,8 @@ from homelab_helper.db.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 OPERATOR_ENV_VAR = "HOMELAB_HELPER_OPERATOR"
@@ -109,6 +112,17 @@ class BoundaryView:
     absolute: bool
 
 
+def as_utc(moment: datetime) -> datetime:
+    """Force a datetime tz-aware in UTC.
+
+    SQLite hands back naive datetimes, so anything loaded from the DB has to
+    pass through here before it meets ``datetime.now(UTC)`` — otherwise the
+    comparison raises, and it would raise *inside the gate*, on the path that
+    decides whether an action may run.
+    """
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+
+
 @dataclass(frozen=True)
 class WindowView:
     window_id: str
@@ -117,7 +131,7 @@ class WindowView:
     revoked_at: datetime | None
 
     def is_open(self, at: datetime) -> bool:
-        return self.revoked_at is None and at < self.expires_at
+        return self.revoked_at is None and as_utc(at) < as_utc(self.expires_at)
 
     def covers(self, action: ActionRequest) -> bool:
         """Scope match: by domain, by any affected host, or by exact cell."""
@@ -382,18 +396,199 @@ async def grant_cell(
     return cell
 
 
+# --------------------------------------------------- elevation windows (PR E)
+
+MAX_WINDOW_MINUTES = 480
+"""Hard ceiling on a window's life (8h). No window may be opened longer, and
+none auto-renews: re-opening is a fresh, separately logged decision."""
+
+
+class WindowError(ValueError):
+    """A window the policy refuses to open (blanket scope, absolute domain…)."""
+
+
+async def open_window(
+    session: AsyncSession,
+    *,
+    reason: str,
+    minutes: int,
+    actor: str,
+    domains: Sequence[TrustDomain] = (),
+    hosts: Sequence[str] = (),
+    cells: Sequence[str] = (),
+) -> ElevationWindow:
+    """Open a scoped, time-boxed lift of the soft-hard floors.
+
+    Refuses, per ``docs/architecture.md``: a blanket window (no scope at all),
+    one longer than :data:`MAX_WINDOW_MINUTES`, and one naming an absolute
+    domain — absolute floors are crossed only by editing policy config, never
+    by a runtime gesture.
+    """
+    if not reason.strip():
+        raise WindowError("a window needs a reason — it is an audit record, not a flag")
+    if minutes <= 0 or minutes > MAX_WINDOW_MINUTES:
+        raise WindowError(f"duration must be 1..{MAX_WINDOW_MINUTES} minutes, got {minutes}")
+    if not (domains or hosts or cells):
+        raise WindowError("refusing a blanket window: scope it to domains, hosts, or cells")
+
+    for domain in domains:
+        row = await session.get(Domain, domain)
+        if row is not None and row.is_absolute:
+            raise WindowError(
+                f"domain {domain.value} is absolute — no window crosses it; "
+                "edit the policy config instead"
+            )
+
+    now_ = datetime.now(UTC)
+    window = ElevationWindow(
+        opened_by=actor,
+        reason=reason,
+        scope={
+            "domains": [d.value for d in domains],
+            "hosts": list(hosts),
+            "cells": list(cells),
+        },
+        opened_at=now_,
+        expires_at=now_ + timedelta(minutes=minutes),
+    )
+    session.add(window)
+    await session.flush()
+    session.add(
+        TrustHistory(
+            actor=actor,
+            event="window-open",
+            window_id=window.id,
+            detail={
+                "reason": reason,
+                "minutes": minutes,
+                "expires_at": window.expires_at.isoformat(),
+                "scope": window.scope,
+            },
+        )
+    )
+    await session.flush()
+    return window
+
+
+async def revoke_window(
+    session: AsyncSession, window: ElevationWindow, *, actor: str, cause: str = "revoked"
+) -> bool:
+    """Close one window now. Returns False if it was already closed."""
+    if window.revoked_at is not None:
+        return False
+    window.revoked_at = datetime.now(UTC)
+    window.revoked_by = actor
+    await session.flush()
+    session.add(
+        TrustHistory(
+            actor=actor,
+            event="window-revoke",
+            window_id=window.id,
+            detail={"cause": cause, "reason": window.reason},
+        )
+    )
+    await session.flush()
+    return True
+
+
+async def open_windows(
+    session: AsyncSession, *, at: datetime | None = None
+) -> list[ElevationWindow]:
+    """Every window that is currently live (not revoked, not expired)."""
+    moment = as_utc(at or datetime.now(UTC))
+    rows = (await session.execute(select(ElevationWindow))).scalars().all()
+    return [w for w in rows if w.revoked_at is None and moment < as_utc(w.expires_at)]
+
+
+async def kill_switch(session: AsyncSession, *, actor: str) -> int:
+    """Revoke every open window at once; returns how many were closed.
+
+    The reactive backstop from the architecture doc: one gesture drops the
+    system back to its standing floors. In-flight autonomous work stops at
+    its next checkpoint — the executor re-checks its window immediately
+    before dispatch, so a run authorized under a window that has since been
+    killed refuses instead of dispatching.
+    """
+    closed = 0
+    for window in await open_windows(session):
+        if await revoke_window(session, window, actor=actor, cause="kill-switch"):
+            closed += 1
+    return closed
+
+
+async def window_is_open(session: AsyncSession, window_id: str) -> bool:
+    """Checkpoint test: is this specific window still live right now?"""
+    try:
+        ident = uuid.UUID(window_id)
+    except (ValueError, AttributeError):
+        return False
+    window = await session.get(ElevationWindow, ident)
+    if window is None or window.revoked_at is not None:
+        return False
+    return datetime.now(UTC) < as_utc(window.expires_at)
+
+
+async def set_boundary(
+    session: AsyncSession,
+    host: Host,
+    ceiling: AutonomyLevel,
+    *,
+    absolute: bool,
+    actor: str,
+    notes: str | None = None,
+) -> TrustBoundary:
+    """Set (or update) one host's authority ceiling.
+
+    ``absolute`` makes it window-proof: no elevation window and no override
+    lifts it, only a policy-config edit. That is the "my production NAS,
+    never under any circumstances" case from the architecture doc.
+    """
+    boundary = (
+        await session.execute(select(TrustBoundary).where(TrustBoundary.host_id == host.id))
+    ).scalar_one_or_none()
+    if boundary is None:
+        boundary = TrustBoundary(host_id=host.id)
+        session.add(boundary)
+    boundary.max_agent_authority = ceiling
+    boundary.absolute = absolute
+    if notes is not None:
+        boundary.notes = notes
+    await session.flush()
+    session.add(
+        TrustHistory(
+            actor=actor,
+            event="boundary-set",
+            detail={
+                "hostname": host.hostname,
+                "ceiling": ceiling.value,
+                "absolute": absolute,
+            },
+        )
+    )
+    await session.flush()
+    return boundary
+
+
 __all__ = [
     "AUTONOMY_ORDER",
+    "MAX_WINDOW_MINUTES",
     "OPERATOR_ENV_VAR",
     "ActionRequest",
     "BoundaryView",
     "Decision",
     "GrantError",
     "TrustContext",
+    "WindowError",
     "WindowView",
     "decide",
     "grant_cell",
+    "kill_switch",
     "load_trust_context",
+    "open_window",
+    "open_windows",
     "operator_identity",
+    "revoke_window",
     "seed_domains",
+    "set_boundary",
+    "window_is_open",
 ]

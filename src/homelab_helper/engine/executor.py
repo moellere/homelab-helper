@@ -55,7 +55,13 @@ from homelab_helper.engine.rollback import (
     restore,
     verify_rollback,
 )
-from homelab_helper.engine.trust import ActionRequest, Decision, decide, load_trust_context
+from homelab_helper.engine.trust import (
+    ActionRequest,
+    Decision,
+    decide,
+    load_trust_context,
+    window_is_open,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -243,9 +249,26 @@ async def execute_proposal(
         if not await confirm_cb(manifest, decision):
             raise ExecutionRefused("operator declined — proposal left pending", decision)
 
+    # The kill switch's checkpoint. A window can be revoked between the
+    # decision and the dispatch — including by an operator watching this run
+    # go wrong — so a decision that leaned on one is re-tested here, at the
+    # last moment before anything changes.
+    if decision.window_id is not None and not await window_is_open(session, decision.window_id):
+        raise ExecutionRefused(
+            f"elevation window {decision.window_id} closed before dispatch — halting",
+            decision,
+        )
+
     # Capture only now: taking a snapshot is itself a write, so it must not
-    # happen while the gate is still deciding.
-    plan = await capture_rollback(adapter, manifest, verification)
+    # happen while the gate is still deciding. Under a window the floor was
+    # lifted without a verified rollback, so the architecture asks for a
+    # best-effort snapshot anyway.
+    plan = await capture_rollback(
+        adapter,
+        manifest,
+        verification,
+        best_effort=decision.window_id is not None,
+    )
     rollback_state = plan.as_receipt_state()
 
     started = time.monotonic()

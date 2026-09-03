@@ -23,12 +23,18 @@ from homelab_helper.db.models import (
     CellTrust,
     Domain,
     ElevationWindow,
+    Host,
     TrustBoundary,
     TrustHistory,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.escalation import PROMOTION_STREAK, is_promotable
-from homelab_helper.engine.trust import GrantError, grant_cell, operator_identity
+from homelab_helper.engine.trust import (
+    GrantError,
+    grant_cell,
+    operator_identity,
+    set_boundary,
+)
 
 trust_app = typer.Typer(
     name="trust",
@@ -68,7 +74,17 @@ def trust_show() -> None:
                     .scalars()
                     .all()
                 )
-                boundaries = (await session.execute(select(TrustBoundary))).scalars().all()
+                boundaries = (
+                    (
+                        await session.execute(
+                            select(TrustBoundary, Host.hostname).join(
+                                Host, Host.id == TrustBoundary.host_id, isouter=True
+                            )
+                        )
+                    )
+                    .tuples()
+                    .all()
+                )
                 windows = (await session.execute(select(ElevationWindow))).scalars().all()
         finally:
             await engine.dispose()
@@ -108,11 +124,11 @@ def trust_show() -> None:
             console.print(
                 "[dim]no cells granted — every action is propose-only (the L1 floor)[/dim]"
             )
-        for b in boundaries:
-            absolute = " [red]absolute[/red]" if b.absolute else ""
+        for b, hostname in boundaries:
+            absolute = " [red]absolute (window-proof)[/red]" if b.absolute else ""
             console.print(
-                f"[dim]boundary host={b.host_id} ceiling={b.max_agent_authority.value}"
-                f"{absolute}[/dim]"
+                f"[dim]boundary {escape(hostname or str(b.host_id))} ≤ "
+                f"{b.max_agent_authority.value}[/dim]{absolute}"
             )
         now = datetime.now(UTC)
         for w in windows:
@@ -123,6 +139,60 @@ def trust_show() -> None:
             console.print(f"[dim]window {w.id} ({state}): {w.reason} — scope {w.scope}[/dim]")
 
     asyncio.run(_go())
+
+
+@trust_app.command(name="boundary")
+def trust_boundary(
+    hostname: str = typer.Argument(..., help="Host the ceiling applies to."),
+    ceiling: str = typer.Argument(..., help="block, propose, confirm, or autonomous."),
+    absolute: bool = typer.Option(
+        False,
+        "--absolute",
+        help="Window-proof: no elevation window or override lifts it, ever.",
+    ),
+    notes: str = typer.Option("", "--notes", help="Why this host is capped."),
+) -> None:
+    """Cap one host's agent authority — the per-host ceiling.
+
+    `--absolute` is the "never under any circumstances" case: it becomes
+    unreachable by any runtime gesture, and only a policy-config edit
+    changes it.
+    """
+    try:
+        parsed = AutonomyLevel(ceiling.lower())
+    except ValueError as exc:
+        allowed = ", ".join(a.value for a in AutonomyLevel)
+        raise typer.BadParameter(f"ceiling must be one of: {allowed}") from exc
+
+    async def _go() -> int:
+        engine = make_engine(database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                host = (
+                    await session.execute(select(Host).where(Host.hostname == hostname))
+                ).scalar_one_or_none()
+                if host is None:
+                    console.print(f"[red]no such host[/red] {escape(hostname)}")
+                    return 1
+                boundary = await set_boundary(
+                    session,
+                    host,
+                    parsed,
+                    absolute=absolute,
+                    actor=operator_identity(),
+                    notes=notes or None,
+                )
+                mark = " [red](absolute — window-proof)[/red]" if boundary.absolute else ""
+                console.print(
+                    f"[green]boundary set[/green] {escape(hostname)} ≤ "
+                    f"{boundary.max_agent_authority.value}{mark}"
+                )
+                return 0
+        finally:
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
 
 
 @trust_app.command(name="history")

@@ -69,7 +69,8 @@ uv run helper db reset --yes  # DESTRUCTIVE; dev only
 
 CI (`.github/workflows/ci.yml`) runs lint → format → mypy → pytest on push +
 PR against `main` under Python 3.12 (matches `.python-version`). Don't push
-red commits.
+red commits. Releases are tag-driven (`.github/workflows/release.yml`, see
+`docs/releasing.md`): the tag must match `pyproject.toml`'s version.
 
 ## Workflow
 

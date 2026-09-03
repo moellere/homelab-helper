@@ -1,0 +1,100 @@
+name: Release
+
+# Tag-driven: `git tag v0.1.0a1 && git push origin v0.1.0a1` on a commit that
+# already passed CI. The tag must match the version in pyproject.toml; the
+# gate re-runs lint/typecheck/tests on the tagged commit, builds the sdist +
+# wheel, publishes to PyPI through trusted publishing (no token stored in the
+# repo — see docs/releasing.md), and attaches the artifacts to a GitHub
+# release with generated notes.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Lint / typecheck / tests on the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      - run: uv sync --all-extras --group dev
+      - name: Tag matches pyproject version
+        run: |
+          expected="v$(uv version --short)"
+          if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match pyproject version ${expected}" >&2
+            exit 1
+          fi
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy src
+      - run: uv run pytest -q
+
+  build:
+    name: Build sdist + wheel
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - name: Smoke-test the wheel from an empty directory
+        run: |
+          uv venv --python 3.12 /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          mkdir -p /tmp/empty && cd /tmp/empty
+          HOMELAB_HELPER_HOME=/tmp/smoke-home /tmp/smoke/bin/helper db init --skip-probe-sync
+          HOMELAB_HELPER_HOME=/tmp/smoke-home /tmp/smoke/bin/helper plan workloads >/dev/null
+          /tmp/smoke/bin/helper version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/homelab-helper/
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}

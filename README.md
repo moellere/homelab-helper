@@ -37,8 +37,9 @@ See [`architecture.md`](./docs/architecture.md) for the architecture document,
 **1. Install.** As a tool on your PATH (no checkout needed):
 
 ```bash
-uv tool install git+https://github.com/moellere/homelab-helper   # or: pipx install ...
-helper --install-completion                                       # bash / zsh / fish
+uv tool install homelab-helper          # from PyPI; or: pipx install homelab-helper
+helper --install-completion             # bash / zsh / fish
+# bleeding edge: uv tool install git+https://github.com/moellere/homelab-helper
 ```
 
 Or from a checkout for development (see [Development](#development)), where

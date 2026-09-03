@@ -22,6 +22,10 @@ Phase 6 PR B. The contract, per ``docs/architecture.md``:
 - Every dispatch — success or failure — writes exactly one
   ``ExecutionReceipt``. Success also closes the proposal (USER_ACCEPTED);
   failure leaves it PENDING so it can be retried.
+- A per-action :class:`OverrideGrant` crosses the soft-hard floors for one
+  action, owner-only and interactively obtained. It is logged as a distinct
+  ``TrustHistory`` event — but only when it actually changed the decided
+  level, so the audit spine records authority changes rather than gestures.
 - Every dispatch feeds the cell's trust record (``engine/escalation.py``):
   success extends the clean streak, failure demotes the cell to PROPOSE and
   flags probation. The feedback is one-way — escalation writes levels that a
@@ -36,13 +40,13 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from homelab_helper.adapters.proxmox import ProxmoxAPIError
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
-from homelab_helper.db.models import ExecutionReceipt, ProposalLog
+from homelab_helper.db.models import ExecutionReceipt, ProposalLog, TrustHistory
 from homelab_helper.engine.escalation import (
     EscalationResult,
     record_bad_outcome,
@@ -58,6 +62,7 @@ from homelab_helper.engine.rollback import (
 from homelab_helper.engine.trust import (
     ActionRequest,
     Decision,
+    TrustContext,
     decide,
     load_trust_context,
     window_is_open,
@@ -116,6 +121,22 @@ class ActionManifest:
 
 
 @dataclass(frozen=True)
+class OverrideGrant:
+    """One operator's "I accept this" for a single action.
+
+    Constructed only by an interactive caller — never loaded from the DB, never
+    derivable from state — so no agent and no autonomous run can reach it. It
+    crosses the *soft-hard* floors (the unverified-rollback degrade, a
+    non-absolute host ceiling) for exactly one action, and nothing else:
+    absolute floors ignore it, and it never turns a BLOCK or PROPOSE cell into
+    an executing one.
+    """
+
+    reason: str
+    actor: str
+
+
+@dataclass(frozen=True)
 class ExecutionResult:
     receipt_id: uuid.UUID
     decision: Decision
@@ -124,6 +145,8 @@ class ExecutionResult:
     duration_ms: int
     escalation: EscalationResult | None = None
     """What this outcome did to the cell's floor — see engine/escalation.py."""
+    override_used: bool = False
+    """True only when the override actually changed the decided level."""
 
 
 def parse_manifest(proposal: ProposalLog) -> ActionManifest:
@@ -190,6 +213,45 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
     )
 
 
+async def _log_override(
+    session: AsyncSession,
+    override: OverrideGrant | None,
+    *,
+    action: ActionRequest,
+    context: TrustContext,
+    decision: Decision,
+    manifest: ActionManifest,
+    proposal: ProposalLog,
+    actor: str,
+) -> bool:
+    """Record an override as a distinct authority event — but only when it
+    actually changed the outcome. An override that bought nothing is worth
+    telling the operator about; it is not an authority change, and the audit
+    spine should not fill up with gestures that did nothing.
+    """
+    if override is None:
+        return False
+    without = decide(action, replace(context, override=False))
+    if without.level is decision.level:
+        return False
+    session.add(
+        TrustHistory(
+            actor=actor,
+            event="override",
+            domain=manifest.domain,
+            proposal_id=proposal.id,
+            detail={
+                "cell": manifest.cell_key,
+                "reason": override.reason,
+                "without_override": without.level.value,
+                "with_override": decision.level.value,
+            },
+        )
+    )
+    await session.flush()
+    return True
+
+
 async def execute_proposal(
     session: AsyncSession,
     proposal: ProposalLog,
@@ -197,6 +259,7 @@ async def execute_proposal(
     *,
     actor: str,
     confirm_cb: ConfirmCallback | None = None,
+    override: OverrideGrant | None = None,
 ) -> ExecutionResult:
     """Gate, (maybe) confirm, dispatch, and receipt one pending action proposal.
 
@@ -227,6 +290,8 @@ async def execute_proposal(
     # means a forbidden action never touches the target at all, not even to
     # probe it.
     context = await load_trust_context(session, _request(False))
+    if override is not None:
+        context = replace(context, override=True)
     provisional = decide(_request(False), context)
     if provisional.level in (AutonomyLevel.BLOCK, AutonomyLevel.PROPOSE):
         raise ExecutionRefused(
@@ -240,6 +305,20 @@ async def execute_proposal(
     verification = await verify_rollback(adapter, manifest)
     action = _request(verification.verified)
     decision = decide(action, context)
+
+    # Log the override only when it actually changed the outcome. An override
+    # that bought nothing is worth telling the operator about, but it is not
+    # an authority change and should not clutter the audit spine.
+    override_was_load_bearing = await _log_override(
+        session,
+        override,
+        action=action,
+        context=context,
+        decision=decision,
+        manifest=manifest,
+        proposal=proposal,
+        actor=actor,
+    )
     if decision.level is AutonomyLevel.CONFIRM:
         if confirm_cb is None:
             raise ExecutionRefused(
@@ -330,6 +409,7 @@ async def execute_proposal(
         error=error,
         duration_ms=duration_ms,
         escalation=escalation,
+        override_used=override_was_load_bearing,
     )
 
 
@@ -400,6 +480,7 @@ __all__ = [
     "ExecutionRefused",
     "ExecutionResult",
     "ManifestError",
+    "OverrideGrant",
     "RollbackResult",
     "execute_proposal",
     "parse_manifest",

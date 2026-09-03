@@ -15,10 +15,11 @@ doesn't block. Acceptance-criterion references (AC1–AC5, P6-AC1–6) point at
 
 ## Current status snapshot
 
-**Phases 1 (core), 3, 4, and 5 are build-complete; Phase 2 (continuous
-agent / time-series) is deliberately deferred; Phase 6 is in design.** Full
-suite: 650+ tests green. Live-fleet validation of the Phase 4–5 ACs is the
-outstanding sign-off gate.
+**Phases 1 (core), 3, 4, 5 and 6 are build-complete; Phase 2 (continuous
+agent / time-series) is deliberately deferred.** Full suite: 830+ tests green.
+Live-fleet validation of the Phase 4–5 ACs is the outstanding sign-off gate,
+and is required before any Phase-6 execution path runs against real
+infrastructure.
 
 Phase-1 foundation, built and green:
 
@@ -594,7 +595,15 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
   distinguishable. Fed by the executor (success/failure) and by
   `helper exec accept|reject` (hand-applied proposals — the PROPOSE rung's
   evidence). Rejection resets the streak but never demotes. _P6-AC3._
-- [ ] **Override** — per-action, owner-only, interactive, high-friction, logged as a `TrustHistory` event; never agent-invokable, never self-invoked by autonomous execution
+- [x] **Override** (`OverrideGrant` + `helper exec run --override`) —
+  per-action, owner-only, interactive, high-friction (you retype the cell key;
+  a reason is required), logged as a distinct `TrustHistory` event **only when
+  it changed the decided level**, so the spine records authority changes
+  rather than gestures. Crosses the soft-hard floors and nothing else: it
+  never lifts a BLOCK/PROPOSE cell, never crosses an absolute domain or an
+  absolute host boundary, never forges a window id, and covers exactly one
+  action. Never agent-invokable — the grant is constructed only by the
+  interactive CLI, never loaded from or derived from DB state.
 - [x] **Elevation window** (`engine/trust.py` + `helper window`) — scoped to
   domains/hosts/cells and **never blanket** (a scopeless window is refused),
   hard expiry capped at `MAX_WINDOW_MINUTES` (8h) with no auto-renew,
@@ -623,6 +632,14 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
   reason trace + window id + rollback state + outcome/error/duration) with
   write-back to `ProposalLog`; `TrustHistory` append-only for grants (the
   auto-promote / demote / override / window events land with their features)
+- [x] MCP trust surface (`trust_status`, `list_receipts`, `pending_actions`)
+  — **read-only by construction**: a model can see the gradient, the receipts,
+  and what policy would say about each pending action (computed
+  pessimistically, since verifying reversibility means probing the target and
+  a query tool has no business doing that). There is no MCP tool to grant,
+  elevate, override, roll back, or execute; two mechanical tests enforce the
+  absence, one on the tool roster and one on the module's imports and call
+  sites.
 - [ ] Decide the `AuditLog`/receipt detail beyond `ProposalLog` + `TrustHistory`
 
 ---

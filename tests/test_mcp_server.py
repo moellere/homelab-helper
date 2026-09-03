@@ -82,12 +82,67 @@ EXPECTED_TOOLS = {
     "analyze_bottlenecks",
     "analyze_surplus",
     "network_path",
+    # Phase 6 trust surface — read-only by design.
+    "trust_status",
+    "list_receipts",
+    "pending_actions",
 }
+
+# Anything that grants, elevates, overrides, rolls back, or executes belongs to
+# the operator at the CLI. The gradient's premise is that an LLM is never in the
+# authorization path, so these must never appear as MCP tools.
+FORBIDDEN_TOOL_SUBSTRINGS = (
+    "grant",
+    "override",
+    "window",
+    "execute",
+    "exec_",
+    "rollback",
+    "kill",
+    "promote",
+    "demote",
+    "boundary",
+)
 
 
 async def test_server_registers_expected_tools() -> None:
     tools = {t.name for t in await server.list_tools()}
     assert tools == EXPECTED_TOOLS
+
+
+async def test_no_tool_can_change_authority_or_execute() -> None:
+    """The MCP surface may read the trust gradient; it may never move it."""
+    names = {t.name for t in await server.list_tools()}
+    offenders = [
+        name
+        for name in names
+        for bad in FORBIDDEN_TOOL_SUBSTRINGS
+        if bad in name and name not in {"list_receipts"}
+    ]
+    assert not offenders, f"authority-changing MCP tools: {offenders}"
+
+
+def test_mcp_module_never_calls_the_write_paths() -> None:
+    """Belt and braces: the module must not even import the mutating helpers."""
+    import homelab_helper.mcp_server as mod
+
+    forbidden = (
+        "execute_proposal",
+        "rollback_receipt",
+        "grant_cell",
+        "open_window",
+        "revoke_window",
+        "kill_switch",
+        "set_boundary",
+        "record_clean_outcome",
+        "record_bad_outcome",
+    )
+    present = [name for name in forbidden if hasattr(mod, name)]
+    assert not present, f"mcp_server imported write-path helpers: {present}"
+
+    source = Path(mod.__file__).read_text()
+    called = [name for name in forbidden if f"{name}(" in source]
+    assert not called, f"mcp_server calls write-path helpers: {called}"
 
 
 async def test_every_tool_has_a_description() -> None:

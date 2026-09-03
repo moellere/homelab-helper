@@ -5,6 +5,11 @@ services, audit rollup) plus the management-plane discovery runs as MCP tools
 over stdio, so Claude Desktop / Claude Code / Cursor can drive the harness in
 natural language without shelling out.
 
+The Phase-6 trust surface (``trust_status``, ``list_receipts``,
+``pending_actions``) is **read-only on purpose**: a model may see what policy
+allows and what has run, and has no tool to grant, elevate, override, or
+execute. Authority changes are operator gestures at the CLI.
+
 **Read-only against infrastructure (L1).** Query tools only read the harness
 DB. ``run_discovery`` reads live sources (UniFi, Cloudflare, Argo CD, Proxmox,
 K8s, OMV, Home Assistant — credentials from the same ``HOMELAB_HELPER_*`` env
@@ -41,13 +46,18 @@ from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
-from homelab_helper.db.enums import FindingStatus, ResolutionScope
+from homelab_helper.db.enums import FindingStatus, ProposalOutcome, ResolutionScope
 from homelab_helper.db.models import (
+    CellTrust,
     Cluster,
+    Domain,
+    ExecutionReceipt,
     Host,
+    ProposalLog,
     ReconciliationFinding,
     Service,
     ServiceEndpoint,
+    TrustBoundary,
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
@@ -58,6 +68,8 @@ from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
 )
+from homelab_helper.engine.escalation import PROMOTION_STREAK, is_promotable
+from homelab_helper.engine.executor import ManifestError, parse_manifest
 from homelab_helper.engine.hass_import import import_home_assistant
 from homelab_helper.engine.host_probe import HostProbeRequest, UnknownProbeError
 from homelab_helper.engine.host_probe import probe_host as _probe_host
@@ -70,6 +82,7 @@ from homelab_helper.engine.reconfigure import analyze_surplus as _analyze_surplu
 from homelab_helper.engine.stray_config import reconcile_stray_config
 from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
+from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
 from homelab_helper.engine.workloads import WorkloadLibraryError, load_workload_library
 
@@ -1062,6 +1075,191 @@ async def probe_talos(
         return {"error": f"unknown probe {exc.args[0]!r}"}
     except Exception as exc:
         return {"hostname": hostname, "error": str(exc)}
+    finally:
+        await engine.dispose()
+
+
+# --------------------------------------------------------- trust surface (L2)
+#
+# READ-ONLY, deliberately and permanently. The trust gradient's whole premise
+# is that an LLM is never in the path that authorizes execution, so this
+# surface lets a model *see* the policy — what is allowed, what ran, what is
+# pending — and gives it no way to change any of it. There is no MCP tool to
+# grant a cell, open a window, override, or execute a proposal; those are
+# operator gestures at the CLI. A mechanical test enforces the absence.
+
+
+@server.tool()
+async def trust_status() -> dict[str, Any]:
+    """Show the trust gradient: domains, granted cells, boundaries, windows.
+
+    Read-only. Nothing here can change authority — use the CLI for that.
+    """
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            domains = (await session.execute(select(Domain))).scalars().all()
+            cells = (await session.execute(select(CellTrust))).scalars().all()
+            boundaries = (
+                (
+                    await session.execute(
+                        select(TrustBoundary, Host.hostname).join(
+                            Host, Host.id == TrustBoundary.host_id, isouter=True
+                        )
+                    )
+                )
+                .tuples()
+                .all()
+            )
+            live = await open_windows(session)
+            return {
+                "domains": [
+                    {
+                        "name": d.name.value,
+                        "default_level": d.default_level.value,
+                        "max_level": d.max_level.value,
+                        "absolute": d.is_absolute,
+                    }
+                    for d in domains
+                ],
+                "cells": [
+                    {
+                        "cell": f"{c.domain.value}/{c.action_kind}/{c.blast_radius}",
+                        "level": c.level.value,
+                        "granted_by": c.granted_by,
+                        "clean_streak": c.clean_streak,
+                        "promotion_streak": PROMOTION_STREAK,
+                        "on_probation": c.on_probation,
+                        "auto_promotable": is_promotable(c.action_kind, c.blast_radius),
+                    }
+                    for c in cells
+                ],
+                "boundaries": [
+                    {
+                        "hostname": hostname,
+                        "max_agent_authority": b.max_agent_authority.value,
+                        "absolute": b.absolute,
+                    }
+                    for b, hostname in boundaries
+                ],
+                "open_windows": [
+                    {
+                        "id": str(w.id),
+                        "reason": w.reason,
+                        "opened_by": w.opened_by,
+                        "expires_at": _iso(w.expires_at),
+                        "scope": w.scope,
+                    }
+                    for w in live
+                ],
+                "note": (
+                    "read-only view; grants, windows, overrides and execution "
+                    "are operator gestures at the CLI"
+                ),
+            }
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def list_receipts(limit: int = 20) -> list[dict[str, Any]]:
+    """Recent execution receipts — what actually ran, at what level, and how it ended."""
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(ExecutionReceipt)
+                        .order_by(ExecutionReceipt.executed_at.desc())
+                        .limit(max(1, min(limit, 200)))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                {
+                    "id": str(r.id),
+                    "executed_at": _iso(r.executed_at),
+                    "actor": r.actor,
+                    "decision_level": r.decision_level.value,
+                    "decision_reasons": r.decision_reasons,
+                    "action": r.action,
+                    "outcome": r.outcome,
+                    "error": r.error,
+                    "duration_ms": r.duration_ms,
+                    "window_id": str(r.window_id) if r.window_id else None,
+                    "rolled_back_at": _iso(r.rolled_back_at),
+                }
+                for r in rows
+            ]
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def pending_actions() -> list[dict[str, Any]]:
+    """Pending action proposals and what policy would say about each.
+
+    The decision shown is computed **pessimistically** — as if reversibility
+    could not be verified — because verifying it means probing the target, and
+    a read-only query tool has no business touching infrastructure. A real run
+    may therefore land one level higher. Nothing here executes anything.
+    """
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            proposals = (
+                (
+                    await session.execute(
+                        select(ProposalLog)
+                        .where(ProposalLog.outcome == ProposalOutcome.PENDING)
+                        .order_by(ProposalLog.proposed_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            out: list[dict[str, Any]] = []
+            for proposal in proposals:
+                if (proposal.artifact or {}).get("kind") != "action":
+                    continue
+                entry: dict[str, Any] = {
+                    "id": str(proposal.id),
+                    "title": proposal.title,
+                    "proposed_by": proposal.proposed_by,
+                    "blast_radius": proposal.blast_radius,
+                }
+                try:
+                    manifest = parse_manifest(proposal)
+                except ManifestError as exc:
+                    entry["error"] = str(exc)
+                    out.append(entry)
+                    continue
+                action = ActionRequest(
+                    domain=manifest.domain,
+                    action_kind=manifest.action_kind,
+                    blast_radius=manifest.blast_radius,
+                    hostnames=manifest.hostnames,
+                    rollback_verified=False,
+                    provenance=proposal.proposed_by,
+                )
+                decision = decide(action, await load_trust_context(session, action))
+                entry.update(
+                    {
+                        "cell": manifest.cell_key,
+                        "target": manifest.target_label,
+                        "decision_if_run_now": decision.level.value,
+                        "decision_reasons": list(decision.reasons),
+                        "decision_basis": "pessimistic: rollback treated as unverified",
+                    }
+                )
+                out.append(entry)
+            return out
     finally:
         await engine.dispose()
 

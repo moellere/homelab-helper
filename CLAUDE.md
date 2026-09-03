@@ -133,7 +133,10 @@ transitively imports `homelab_helper.llm`.
 Every write path routes through `engine/executor.py`, which is the only caller
 of an adapter's mutate methods; adapter writes carry a block comment saying so.
 `engine/escalation.py` moves the cell floors *after* the fact — it never
-participates in a decision in flight. Two ordering rules in the executor are
+participates in a decision in flight. The MCP surface can *read* the gradient
+(`trust_status`, `list_receipts`, `pending_actions`) and has no tool that
+grants, elevates, overrides, rolls back, or executes — two mechanical tests
+enforce that absence. Two ordering rules in the executor are
 load-bearing, not stylistic: the gate runs **pessimistically first** (assuming
 no rollback) so a refused action never touches the target even to probe it,
 and rollback **capture** (which may snapshot — a write) happens only after the
@@ -208,7 +211,7 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
-| 6 — L2 execution & trust gradient | In progress: schema + `decide()` (PR A), executor + receipts + Proxmox power write path (PR B), auto-escalation (PR C), snapshot/rollback orchestrator (PR D), elevation windows + kill switch + boundary CLI (PR E) built; per-action override and the MCP trust surface remain |
+| 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F). All six ACs implemented; live-fleet validation outstanding |
 
 Live-fleet validation of Phases 4–5 ACs is the outstanding sign-off gate, and
 required before any Phase-6 execution path runs against real infrastructure.

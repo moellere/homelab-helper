@@ -17,7 +17,8 @@ The decision walks three tiers of floor hardness, clamping downward:
    ``(domain, action_kind, blast_radius)``, defaulting to the domain's
    ``default_level`` — which defaults to PROPOSE. L1 is this function with
    every cell at PROPOSE.
-2. **Soft-hard floors** (crossable by an open elevation window):
+2. **Soft-hard floors** (crossable by an open elevation window, or by a
+   per-action owner override):
    the domain's ``max_level``, each affected host's ``TrustBoundary``
    ceiling, and the verified-rollback requirement (AUTONOMOUS without a
    verified rollback degrades to CONFIRM).
@@ -156,6 +157,10 @@ class TrustContext:
     boundaries: tuple[BoundaryView, ...] = ()
     windows: tuple[WindowView, ...] = ()
     now: datetime = field(default_factory=lambda: datetime.now(UTC))
+    override: bool = False
+    """A per-action owner override. Never loaded from the DB — the caller sets
+    it after an interactive gesture, so no agent and no autonomous run can
+    reach it by reading state."""
 
 
 @dataclass(frozen=True)
@@ -187,10 +192,11 @@ def _matching_window(action: ActionRequest, context: TrustContext) -> WindowView
 def _apply_boundaries(
     level: AutonomyLevel,
     boundaries: tuple[BoundaryView, ...],
-    open_window: WindowView | None,
+    lift: str | None,
     reasons: list[str],
 ) -> AutonomyLevel:
-    """Host ceilings: absolute ones always clamp; others lift under a window."""
+    """Host ceilings: absolute ones always clamp; others lift under a window
+    or a per-action override (``lift`` names whichever is in play)."""
     for boundary in boundaries:
         if boundary.absolute:
             level = _clamp(
@@ -199,10 +205,8 @@ def _apply_boundaries(
                 reasons,
                 f"absolute boundary on {boundary.hostname} (window-proof)",
             )
-        elif open_window is not None:
-            reasons.append(
-                f"boundary ceiling on {boundary.hostname} lifted by window {open_window.window_id}"
-            )
+        elif lift is not None:
+            reasons.append(f"boundary ceiling on {boundary.hostname} lifted by {lift}")
         else:
             level = _clamp(
                 level, boundary.ceiling, reasons, f"boundary ceiling on {boundary.hostname}"
@@ -231,12 +235,22 @@ def decide(action: ActionRequest, context: TrustContext) -> Decision:
     )
 
     open_window = _matching_window(action, context)
-    level = _apply_boundaries(level, context.boundaries, open_window, reasons)
+    # An override crosses the same soft-hard floors a window does, and no
+    # others: absolute domains ignore it exactly as they ignore a window.
+    override_active = context.override and not context.domain_absolute
+    if override_active:
+        reasons.append("operator override accepted for this action")
+    lift = (
+        f"window {open_window.window_id}"
+        if open_window is not None
+        else ("operator override" if override_active else None)
+    )
+    level = _apply_boundaries(level, context.boundaries, lift, reasons)
 
     if level == AutonomyLevel.AUTONOMOUS and not action.rollback_verified:
-        if open_window is not None and not context.domain_absolute:
+        if lift is not None:
             reasons.append(
-                f"no verified rollback, but window {open_window.window_id} is open — "
+                f"no verified rollback, but {lift} applies — "
                 "best-effort snapshot required before execution"
             )
         else:

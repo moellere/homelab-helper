@@ -216,18 +216,29 @@ async def capture_rollback(
     adapter: ProxmoxAdapter,
     manifest: ActionManifest,
     verification: RollbackVerification,
+    *,
+    best_effort: bool = False,
 ) -> RollbackPlan:
     """Record (and for snapshots, create) what restore will need. May write.
 
     Only ever called after the action is authorized — taking a snapshot is
     itself a change to the target, so it must not happen while the gate is
     still deciding.
+
+    ``best_effort`` is the elevation-window case: the floor was lifted without
+    a verified rollback, so the architecture asks for a snapshot anyway. It is
+    attempted even when verification failed, and a failure to take it is
+    recorded rather than raised — the action was already authorized, and a
+    missing snapshot must not turn into an unlogged half-execution.
     """
     now = datetime.now(UTC)
     state: dict[str, Any] = {"prior": dict(verification.probe)} if verification.probe else {}
     capture_error: str | None = None
 
-    if verification.strategy == SNAPSHOT and verification.verified:
+    snapshot_wanted = (verification.strategy == SNAPSHOT and verification.verified) or (
+        best_effort and not verification.verified
+    )
+    if snapshot_wanted:
         name = _snapshot_name(now)
         try:
             await adapter.create_snapshot(
@@ -238,6 +249,8 @@ async def capture_rollback(
                 description=f"homelab-helper pre-{manifest.action_kind}",
             )
             state["snapshot"] = name
+            if best_effort and not verification.verified:
+                state["best_effort_snapshot"] = True
         except (ProxmoxAPIError, OSError) as exc:
             capture_error = f"snapshot creation failed: {exc}"
 

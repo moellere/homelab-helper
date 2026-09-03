@@ -24,7 +24,7 @@ src/homelab_helper/
 ├── adapters/       NetBox, KernelSSH, Proxmox, K8s, UniFi, Cloudflare,
 │                   Argo CD, OpenMediaVault — read-only at L1, except the
 │                   Proxmox guest-power writes reserved for the executor
-├── cli/            Typer apps; entry point in main.py (19 verbs)
+├── cli/            Typer apps; entry point in main.py (20 verbs)
 ├── db/             Models, enums, async session
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
 │                   placement/rebalance/bottlenecks/network_path planners,
@@ -208,7 +208,7 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
-| 6 — L2 execution & trust gradient | In progress: schema + `decide()` (PR A), executor + receipts + Proxmox power write path (PR B), auto-escalation (PR C), snapshot/rollback orchestrator (PR D) built; elevation windows, kill switch, override remain |
+| 6 — L2 execution & trust gradient | In progress: schema + `decide()` (PR A), executor + receipts + Proxmox power write path (PR B), auto-escalation (PR C), snapshot/rollback orchestrator (PR D), elevation windows + kill switch + boundary CLI (PR E) built; per-action override and the MCP trust surface remain |
 
 Live-fleet validation of Phases 4–5 ACs is the outstanding sign-off gate, and
 required before any Phase-6 execution path runs against real infrastructure.

@@ -39,6 +39,7 @@ from homelab_helper.cli.probes import probes_app
 from homelab_helper.cli.skills import skills_app
 from homelab_helper.cli.trust import trust_app
 from homelab_helper.cli.view import view_app
+from homelab_helper.cli.window import window_app
 from homelab_helper.config import load_env
 
 app = typer.Typer(name="helper", no_args_is_help=True, add_completion=False)
@@ -61,6 +62,7 @@ app.add_typer(plan_app)
 app.add_typer(bottlenecks_app)
 app.add_typer(trust_app)
 app.add_typer(exec_app)
+app.add_typer(window_app)
 
 console = Console()
 

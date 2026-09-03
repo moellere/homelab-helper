@@ -595,16 +595,30 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
   `helper exec accept|reject` (hand-applied proposals — the PROPOSE rung's
   evidence). Rejection resets the streak but never demotes. _P6-AC3._
 - [ ] **Override** — per-action, owner-only, interactive, high-friction, logged as a `TrustHistory` event; never agent-invokable, never self-invoked by autonomous execution
-- [ ] **Elevation window** — scoped (cells/hosts), hard expiry, no auto-renew, best-effort snapshot under elevation, receipts tagged with window id; outside any window, autonomous-meets-floor degrades to `CONFIRM`. _P6-AC5._
-- [ ] **Kill switch** — revoke all open windows instantly; halt in-flight autonomous actions at the next checkpoint. _P6-AC5._
-- [ ] **Absolute floors** — `Domain.is_absolute` (`secrets` ships true) and `TrustBoundary.absolute`; no override or window crosses them; config-edit only. _P6-AC6._
+- [x] **Elevation window** (`engine/trust.py` + `helper window`) — scoped to
+  domains/hosts/cells and **never blanket** (a scopeless window is refused),
+  hard expiry capped at `MAX_WINDOW_MINUTES` (8h) with no auto-renew,
+  best-effort snapshot captured under elevation even though rollback isn't
+  required, receipts tagged with the window id; outside any window,
+  autonomous-meets-floor still degrades to `CONFIRM`. Open/revoke are
+  `TrustHistory` events. _P6-AC5._
+- [x] **Kill switch** (`helper window kill`) — revokes every open window in one
+  gesture. In-flight work halts at the executor's **pre-dispatch checkpoint**:
+  a decision that leaned on a window re-tests it immediately before dispatch,
+  so a run authorized under a window that has since been killed refuses
+  instead of executing. _P6-AC5._
+- [x] **Absolute floors** — `Domain.is_absolute` (`secrets` ships true) and
+  `TrustBoundary.absolute`; `open_window` refuses to name an absolute domain
+  at all, and an absolute host boundary clamps even with a window open.
+  `helper trust boundary <host> <ceiling> [--absolute]` sets the per-host
+  ceiling. Config-edit only to change the absolute ones. _P6-AC6._
 
 ### Surface & audit
 
-- [ ] CLI remainder: `helper window open|revoke` (`helper exec
-  list|run|receipts` landed with PR B, `exec accept|reject` +
-  `trust history` with PR C, `exec rollback` with PR D; trust grant|show
-  with PR A)
+- [x] CLI: the authorization surface is complete — `trust show|grant` (PR A),
+  `exec list|run|receipts` (PR B), `exec accept|reject` + `trust history`
+  (PR C), `exec rollback` (PR D), `window open|list|revoke|kill` +
+  `trust boundary` (PR E)
 - [x] Receipts + audit spine: `ExecutionReceipt` (decision level + full
   reason trace + window id + rollback state + outcome/error/duration) with
   write-back to `ProposalLog`; `TrustHistory` append-only for grants (the

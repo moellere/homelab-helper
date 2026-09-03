@@ -30,6 +30,10 @@ DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./homelab.db"
 
 _ENV_FILENAME = ".env"
 
+PROBE_ALLOW_VAR = "HOMELAB_HELPER_MCP_PROBE_ALLOW"
+"""Comma-separated hostname/IP globs the MCP ``probe_host`` tool may reach
+beyond hosts already in the harness DB. Unset means known hosts only."""
+
 NO_DOTENV_VAR = "HOMELAB_HELPER_NO_DOTENV"
 """Set truthy to skip ``.env`` loading entirely.
 
@@ -198,6 +202,12 @@ def database_url() -> str:
     return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or DEFAULT_DATABASE_URL
 
 
+def probe_allow_patterns() -> tuple[str, ...]:
+    """The ``HOMELAB_HELPER_MCP_PROBE_ALLOW`` globs, trimmed, empty when unset."""
+    raw = os.environ.get(PROBE_ALLOW_VAR) or ""
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
 def variable_status(var: str, *, secret: bool) -> dict[str, Any]:
     """Report one variable: set/unset, plus the value when it isn't a secret."""
     raw = os.environ.get(var)
@@ -262,6 +272,7 @@ def config_status() -> dict[str, Any]:
         "database_exists": db_exists,
         "env_files": [str(p) for p in env_files],
         "ssh_key": os.environ.get("HOMELAB_HELPER_SSH_KEY"),
+        "mcp_probe_allow": list(probe_allow_patterns()),
         "sources": sources,
         "configured_sources": [s["source"] for s in sources if s["configured"]],
         "unconfigured_sources": [s["source"] for s in sources if not s["configured"]],

@@ -593,6 +593,19 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 
 ---
 
+## Agent access (scoped, not started)
+
+Six items from the pre-alpha readiness review — planner MCP tools, a Home
+Assistant adapter, the stdio-only transport decision, cell-keyed adapter
+write surfaces, `propose_action`, and a secrets store — are scoped with
+designs, files, and sequencing in `agent-access-scope.md`. The two blockers
+from the same review are done:
+
+- [x] Packaged Alembic config (`db/migrate.py`; migrations ship in the wheel, `helper db init` works from an install)
+- [x] Scoped MCP `probe_host` (known hosts at their recorded address; `HOMELAB_HELPER_MCP_PROBE_ALLOW` globs for anything else)
+
+---
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but

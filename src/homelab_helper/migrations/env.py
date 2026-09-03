@@ -1,7 +1,8 @@
 """Alembic environment for homelab-helper.
 
-Reads ``HOMELAB_HELPER_DATABASE_URL`` from the environment; falls back to a
-local SQLite file (``./homelab.db``) for dev. Supports both online (with a
+Takes the URL from the ``sqlalchemy.url`` option when the caller set one
+(``homelab_helper.db.migrate.alembic_config`` does), else from
+``HOMELAB_HELPER_DATABASE_URL``, else a local SQLite file (``./homelab.db``). Supports both online (with a
 live engine) and offline (SQL-emitting) modes.
 
 Async note: Alembic itself runs sync; for an async URL we create an
@@ -20,9 +21,10 @@ from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+import homelab_helper.db.models
+
 # Ensure all models are imported so Base.metadata is fully populated.
 from homelab_helper.db.base import Base
-import homelab_helper.db.models  # noqa: F401  -- registers all 11 tables
 
 config = context.config
 
@@ -31,7 +33,7 @@ if config.config_file_name is not None:
 
 
 def _database_url() -> str:
-    url = os.environ.get("HOMELAB_HELPER_DATABASE_URL")
+    url = config.get_main_option("sqlalchemy.url") or os.environ.get("HOMELAB_HELPER_DATABASE_URL")
     if url:
         return url
     # Local dev fallback. Async driver so the engine matches runtime usage.

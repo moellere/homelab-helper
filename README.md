@@ -175,6 +175,14 @@ For Claude Desktop, add the same command under `mcpServers` in its config.
 Everything the server can do stays within the read-only L1 stance; source
 credentials come from the same `HOMELAB_HELPER_*` env vars as the CLI.
 
+`probe_host` is scoped, because it authenticates with your SSH key: it will
+probe a host the harness already knows, at that host's recorded address, and
+refuse anything else. To let an MCP client onboard hosts it hasn't seen, set
+`HOMELAB_HELPER_MCP_PROBE_ALLOW` to comma-separated hostname/IP globs
+(`"*.lan,10.0.1.*"`); an unknown host's name, and its `primary_ip` when given,
+must both match. Otherwise add hosts from the CLI (`helper discover host`,
+`helper onboard`) and let the agent probe them from there.
+
 ## Repo layout
 
 ```
@@ -190,10 +198,10 @@ credentials come from the same `HOMELAB_HELPER_*` env vars as the CLI.
 │   ├── adapters/                   # NetBox, Kernel-SSH (P1); Proxmox, K8s, UniFi, ... (P3+)
 │   ├── probes/                     # Probe plugin SDK + first-party probes
 │   ├── engine/                     # Reconciler, assertion engine, scheduler, fingerprint
+│   ├── migrations/                 # Alembic env + versions (ship in the wheel)
 │   ├── cli/                        # `helper` Typer app
 │   ├── api/                        # FastAPI HTTP API (P1+)
 │   └── agent/                      # helper-agent daemon (P2)
-├── alembic/                        # DB migrations
 └── tests/                          # pytest suite
 ```
 

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 import homelab_helper.mcp_server as mcp_srv
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli.main import app
+from homelab_helper.config import PROBE_ALLOW_VAR
 from homelab_helper.db.base import Base
 from homelab_helper.db.enums import (
     DiscoverySource,
@@ -31,6 +32,7 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.host_probe import HostProbeRequest, HostProbeResult
 from homelab_helper.mcp_server import (
     audit_summary,
     get_finding,
@@ -39,6 +41,8 @@ from homelab_helper.mcp_server import (
     list_findings,
     list_hosts,
     list_services,
+    probe_host,
+    probe_target_refusal,
     run_discovery,
     server,
 )
@@ -277,3 +281,91 @@ def test_cli_mcp_tools_lists_roster() -> None:
 def test_cli_mcp_help_loads(argv: list[str]) -> None:
     result = runner.invoke(app, argv)
     assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# probe_host scoping
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def probe_calls(monkeypatch: pytest.MonkeyPatch) -> list[HostProbeRequest]:
+    """Replace the SSH probe run with a recorder; the policy is what's under test."""
+    calls: list[HostProbeRequest] = []
+
+    async def _fake(session: object, request: HostProbeRequest) -> HostProbeResult:
+        calls.append(request)
+        return HostProbeResult(
+            hostname=request.name, host_id="00000000-0000-0000-0000-000000000000"
+        )
+
+    monkeypatch.setattr(mcp_srv, "_probe_host", _fake)
+    monkeypatch.setenv("HOMELAB_HELPER_SSH_KEY", "/nonexistent/key")
+    monkeypatch.delenv(PROBE_ALLOW_VAR, raising=False)
+    return calls
+
+
+async def test_probe_host_known_host_runs(seeded_db: str, probe_calls: list) -> None:
+    out = await probe_host("node0", "root")
+    assert out["hostname"] == "node0"
+    assert "error" not in out
+    assert [c.name for c in probe_calls] == ["node0"]
+
+
+async def test_probe_host_known_host_at_recorded_ip_runs(seeded_db: str, probe_calls: list) -> None:
+    out = await probe_host("node0", "root", primary_ip="10.0.1.20")
+    assert "error" not in out
+    assert len(probe_calls) == 1
+
+
+async def test_probe_host_known_host_at_other_ip_refused(seeded_db: str, probe_calls: list) -> None:
+    out = await probe_host("node0", "root", primary_ip="203.0.113.7")
+    assert "recorded at 10.0.1.20" in out["error"]
+    assert probe_calls == []
+
+
+async def test_probe_host_unknown_host_refused_by_default(
+    seeded_db: str, probe_calls: list
+) -> None:
+    out = await probe_host("rogue", "root", primary_ip="203.0.113.7")
+    assert PROBE_ALLOW_VAR in out["error"]
+    assert "helper discover host" in out["error"]
+    assert probe_calls == []
+
+
+async def test_probe_host_allow_list_admits_matching_unknown_host(
+    seeded_db: str, probe_calls: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(PROBE_ALLOW_VAR, "*.lan, 10.0.1.*")
+    out = await probe_host("new-box.lan", "admin", primary_ip="10.0.1.77")
+    assert "error" not in out
+    assert probe_calls[0].primary_ip == "10.0.1.77"
+
+
+async def test_probe_host_allow_list_still_refuses_unlisted_ip(
+    seeded_db: str, probe_calls: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(PROBE_ALLOW_VAR, "*.lan")
+    out = await probe_host("new-box.lan", "admin", primary_ip="203.0.113.7")
+    assert "203.0.113.7" in out["error"]
+    assert probe_calls == []
+
+
+async def test_probe_host_allow_list_refuses_unlisted_name(
+    seeded_db: str, probe_calls: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(PROBE_ALLOW_VAR, "*.lan")
+    out = await probe_host("box.example.com", "admin")
+    assert "matches no pattern" in out["error"]
+    assert probe_calls == []
+
+
+def test_probe_target_refusal_known_host_without_ip_needs_allowed_address() -> None:
+    known = Host(hostname="bare")
+    assert probe_target_refusal("bare", None, known, ()) is None
+    assert probe_target_refusal("bare", "10.0.1.5", known, ()) is not None
+    assert probe_target_refusal("bare", "10.0.1.5", known, ("10.0.1.*",)) is None
+
+
+def test_probe_target_refusal_matches_case_insensitively() -> None:
+    assert probe_target_refusal("NODE9.LAN", None, None, ("*.lan",)) is None

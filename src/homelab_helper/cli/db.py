@@ -1,26 +1,31 @@
 """`helper db ...` subcommands — database lifecycle wrapped around Alembic.
 
 These are thin wrappers over ``alembic.command`` that surface the most common
-operations as named verbs. Config defaults to the project-local
-``alembic.ini``; override the DB URL via ``HOMELAB_HELPER_DATABASE_URL``.
+operations as named verbs. The Alembic config is built from the packaged
+migrations (``db/migrate.py``), so they work from an installed wheel as well as
+a checkout; override the DB URL via ``HOMELAB_HELPER_DATABASE_URL``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from alembic import command
-from alembic.config import Config
 from rich.console import Console
 from sqlalchemy.engine.url import make_url
 
 from homelab_helper.cli._probe_sync import sync_probes_sync
+from homelab_helper.config import database_url as _database_url
+from homelab_helper.db.migrate import alembic_config, enable_alembic_logging
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.trust import seed_domains
+
+if TYPE_CHECKING:
+    from alembic.config import Config
 
 db_app = typer.Typer(
     name="db",
@@ -30,21 +35,10 @@ db_app = typer.Typer(
 
 console = Console()
 
-_DEFAULT_URL = "sqlite+aiosqlite:///./homelab.db"
-
 
 def _alembic_config() -> Config:
-    """Locate alembic.ini relative to the project root and return a Config."""
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        candidate = parent / "alembic.ini"
-        if candidate.exists():
-            return Config(str(candidate))
-    raise FileNotFoundError("alembic.ini not found — are you running from the project root?")
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or _DEFAULT_URL
+    enable_alembic_logging()
+    return alembic_config(_database_url())
 
 
 def _sqlite_path(url: str) -> Path | None:
@@ -163,4 +157,6 @@ def db_migrate(
     cfg = _alembic_config()
     console.print(f"[cyan]generating migration: {message!r}[/cyan]")
     command.revision(cfg, message=message, autogenerate=autogenerate)
-    console.print("[green]done[/green] — review the new file under alembic/versions/")
+    console.print(
+        "[green]done[/green] — review the new file under src/homelab_helper/migrations/versions/"
+    )

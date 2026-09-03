@@ -104,6 +104,10 @@ ignore = [
 # SQLAlchemy 2.0 Mapped[...] needs uuid/datetime resolvable at runtime,
 # not just TYPE_CHECKING. Disable the type-checking-block movers for models.
 "src/homelab_helper/db/models/*" = ["TC001", "TC002", "TC003"]
+# Alembic scripts follow Alembic's generated template: imports stay at
+# runtime, the initial schema is one long upgrade(), the blank test
+# migration keeps the template's unused op/sa imports.
+"src/homelab_helper/migrations/**" = ["TC002", "TC003", "PLR0915", "F401"]
 # kernel_ssh exposes timeout= as ergonomic config, not a structured-concurrency
 # escape hatch. Suppress ASYNC109 here.
 "src/homelab_helper/adapters/kernel_ssh.py" = ["ASYNC109"]

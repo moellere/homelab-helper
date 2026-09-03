@@ -32,11 +32,12 @@ src/homelab_helper/
 ├── llm/            LLMRouter + backends, chat context, Narrator/Planner/
 │                   Discovery agents (LLM never in any authorization path)
 └── probes/         host.* + network.* plugins; register via entry points
+├── migrations/     Alembic env + versions (shipped in the wheel; alembic.ini
+│                   at the root is a dev convenience only)
 mcp_server.py       MCP tools over stdio (helper mcp serve)
 tests/              pytest, asyncio_mode = "auto"
 fixtures/           operator-editable YAML (assertions, workload library,
                     network topology example)
-alembic/            migrations
 ```
 
 ## Toolchain — every command goes through `uv`

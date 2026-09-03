@@ -40,6 +40,10 @@ def _render_general(status: dict) -> Table:
         )
     table.add_row("env files", ", ".join(status["env_files"]) or "(none found)")
     table.add_row("ssh key", status["ssh_key"] or "(unset)")
+    table.add_row(
+        "mcp probe allow",
+        ", ".join(status["mcp_probe_allow"]) or "(unset: known hosts only)",
+    )
     return table
 
 

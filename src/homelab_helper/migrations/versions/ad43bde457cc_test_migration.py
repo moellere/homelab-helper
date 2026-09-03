@@ -5,17 +5,17 @@ Revises: d0a476450f0c
 Create Date: 2026-05-17 17:16:27.834089
 
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = 'ad43bde457cc'
-down_revision: str | Sequence[str] | None = 'd0a476450f0c'
+revision: str = "ad43bde457cc"
+down_revision: str | Sequence[str] | None = "d0a476450f0c"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

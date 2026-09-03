@@ -26,21 +26,48 @@ from homelab_helper.engine.executor import (
     ManifestError,
     execute_proposal,
     parse_manifest,
+    rollback_receipt,
 )
+from homelab_helper.engine.rollback import RollbackError
 from homelab_helper.engine.trust import grant_cell, seed_domains
 
 _CONFIG = ProxmoxConfig(url="https://pve.test:8006", token_id="t@pam!x", token_secret="s")
 
 
-def make_adapter(requests: list[httpx.Request], *, power_status: int = 200) -> ProxmoxAdapter:
+def writes(requests: list[httpx.Request]) -> list[httpx.Request]:
+    """The requests that actually change something — reads are L1-safe."""
+    return [r for r in requests if r.method != "GET"]
+
+
+def make_adapter(
+    requests: list[httpx.Request],
+    *,
+    power_status: int = 200,
+    status_code: int = 200,
+    track_power: bool = False,
+) -> ProxmoxAdapter:
+    """A fake guest. With ``track_power``, power actions move its reported state,
+    so a rollback has something real to restore."""
+    guest = {"status": "running"}
+
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path.endswith("/status/current"):
+        path = request.url.path
+        if path.endswith("/status/current"):
+            if status_code >= 400:
+                return httpx.Response(status_code, json={"errors": "unreachable"})
             return httpx.Response(
-                200, json={"data": {"status": "running", "name": "web01", "uptime": 4242}}
+                200,
+                json={"data": {"status": guest["status"], "name": "web01", "uptime": 4242}},
             )
         if power_status >= 400:
             return httpx.Response(power_status, json={"errors": {"boom": "nope"}})
+        if track_power:
+            verb = path.rsplit("/", 1)[-1]
+            if verb in {"stop", "shutdown"}:
+                guest["status"] = "stopped"
+            elif verb in {"start", "reboot"}:
+                guest["status"] = "running"
         return httpx.Response(200, json={"data": "UPID:pve1:0000:reboot"})
 
     client = httpx.AsyncClient(
@@ -243,7 +270,7 @@ async def test_confirm_declined_leaves_proposal_pending(sessionmaker) -> None:
         p = await make_proposal(s, make_artifact())
         with pytest.raises(ExecutionRefused, match="declined"):
             await execute_proposal(s, p, adapter, actor="enoch", confirm_cb=decline)
-        assert requests == []
+        assert writes(requests) == [], "a decline must not change anything"
         assert (await s.execute(select(ExecutionReceipt))).scalars().all() == []
         assert p.outcome is ProposalOutcome.PENDING
     await adapter.aclose()
@@ -265,13 +292,20 @@ async def test_confirm_without_callback_refuses(sessionmaker) -> None:
         p = await make_proposal(s, make_artifact())
         with pytest.raises(ExecutionRefused, match="no confirmer"):
             await execute_proposal(s, p, adapter, actor="enoch")
-        assert requests == []
+        assert writes(requests) == []
     await adapter.aclose()
 
 
-async def test_autonomous_without_verified_rollback_degrades_to_confirm(sessionmaker) -> None:
+async def test_autonomous_degrades_to_confirm_when_rollback_cannot_be_verified(
+    sessionmaker,
+) -> None:
+    """An unreadable guest has no restorable state, so autonomy drops to confirm.
+
+    Note what is *not* consulted: the artifact claims a verified rollback. Since
+    PR D that claim carries no weight — only the probe does.
+    """
     requests: list[httpx.Request] = []
-    adapter = make_adapter(requests)
+    adapter = make_adapter(requests, status_code=500)
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)
         await grant_cell(
@@ -282,10 +316,10 @@ async def test_autonomous_without_verified_rollback_degrades_to_confirm(sessionm
             AutonomyLevel.AUTONOMOUS,
             actor="enoch",
         )
-        p = await make_proposal(s, make_artifact(rollback_verified=False))
+        p = await make_proposal(s, make_artifact(rollback_verified=True))
         with pytest.raises(ExecutionRefused, match="no confirmer"):
             await execute_proposal(s, p, adapter, actor="enoch")
-        assert requests == []
+        assert writes(requests) == []
     await adapter.aclose()
 
 
@@ -440,6 +474,147 @@ async def test_failed_dispatch_demotes_the_cell(sessionmaker) -> None:
         p2 = await make_proposal(s, make_artifact(rollback_verified=True))
         with pytest.raises(ExecutionRefused, match="propose"):
             await execute_proposal(s, p2, adapter, actor="enoch")
+    await adapter.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Verified rollback (PR D) — earned by the target, not asserted by the manifest
+# ---------------------------------------------------------------------------
+
+
+async def test_refused_action_never_probes_the_target(sessionmaker) -> None:
+    """A forbidden action makes zero API calls — not even the rollback probe."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests)
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.BLOCK,
+            actor="enoch",
+        )
+        p = await make_proposal(s, make_artifact(rollback_verified=True))
+        with pytest.raises(ExecutionRefused):
+            await execute_proposal(s, p, adapter, actor="enoch")
+        assert requests == []
+    await adapter.aclose()
+
+
+async def test_receipt_records_the_finding_not_the_claim(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests)
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.CONFIRM,
+            actor="enoch",
+        )
+
+        async def confirm(manifest, decision) -> bool:
+            return True
+
+        p = await make_proposal(s, make_artifact(rollback_verified=False))
+        await execute_proposal(s, p, adapter, actor="enoch", confirm_cb=confirm)
+
+        receipt = (await s.execute(select(ExecutionReceipt))).scalar_one()
+        state = receipt.rollback_state
+        assert state["verified"] is True, "the probe verified it even though the manifest didn't"
+        assert state["strategy"] == "prior-power-state"
+        assert state["prior"]["status"] == "running"
+        assert state["node"] == "pve1"
+        assert "running" in state["evidence"]
+    await adapter.aclose()
+
+
+async def test_rollback_restores_and_links_the_receipts(sessionmaker) -> None:
+    """Stop a running guest, then undo it: the captured state says start it."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests, track_power=True)
+
+    async def confirm(manifest, decision) -> bool:
+        return True
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "stop",
+            "single-host",
+            AutonomyLevel.CONFIRM,
+            actor="enoch",
+        )
+        p = await make_proposal(s, make_artifact(action_kind="stop"))
+        result = await execute_proposal(s, p, adapter, actor="enoch", confirm_cb=confirm)
+        original = await s.get(ExecutionReceipt, result.receipt_id)
+        assert original.rollback_state["prior"]["status"] == "running"
+
+        undo = await rollback_receipt(s, original, adapter, actor="enoch")
+
+        assert "start" in undo.detail
+        assert requests[-1].url.path.endswith("/status/start")
+        assert original.rolled_back_at is not None
+        assert original.rollback_receipt_id == undo.receipt_id
+
+        undo_receipt = await s.get(ExecutionReceipt, undo.receipt_id)
+        assert undo_receipt.action["kind"] == "rollback"
+        assert undo_receipt.action["of_receipt"] == str(original.id)
+    await adapter.aclose()
+
+
+async def test_rollback_refuses_twice(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests)
+
+    async def confirm(manifest, decision) -> bool:
+        return True
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.CONFIRM,
+            actor="enoch",
+        )
+        p = await make_proposal(s, make_artifact())
+        result = await execute_proposal(s, p, adapter, actor="enoch", confirm_cb=confirm)
+        receipt = await s.get(ExecutionReceipt, result.receipt_id)
+
+        await rollback_receipt(s, receipt, adapter, actor="enoch")
+        with pytest.raises(RollbackError, match="already rolled back"):
+            await rollback_receipt(s, receipt, adapter, actor="enoch")
+    await adapter.aclose()
+
+
+async def test_rollback_refuses_a_failed_receipt(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests, power_status=500)
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.AUTONOMOUS,
+            actor="enoch",
+        )
+        p = await make_proposal(s, make_artifact())
+        result = await execute_proposal(s, p, adapter, actor="enoch")
+        receipt = await s.get(ExecutionReceipt, result.receipt_id)
+
+        with pytest.raises(RollbackError, match="nothing to undo"):
+            await rollback_receipt(s, receipt, adapter, actor="enoch")
     await adapter.aclose()
 
 

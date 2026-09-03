@@ -39,3 +39,9 @@ class ExecutionReceipt(Base):
     outcome: Mapped[str] = mapped_column(String(32))  # "succeeded" | "failed"
     error: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+
+    rolled_back_at: Mapped[datetime | None] = mapped_column()
+    rollback_receipt_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("execution_receipt.id")
+    )
+    """The receipt recording the undo — receipts are never edited, only linked."""

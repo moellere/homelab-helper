@@ -19,7 +19,7 @@ from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
-from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
+from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxAPIError, ProxmoxConfigError
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog
@@ -34,7 +34,9 @@ from homelab_helper.engine.executor import (
     ManifestError,
     execute_proposal,
     parse_manifest,
+    rollback_receipt,
 )
+from homelab_helper.engine.rollback import RollbackError
 from homelab_helper.engine.trust import operator_identity
 
 if TYPE_CHECKING:
@@ -305,6 +307,77 @@ def exec_reject(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
+@exec_app.command(name="rollback")
+def exec_rollback(
+    receipt_id: str = typer.Argument(..., help="Execution receipt id (or unique prefix)."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+) -> None:
+    """Undo one executed action, using the state captured before it ran.
+
+    Operator-initiated and not gated by the trust gradient: the gradient
+    governs what the framework does on its own, and a safety valve the policy
+    could lock shut is not a safety valve. The undo writes its own receipt.
+    """
+
+    async def _resolve(session: AsyncSession) -> ExecutionReceipt | None:
+        rows = (await session.execute(select(ExecutionReceipt))).scalars().all()
+        matches = [r for r in rows if str(r.id).startswith(receipt_id.lower())]
+        if not matches:
+            console.print(f"[red]no receipt matches[/red] {escape(receipt_id)}")
+            return None
+        if len(matches) > 1:
+            console.print(f"[red]ambiguous prefix[/red] — {len(matches)} matches")
+            return None
+        return matches[0]
+
+    async def _go() -> int:
+        engine = make_engine(database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                receipt = await _resolve(session)
+                if receipt is None:
+                    return 1
+
+                state = receipt.rollback_state or {}
+                console.print(
+                    f"rolling back receipt [bold]{str(receipt.id)[:8]}[/bold] — "
+                    f"strategy {escape(str(state.get('strategy', 'unknown')))}, "
+                    f"captured {escape(str(state.get('captured_at', 'unknown')))}"
+                )
+                if not yes and not typer.confirm("restore?", default=False):
+                    console.print("[dim]left as-is[/dim]")
+                    return 3
+
+                try:
+                    adapter = _build_adapter()
+                except ProxmoxConfigError as exc:
+                    console.print(f"[red]adapter config:[/red] {escape(str(exc))}")
+                    return 2
+                try:
+                    result = await rollback_receipt(
+                        session, receipt, adapter, actor=operator_identity()
+                    )
+                except RollbackError as exc:
+                    console.print(f"[red]cannot roll back:[/red] {escape(str(exc))}")
+                    return 2
+                except ProxmoxAPIError as exc:
+                    console.print(f"[red]restore failed:[/red] {escape(str(exc))}")
+                    return 4
+                finally:
+                    await adapter.aclose()
+
+                console.print(
+                    f"[green]rolled back[/green] {escape(result.detail)} "
+                    f"in {result.duration_ms} ms — receipt {result.receipt_id}"
+                )
+                return 0
+        finally:
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
 @exec_app.command(name="receipts")
 def exec_receipts() -> None:
     """List execution receipts, newest first."""
@@ -327,16 +400,26 @@ def exec_receipts() -> None:
             await engine.dispose()
 
         table = Table(title="execution receipts")
-        for col in ("id", "executed", "actor", "level", "outcome"):
-            table.add_column(col, no_wrap=col in {"id", "outcome"})
+        for col in ("id", "executed", "actor", "level", "outcome", "rollback"):
+            table.add_column(col, no_wrap=col in {"id", "outcome", "rollback"})
         for r in rows:
             style = "green" if r.outcome == "succeeded" else "red"
+            state = r.rollback_state or {}
+            if r.rolled_back_at is not None:
+                rollback = "[yellow]rolled back[/yellow]"
+            elif (r.action or {}).get("kind") == "rollback":
+                rollback = "[dim]is an undo[/dim]"
+            elif state.get("verified"):
+                rollback = f"[dim]{escape(str(state.get('strategy', '')))}[/dim]"
+            else:
+                rollback = "[dim]unverified[/dim]"
             table.add_row(
                 str(r.id)[:8],
                 r.executed_at.strftime("%Y-%m-%d %H:%M"),
                 escape(r.actor),
                 r.decision_level.value,
                 f"[{style}]{r.outcome}[/{style}]",
+                rollback,
             )
         console.print(table)
         console.print(f"{len(rows)} receipt(s)")

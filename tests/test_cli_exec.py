@@ -178,7 +178,7 @@ def test_exec_run_declined_dispatches_nothing(
     result = runner.invoke(app, ["exec", "run", exec_db[:8]], input="n\n")
     assert result.exit_code == 3
     assert "declined" in result.output
-    assert requests == []
+    assert [r for r in requests if r.method != "GET"] == [], "a decline changes nothing"
 
     listing = runner.invoke(app, ["exec", "list"])
     assert "1 proposal(s)" in listing.output, "declined proposal stays pending"
@@ -243,6 +243,32 @@ def test_trust_history_shows_promotions(promotion_db: list[str]) -> None:
 
     show = runner.invoke(app, ["trust", "show"])
     assert "confirm" in show.output
+
+
+def test_exec_rollback_undoes_an_execution(exec_db: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run, then roll back: the undo gets its own receipt and links the original."""
+    requests: list[httpx.Request] = []
+    monkeypatch.setattr(
+        "homelab_helper.cli.execute._build_adapter", lambda: _mock_adapter(requests)
+    )
+    run = runner.invoke(app, ["exec", "run", exec_db[:8], "--yes"])
+    assert run.exit_code == 0, run.output
+    receipt_id = run.output.rsplit("receipt ", 1)[-1].strip()
+
+    undo = runner.invoke(app, ["exec", "rollback", receipt_id[:8], "--yes"])
+    assert undo.exit_code == 0, undo.output
+    assert "rolled back" in undo.output
+
+    listing = runner.invoke(app, ["exec", "receipts"])
+    assert "2 receipt(s)" in listing.output
+    assert "rolled back" in listing.output
+    assert "is an undo" in listing.output
+
+
+def test_exec_rollback_unknown_receipt(exec_db: str) -> None:
+    result = runner.invoke(app, ["exec", "rollback", "ffffffff", "--yes"])
+    assert result.exit_code == 1
+    assert "no receipt matches" in result.output
 
 
 def test_exec_run_yes_flag_preconsents(exec_db: str, monkeypatch: pytest.MonkeyPatch) -> None:

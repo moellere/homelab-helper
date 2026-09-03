@@ -28,7 +28,7 @@ src/homelab_helper/
 ├── db/             Models, enums, async session
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
 │                   placement/rebalance/bottlenecks/network_path planners,
-│                   trust (decide) + executor + escalation (Phase 6)
+│                   trust (decide) + executor + escalation + rollback (Phase 6)
 ├── llm/            LLMRouter + backends, chat context, Narrator/Planner/
 │                   Discovery agents (LLM never in any authorization path)
 └── probes/         host.* + network.* plugins; register via entry points
@@ -132,7 +132,12 @@ transitively imports `homelab_helper.llm`.
 Every write path routes through `engine/executor.py`, which is the only caller
 of an adapter's mutate methods; adapter writes carry a block comment saying so.
 `engine/escalation.py` moves the cell floors *after* the fact — it never
-participates in a decision in flight. See `docs/architecture.md` "Trust
+participates in a decision in flight. Two ordering rules in the executor are
+load-bearing, not stylistic: the gate runs **pessimistically first** (assuming
+no rollback) so a refused action never touches the target even to probe it,
+and rollback **capture** (which may snapshot — a write) happens only after the
+action is authorized. Reversibility is a finding from `engine/rollback.py`,
+never the manifest's `rollback.verified` claim. See `docs/architecture.md` "Trust
 gradient (L2 authorization model)".
 
 ## Test patterns
@@ -202,7 +207,7 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
-| 6 — L2 execution & trust gradient | In progress: schema + `decide()` (PR A), executor + receipts + Proxmox power write path (PR B), auto-escalation (PR C) built; windows CLI, override, rollback orchestrator remain |
+| 6 — L2 execution & trust gradient | In progress: schema + `decide()` (PR A), executor + receipts + Proxmox power write path (PR B), auto-escalation (PR C), snapshot/rollback orchestrator (PR D) built; elevation windows, kill switch, override remain |
 
 Live-fleet validation of Phases 4–5 ACs is the outstanding sign-off gate, and
 required before any Phase-6 execution path runs against real infrastructure.

@@ -197,6 +197,25 @@ class ProxmoxAdapter:
             raise ValueError(f"unsupported power action {action!r}")
         return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/status/{action}")
 
+    async def list_snapshots(self, node: str, vmid: int, kind: str) -> list[dict[str, Any]]:
+        """Existing snapshots for one guest. Read-only — also the support probe:
+        a clean response means this guest's storage can snapshot at all."""
+        return await self._request("GET", f"/nodes/{node}/{kind}/{vmid}/snapshot") or []
+
+    async def create_snapshot(
+        self, node: str, vmid: int, kind: str, name: str, *, description: str = ""
+    ) -> Any:
+        """Take a named snapshot. Executor-only — see the block comment above."""
+        return await self._request(
+            "POST",
+            f"/nodes/{node}/{kind}/{vmid}/snapshot",
+            params={"snapname": name, "description": description},
+        )
+
+    async def rollback_snapshot(self, node: str, vmid: int, kind: str, name: str) -> Any:
+        """Restore a guest to a named snapshot. Executor-only."""
+        return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/snapshot/{name}/rollback")
+
     # ------------------------------------------------------------------ reads
 
     async def version(self) -> dict[str, Any]:

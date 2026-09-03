@@ -23,11 +23,15 @@ See [`architecture.md`](./docs/architecture.md) for the architecture document,
 ## What it does today
 
 - Scan a network and fingerprint live hosts
-- Deep-probe Linux hosts over SSH (CPU, memory, storage, network, PCI, GPU, services)
+- Deep-probe Linux hosts over SSH (CPU, memory, storage, network, PCI, GPU, services) and Talos nodes over the machine API
 - Maintain part-level identity that survives moves (DIMMs, SSDs, NICs)
+- Read the management planes — Proxmox, Kubernetes, UniFi, Cloudflare, Argo CD, OpenMediaVault, Home Assistant — and reconcile them against kernel ground truth (DNS split-brain, git-vs-cluster drift, stray config)
 - Push inventory into NetBox via its API
 - Run configuration assertions and produce reconciliation findings
 - Produce a day-one audit against a real homelab
+- Answer questions about the lab in chat (local Ollama by default, BYOK cloud opt-in) and expose everything as MCP tools
+- Recommend placement, rebalancing, and reconfiguration, and flag known bottleneck patterns
+- Execute a proposed guest power action only after you raise its trust cell — deterministic gate, receipts, snapshots, rollback, elevation windows, kill switch
 
 ## Running it locally
 
@@ -82,6 +86,20 @@ verb (all are prefixed `HOMELAB_HELPER_`):
 | Home Assistant | `HASS_URL`, `HASS_TOKEN` (a long-lived access token; a non-admin user is enough), `HASS_VERIFY_SSL` |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
 | LLM (chat) | `LLM_PRIVACY` (`strict-local`/`prefer-local`/`open`), `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIER`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_BASE_URL` |
+
+**Secrets don't have to be plaintext.** Any secret-valued variable accepts a
+reference instead of a literal, resolved with your own tooling and keys:
+
+```bash
+HOMELAB_HELPER_PROXMOX_TOKEN_SECRET=file:~/.config/homelab-helper/secrets.yaml#proxmox   # plain YAML/JSON
+HOMELAB_HELPER_UNIFI_API_KEY=file:~/.config/homelab-helper/secrets.yaml.age#unifi         # age (HOMELAB_HELPER_AGE_IDENTITY)
+HOMELAB_HELPER_NETBOX_TOKEN=file:~/secrets.sops.yaml#netbox                               # sops -d
+HOMELAB_HELPER_HASS_TOKEN=keyring:homelab-helper/hass                                     # OS keyring: install homelab-helper[keyring]
+```
+
+`helper config` shows `set via file` / `keyring` / `env` for a reference and
+never prints a value; resolved values are scrubbed from the MCP server's
+error strings.
 
 **4. Run.** Discovery is read-only; add `--persist` to write to the DB and
 `--dry-run` to preview:
@@ -159,6 +177,28 @@ tunes how much chat explains — and later feeds per-domain trust hints.
 Every reply is footed with the backend that served it, e.g.
 `[ollama: llama3.2 (small, local)]`.
 
+### Executing proposals (opt-in, Phase 6)
+
+Nothing executes until you raise a trust cell. The gate is `decide()`, a pure
+function over the cell's level, the domain ceiling, per-host boundaries, open
+elevation windows, and whether a rollback was verified — never an LLM.
+
+```bash
+helper trust show                                   # every cell sits at PROPOSE by default
+helper trust grant hypervisor restart single-host confirm
+helper exec list                                    # pending action proposals
+helper exec run <proposal-id>                       # asks at CONFIRM; runs unattended only at AUTONOMOUS
+helper exec receipts                                # what ran, at which level, with its rollback state
+helper exec rollback <receipt-id>
+helper window open --reason "maintenance" --minutes 60 --host node2
+helper window kill                                  # revoke every open window now
+helper trust history                                # the append-only audit spine
+```
+
+Clean confirmed runs promote a reversible, low-blast cell one rung; one bad
+outcome demotes it and puts it on probation. See `docs/architecture.md`
+("Trust gradient") for the model.
+
 ### Using with Claude / MCP
 
 The harness ships a native **MCP server** (the first Phase-4 deliverable) that
@@ -196,23 +236,28 @@ refuse anything else. To let an MCP client onboard hosts it hasn't seen, set
 must both match. Otherwise add hosts from the CLI (`helper discover host`,
 `helper onboard`) and let the agent probe them from there.
 
-**The trust surface is read-only.** `trust_status`, `list_receipts` and
-`pending_actions` let a model see the gradient — which cells are granted, what
-has executed, what policy would say about each pending action — and give it no
-way to change any of it. There is no MCP tool that grants a cell, opens an
-elevation window, overrides a floor, rolls back, or executes a proposal; those
-are operator gestures at the CLI, and tests enforce the absence rather than
-trusting the convention. `pending_actions` reports its decision
-pessimistically (as if reversibility were unverified), because verifying it
-means probing the target and a query tool has no business doing that.
+**The trust surface is read-only; an agent may draft, never authorize.**
+`trust_status`, `list_receipts` and `pending_actions` let a model see the
+gradient — which cells are granted, what has executed, what policy would say
+about each pending action — and give it no way to change any of it.
+`propose_action` lets it draft a guest power action (start/stop/shutdown/
+restart of a Proxmox VM or container) as a *pending* proposal, validated
+against the manifest schema and returned with the policy preview; you then
+run it with `helper exec run <id>` or reject it. `list_proposals` and
+`get_proposal` read them back. There is no MCP tool that grants a cell, opens
+an elevation window, overrides a floor, rolls back, or executes a proposal;
+those are operator gestures at the CLI, and tests enforce the absence rather
+than trusting the convention. Decisions are reported pessimistically (as if
+reversibility were unverified), because verifying it means probing the target
+and a query tool has no business doing that.
 
 **Transport and trust.** The server speaks stdio only. It runs as you, in
 your shell, and reads the same `.env` the CLI does, so put nothing secret in
 the client's config block: the command line above is all a client needs.
 There is no network transport. Remote MCP would need the HTTP API (a stub
-today) with token auth and TLS, per-token tool allowlists (a remote client
-should never see `probe_host`), and a secrets store; none of that is planned
-before Phase 6 ships.
+today) with token auth and TLS and per-token tool allowlists (a remote client
+should never see `probe_host`); neither is planned before live-fleet
+validation signs Phase 6 off.
 
 ## Repo layout
 

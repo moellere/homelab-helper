@@ -106,6 +106,39 @@ class RebalanceReport:
         ratios = [h.ratio for h in self.hosts if h.ratio is not None]
         return (max(ratios) - min(ratios)) if len(ratios) > 1 else 0.0
 
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe view for the MCP surface (bytes stay bytes; ratios rounded)."""
+        return {
+            "balanced": self.balanced,
+            "spread": round(self.spread, 4),
+            "hosts": [
+                {
+                    "hostname": h.hostname,
+                    "mem_total_bytes": h.mem_total,
+                    "capacity_bytes": h.capacity,
+                    "committed_bytes": h.committed,
+                    "ratio": None if h.ratio is None else round(h.ratio, 4),
+                    "vms": [
+                        {"name": v.name, "memory_bytes": v.memory_bytes, "vmid": v.vmid}
+                        for v in h.vms
+                    ],
+                    "dimms": [{"label": label, "bytes": size} for label, size in h.dimms],
+                }
+                for h in self.hosts
+            ],
+            "unknown_hosts": list(self.unknown_hosts),
+            "plans": [
+                {
+                    "name": p.name,
+                    "summary": p.summary,
+                    "steps": [{"action": s.action, "description": s.description} for s in p.steps],
+                    "tradeoffs": list(p.tradeoffs),
+                    "resulting_ratios": {k: round(v, 4) for k, v in p.resulting_ratios.items()},
+                }
+                for p in self.plans
+            ],
+        }
+
 
 async def _load_fleet(session: AsyncSession) -> tuple[list[HostLoad], list[str]]:
     hosts = (await session.execute(select(Host).order_by(Host.hostname))).scalars().all()

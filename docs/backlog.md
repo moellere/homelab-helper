@@ -623,6 +623,10 @@ from the same review are done:
 
 - [x] Packaged Alembic config (`db/migrate.py`; migrations ship in the wheel, `helper db init` works from an install)
 - [x] Scoped MCP `probe_host` (known hosts at their recorded address; `HOMELAB_HELPER_MCP_PROBE_ALLOW` globs for anything else)
+- [x] Item 1 — planners as MCP tools (`list_workloads`, `recommend_placement`, `plan_rebalance`, `analyze_bottlenecks`, `analyze_surplus`, `network_path`) + `probe_talos` (scoped like `probe_host`; `discover talos` shares `engine/talos_probe.py`)
+- [x] Item 2 — Home Assistant adapter v1 (`adapters/homeassistant.py`, `engine/hass_import.py`, `discover hass --persist`, `run_discovery("hass")`); v2 device registry + `device_tracker` identity still open
+- [x] Item 3 — stdio-only MCP transport documented (README + architecture trust table)
+- [ ] Items 4–6 — cell-keyed write surfaces, `propose_action`, secrets store (Phase 6 track)
 
 ---
 

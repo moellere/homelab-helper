@@ -81,6 +81,7 @@ class DiscoverySource(StrEnum):
     KERNEL_PROBE = "kernel-probe"
     CLOUDFLARE = "cloudflare"
     NETBOX = "netbox"
+    HOME_ASSISTANT = "home-assistant"
 
 
 class Confidence(StrEnum):

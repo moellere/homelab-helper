@@ -9,11 +9,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import func, select
 
-from homelab_helper.cli.discover import _resolve_host
 from homelab_helper.db.base import Base
 from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.host_probe import resolve_host as _resolve_host
 
 
 @pytest.fixture

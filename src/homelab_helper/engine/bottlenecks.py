@@ -73,6 +73,21 @@ class BottleneckHit:
     def fingerprint(self) -> str:
         return make_fingerprint(self.kind.value, self.subject_type, self.subject, self.pattern)
 
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe view for the MCP surface (enums as values)."""
+        return {
+            "pattern": self.pattern,
+            "kind": self.kind.value,
+            "severity": self.severity.value,
+            "subject_type": self.subject_type,
+            "subject": self.subject,
+            "title": self.title,
+            "description": self.description,
+            "evidence": dict(self.evidence),
+            "mitigations": list(self.mitigations),
+            "fingerprint": self.fingerprint,
+        }
+
 
 @dataclass
 class _Fleet:

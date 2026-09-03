@@ -31,7 +31,9 @@ from homelab_helper.engine.escalation import (
 )
 from homelab_helper.engine.executor import (
     ExecutionRefused,
+    ExecutionResult,
     ManifestError,
+    OverrideGrant,
     execute_proposal,
     parse_manifest,
     rollback_receipt,
@@ -141,6 +143,29 @@ def exec_list() -> None:
     asyncio.run(_go())
 
 
+def _report_run(result: ExecutionResult, *, used_override: bool) -> int:
+    """Print the outcome of one run; returns the CLI exit code."""
+    if result.outcome == "succeeded":
+        console.print(
+            f"[green]executed[/green] at {result.decision.level.value} "
+            f"in {result.duration_ms} ms — receipt {result.receipt_id}"
+        )
+    else:
+        console.print(
+            f"[red]dispatch failed:[/red] {escape(result.error or 'unknown')} "
+            f"— receipt {result.receipt_id}; proposal left pending"
+        )
+    if used_override:
+        console.print(
+            "[red]override was used[/red] and logged"
+            if result.override_used
+            else "[dim]override was not needed — policy already allowed it[/dim]"
+        )
+    if result.escalation is not None:
+        _report_escalation(result.escalation)
+    return 0 if result.outcome == "succeeded" else 4
+
+
 @exec_app.command(name="run")
 def exec_run(
     proposal_id: str = typer.Argument(..., help="Proposal id (or unique prefix)."),
@@ -149,8 +174,22 @@ def exec_run(
         "--yes",
         help="Consent to THIS proposal up front instead of at the interactive prompt.",
     ),
+    override: bool = typer.Option(
+        False,
+        "--override",
+        help="Cross the soft-hard floors for THIS action (owner-only, logged).",
+    ),
+    override_reason: str = typer.Option(
+        "", "--override-reason", help="Required with --override: why you accept it."
+    ),
 ) -> None:
-    """Run one pending action proposal through the trust gate."""
+    """Run one pending action proposal through the trust gate.
+
+    ``--override`` crosses the *soft-hard* floors — the unverified-rollback
+    degrade and a non-absolute host ceiling — for this one action. It never
+    crosses an absolute floor, and it never makes a propose-only cell execute.
+    The gesture is deliberately high-friction: you retype the cell key.
+    """
 
     async def _confirm(manifest: ActionManifest, decision: Decision) -> bool:
         console.print(
@@ -164,6 +203,36 @@ def exec_run(
             return True
         return bool(typer.confirm("dispatch?", default=False))
 
+    def _collect_override(manifest: ActionManifest) -> OverrideGrant | None:
+        """High-friction, interactive, owner-only. Retyping the cell key is the
+        "I accept this" — a bare y/n is too easy to fire off by reflex."""
+        console.print(
+            f"[red]override[/red] crosses the soft-hard floors for "
+            f"{escape(manifest.cell_key)} on {escape(manifest.target_label)}"
+        )
+        console.print("[dim]absolute floors are unaffected; this covers one action only[/dim]")
+        typed = typer.prompt(f"type the cell key to accept ({manifest.cell_key})")
+        if typed.strip() != manifest.cell_key:
+            console.print("[yellow]override not confirmed[/yellow] — cell key did not match")
+            return None
+        return OverrideGrant(reason=override_reason, actor=operator_identity())
+
+    def _prepare_override(proposal: ProposalLog) -> tuple[bool, OverrideGrant | None]:
+        """``(ok, grant)`` — ok is False only when an override was asked for
+        and could not be granted, which aborts the run."""
+        if not override:
+            return True, None
+        if not override_reason.strip():
+            console.print("[red]--override requires --override-reason[/red]")
+            return False, None
+        try:
+            manifest = parse_manifest(proposal)
+        except ManifestError as exc:
+            console.print(f"[red]invalid manifest:[/red] {escape(str(exc))}")
+            return False, None
+        grant = _collect_override(manifest)
+        return grant is not None, grant
+
     async def _go() -> int:
         engine = make_engine(database_url())
         try:
@@ -172,6 +241,10 @@ def exec_run(
                 proposal = await _resolve_pending(session, proposal_id)
                 if proposal is None:
                     return 1
+
+                ok, grant = _prepare_override(proposal)
+                if not ok:
+                    return 2
 
                 try:
                     adapter = _build_adapter()
@@ -185,6 +258,7 @@ def exec_run(
                         adapter,
                         actor=operator_identity(),
                         confirm_cb=_confirm,
+                        override=grant,
                     )
                 except ManifestError as exc:
                     console.print(f"[red]invalid manifest:[/red] {escape(str(exc))}")
@@ -198,21 +272,7 @@ def exec_run(
                 finally:
                     await adapter.aclose()
 
-                if result.outcome == "succeeded":
-                    console.print(
-                        f"[green]executed[/green] at {result.decision.level.value} "
-                        f"in {result.duration_ms} ms — receipt {result.receipt_id}"
-                    )
-                    if result.escalation is not None:
-                        _report_escalation(result.escalation)
-                    return 0
-                console.print(
-                    f"[red]dispatch failed:[/red] {escape(result.error or 'unknown')} "
-                    f"— receipt {result.receipt_id}; proposal left pending"
-                )
-                if result.escalation is not None:
-                    _report_escalation(result.escalation)
-                return 4
+                return _report_run(result, used_override=grant is not None)
         finally:
             await engine.dispose()
 

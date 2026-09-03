@@ -189,6 +189,16 @@ refuse anything else. To let an MCP client onboard hosts it hasn't seen, set
 must both match. Otherwise add hosts from the CLI (`helper discover host`,
 `helper onboard`) and let the agent probe them from there.
 
+**The trust surface is read-only.** `trust_status`, `list_receipts` and
+`pending_actions` let a model see the gradient — which cells are granted, what
+has executed, what policy would say about each pending action — and give it no
+way to change any of it. There is no MCP tool that grants a cell, opens an
+elevation window, overrides a floor, rolls back, or executes a proposal; those
+are operator gestures at the CLI, and tests enforce the absence rather than
+trusting the convention. `pending_actions` reports its decision
+pessimistically (as if reversibility were unverified), because verifying it
+means probing the target and a query tool has no business doing that.
+
 **Transport and trust.** The server speaks stdio only. It runs as you, in
 your shell, and reads the same `.env` the CLI does, so put nothing secret in
 the client's config block: the command line above is all a client needs.

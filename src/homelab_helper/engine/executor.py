@@ -12,8 +12,13 @@ Phase 6 PR B. The contract, per ``docs/architecture.md``:
 - BLOCK and PROPOSE never dispatch and never write a receipt: absence of a
   receipt means nothing executed. CONFIRM dispatches only after the operator
   callback consents; declining leaves the proposal PENDING and untouched.
-- Rollback state (the guest's prior power state) is captured **before**
-  dispatch and lands in the receipt either way.
+- Reversibility is **verified, not claimed**: ``engine/rollback.py`` probes the
+  target, and that finding — not the manifest's own ``rollback.verified`` flag
+  — is what ``decide()`` sees. The gate runs twice for this: pessimistically
+  first (assuming no rollback), so a refused action never touches the target
+  even to probe it, then again with the finding, which can only raise the
+  outcome. Capture (which may take a snapshot) happens only after the action
+  is authorized, and lands in the receipt either way.
 - Every dispatch — success or failure — writes exactly one
   ``ExecutionReceipt``. Success also closes the proposal (USER_ACCEPTED);
   failure leaves it PENDING so it can be retried.
@@ -42,6 +47,13 @@ from homelab_helper.engine.escalation import (
     EscalationResult,
     record_bad_outcome,
     record_clean_outcome,
+)
+from homelab_helper.engine.rollback import (
+    RollbackError,
+    RollbackPlan,
+    capture_rollback,
+    restore,
+    verify_rollback,
 )
 from homelab_helper.engine.trust import ActionRequest, Decision, decide, load_trust_context
 
@@ -172,27 +184,6 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
     )
 
 
-async def _capture_rollback_state(
-    adapter: ProxmoxAdapter, manifest: ActionManifest
-) -> dict[str, Any]:
-    """Prior power state, captured before dispatch — best-effort but recorded."""
-    state: dict[str, Any] = {
-        "strategy": manifest.rollback_strategy or "prior-power-state",
-        "verified": manifest.rollback_verified,
-        "captured_at": datetime.now(UTC).isoformat(),
-    }
-    try:
-        prior = await adapter.vm_current_status(manifest.node, manifest.vmid, manifest.vm_kind)
-        state["prior"] = {
-            "status": prior.get("status"),
-            "name": prior.get("name"),
-            "uptime_s": prior.get("uptime"),
-        }
-    except (ProxmoxAPIError, OSError) as exc:
-        state["capture_error"] = str(exc)
-    return state
-
-
 async def execute_proposal(
     session: AsyncSession,
     proposal: ProposalLog,
@@ -213,22 +204,36 @@ async def execute_proposal(
         raise ExecutionRefused(f"proposal is {proposal.outcome.value}, not pending — refusing")
 
     manifest = parse_manifest(proposal)
-    action = ActionRequest(
-        domain=manifest.domain,
-        action_kind=manifest.action_kind,
-        blast_radius=manifest.blast_radius,
-        hostnames=manifest.hostnames,
-        rollback_verified=manifest.rollback_verified,
-        provenance=proposal.proposed_by,
-    )
-    context = await load_trust_context(session, action)
-    decision = decide(action, context)
 
-    if decision.level in (AutonomyLevel.BLOCK, AutonomyLevel.PROPOSE):
-        raise ExecutionRefused(
-            f"decision is {decision.level.value} for cell {manifest.cell_key} — not dispatching",
-            decision,
+    def _request(rollback_verified: bool) -> ActionRequest:
+        return ActionRequest(
+            domain=manifest.domain,
+            action_kind=manifest.action_kind,
+            blast_radius=manifest.blast_radius,
+            hostnames=manifest.hostnames,
+            rollback_verified=rollback_verified,
+            provenance=proposal.proposed_by,
         )
+
+    # Decide pessimistically first, assuming no rollback. Verification can only
+    # ever *raise* the outcome (it removes the AUTONOMOUS→CONFIRM degrade and
+    # nothing else), so a BLOCK or PROPOSE here is final — and refusing now
+    # means a forbidden action never touches the target at all, not even to
+    # probe it.
+    context = await load_trust_context(session, _request(False))
+    provisional = decide(_request(False), context)
+    if provisional.level in (AutonomyLevel.BLOCK, AutonomyLevel.PROPOSE):
+        raise ExecutionRefused(
+            f"decision is {provisional.level.value} for cell {manifest.cell_key} — not dispatching",
+            provisional,
+        )
+
+    # Authorized in some form, so it is worth asking the target whether this is
+    # undoable. Read-only, and deliberately not the manifest's to assert: a
+    # proposal may *request* a rollback strategy but may not certify one.
+    verification = await verify_rollback(adapter, manifest)
+    action = _request(verification.verified)
+    decision = decide(action, context)
     if decision.level is AutonomyLevel.CONFIRM:
         if confirm_cb is None:
             raise ExecutionRefused(
@@ -238,7 +243,10 @@ async def execute_proposal(
         if not await confirm_cb(manifest, decision):
             raise ExecutionRefused("operator declined — proposal left pending", decision)
 
-    rollback_state = await _capture_rollback_state(adapter, manifest)
+    # Capture only now: taking a snapshot is itself a write, so it must not
+    # happen while the gate is still deciding.
+    plan = await capture_rollback(adapter, manifest, verification)
+    rollback_state = plan.as_receipt_state()
 
     started = time.monotonic()
     outcome, error, upid = "succeeded", None, None
@@ -302,11 +310,75 @@ async def execute_proposal(
     )
 
 
+@dataclass(frozen=True)
+class RollbackResult:
+    receipt_id: uuid.UUID
+    """The new receipt recording the undo, not the receipt being undone."""
+    detail: str
+    duration_ms: int
+
+
+async def rollback_receipt(
+    session: AsyncSession,
+    receipt: ExecutionReceipt,
+    adapter: ProxmoxAdapter,
+    *,
+    actor: str,
+) -> RollbackResult:
+    """Undo one executed action, using the state captured before it ran.
+
+    Deliberately **not** gated by ``decide()``. The gradient governs what the
+    framework may do on its own; this is the operator saying "put it back",
+    and a safety valve that could be locked shut by the same policy that let
+    the action through is not a safety valve. It is still fully recorded: the
+    undo writes its own receipt, and the original is marked rolled back.
+
+    Raises :class:`RollbackError` when the receipt cannot be undone — the
+    action failed, it was already rolled back, or its captured state is too
+    old to carry a restore path.
+    """
+    if receipt.outcome != "succeeded":
+        raise RollbackError(f"receipt is {receipt.outcome}, so there is nothing to undo")
+    if receipt.rolled_back_at is not None:
+        raise RollbackError(
+            f"receipt was already rolled back at {receipt.rolled_back_at:%Y-%m-%d %H:%M}"
+        )
+
+    plan = RollbackPlan.from_receipt_state(receipt.rollback_state or {})
+
+    started = time.monotonic()
+    detail = await restore(adapter, plan)
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    undo = ExecutionReceipt(
+        proposal_id=receipt.proposal_id,
+        actor=actor,
+        decision_level=receipt.decision_level,
+        decision_reasons=[f"operator rollback of receipt {receipt.id}"],
+        window_id=receipt.window_id,
+        action={"kind": "rollback", "of_receipt": str(receipt.id), "strategy": plan.strategy},
+        rollback_state=plan.as_receipt_state(),
+        outcome="succeeded",
+        error=None,
+        duration_ms=duration_ms,
+    )
+    session.add(undo)
+    await session.flush()
+
+    receipt.rolled_back_at = datetime.now(UTC)
+    receipt.rollback_receipt_id = undo.id
+    await session.flush()
+
+    return RollbackResult(receipt_id=undo.id, detail=detail, duration_ms=duration_ms)
+
+
 __all__ = [
     "ActionManifest",
     "ExecutionRefused",
     "ExecutionResult",
     "ManifestError",
+    "RollbackResult",
     "execute_proposal",
     "parse_manifest",
+    "rollback_receipt",
 ]

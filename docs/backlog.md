@@ -558,7 +558,26 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
   - [ ] Remaining write-gate wiring as more adapter writes land (NetBox
     `cf_*` sync already has its own diff/confirm path; anything new routes
     through the executor)
-- [ ] **Snapshot/rollback orchestrator** — per-blast-radius capture (ZFS/LVM/VM snapshot, config backup) before execution; the verified-rollback gate that caps autonomy. _P6-AC4._ (Executor already degrades unverified-rollback AUTONOMOUS to CONFIRM and records `rollback_state` per receipt.)
+- [x] **Snapshot/rollback orchestrator** (`engine/rollback.py`, migration
+  `c1d8f4a6e2b7`) — **reversibility is verified, not claimed.** Until PR D
+  `rollback_verified` came off the manifest, so the one input to `decide()`
+  that an untrusted (possibly LLM-drafted) artifact could set in its own
+  favour turned the AUTONOMOUS→CONFIRM floor into an honour system. Now the
+  orchestrator probes the target: prior-power-state (is a restorable status
+  readable?) or snapshot (does this guest's storage support one?), and the
+  manifest's claim is recorded beside the finding so a false one stays
+  visible. Three phases around the gate — `verify_rollback` (read-only),
+  `capture_rollback` (post-authorization, may snapshot), `restore`. The gate
+  runs twice so a refused action never touches the target even to probe it:
+  pessimistically first (assuming no rollback, which can only under-state the
+  outcome), then again with the finding. `helper exec rollback <receipt>`
+  undoes an execution from its captured state, writes its own receipt, and
+  links the original (`rolled_back_at` + `rollback_receipt_id`; receipts are
+  never edited). Rollback is deliberately **not** decide()-gated — a safety
+  valve the policy could lock shut is not a safety valve. _P6-AC4._
+  - [ ] ZFS/LVM snapshot + config-backup strategies as those write paths land
+    (the strategy seam is in place; today's are prior-power-state + Proxmox
+    guest snapshot)
 
 ### Trust dynamics
 
@@ -584,7 +603,8 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 
 - [ ] CLI remainder: `helper window open|revoke` (`helper exec
   list|run|receipts` landed with PR B, `exec accept|reject` +
-  `trust history` with PR C; trust grant|show with PR A)
+  `trust history` with PR C, `exec rollback` with PR D; trust grant|show
+  with PR A)
 - [x] Receipts + audit spine: `ExecutionReceipt` (decision level + full
   reason trace + window id + rollback state + outcome/error/duration) with
   write-back to `ProposalLog`; `TrustHistory` append-only for grants (the

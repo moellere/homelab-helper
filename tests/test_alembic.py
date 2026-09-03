@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING
 import pytest
 from alembic import command
 
+from homelab_helper.db.base import Base
 from homelab_helper.db.migrate import MIGRATIONS_DIR, alembic_config
+from homelab_helper.db.models import ExecutionReceipt  # noqa: F401 - populate metadata
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -68,6 +70,39 @@ def test_alembic_upgrade_creates_all_eleven_tables(alembic_db) -> None:
     }
     assert expected.issubset(tables), f"missing: {expected - tables}"
     assert "alembic_version" in tables
+
+
+def _columns(db_path: Path, table: str) -> set[str]:
+    con = sqlite3.connect(db_path)
+    try:
+        return {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+    finally:
+        con.close()
+
+
+def test_migrated_schema_covers_every_model(alembic_db) -> None:
+    """``upgrade head`` must produce every table *and column* the models declare.
+
+    The subset check above only ever knew about the Slice-1 eleven, so a
+    migration that stopped being reachable — left outside the packaged
+    versions directory, say — was invisible to it while ``helper db init``
+    quietly produced a database missing that table. Columns are checked too:
+    a migration that only adds columns to an existing table would otherwise
+    still go missing unnoticed.
+    """
+    cfg, db_path = alembic_db
+    command.upgrade(cfg, "head")
+
+    tables = _table_names(db_path)
+    declared = set(Base.metadata.tables)
+    assert declared <= tables, f"migrations do not create: {sorted(declared - tables)}"
+
+    missing: dict[str, list[str]] = {}
+    for name, table in Base.metadata.tables.items():
+        gap = {c.name for c in table.columns} - _columns(db_path, name)
+        if gap:
+            missing[name] = sorted(gap)
+    assert not missing, f"migrated schema is missing columns: {missing}"
 
 
 def test_alembic_downgrade_drops_application_tables(alembic_db) -> None:

@@ -11,7 +11,6 @@ their adapter slices land.
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +19,7 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import desc, select
 
+from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.enums import AssertionStatus
 from homelab_helper.db.models import AssertionRun, ConfigurationAssertion
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
@@ -36,10 +36,6 @@ assert_app = typer.Typer(
 )
 
 console = Console()
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
 _STATUS_COLOR = {

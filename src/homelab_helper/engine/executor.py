@@ -52,6 +52,7 @@ from homelab_helper.engine.escalation import (
     record_bad_outcome,
     record_clean_outcome,
 )
+from homelab_helper.engine.manifest import VM_KIND_DOMAIN, ManifestError
 from homelab_helper.engine.rollback import (
     RollbackError,
     RollbackPlan,
@@ -80,12 +81,9 @@ if TYPE_CHECKING:
 # Trust-vocabulary verbs → Proxmox API verbs.
 _POWER_DISPATCH = {"start": "start", "stop": "stop", "shutdown": "shutdown", "restart": "reboot"}
 
-# The guest kind fixes the trust domain; a manifest may not claim otherwise.
-_VM_KIND_DOMAIN = {"lxc": TrustDomain.CONTAINERS, "qemu": TrustDomain.HYPERVISOR}
-
-
-class ManifestError(ValueError):
-    """The proposal's artifact is not a valid executable action manifest."""
+# The guest kind fixes the trust domain; a manifest may not claim otherwise
+# (shared with the authoring-side schema in engine/manifest.py).
+_VM_KIND_DOMAIN = VM_KIND_DOMAIN
 
 
 class ExecutionRefused(RuntimeError):

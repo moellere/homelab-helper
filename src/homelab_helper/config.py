@@ -22,13 +22,66 @@ from typing import TYPE_CHECKING, Any
 from dotenv import load_dotenv
 
 from homelab_helper.llm import backends_from_env, privacy_from_env
+from homelab_helper.secrets import reference_scheme
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./homelab.db"
-
 _ENV_FILENAME = ".env"
+_APP_DIR = "homelab-helper"
+_DB_FILENAME = "homelab.db"
+
+HOME_VAR = "HOMELAB_HELPER_HOME"
+"""One directory for both data and config. Set it to keep everything in one
+place (a container volume, a test sandbox); unset, the XDG locations apply."""
+
+
+def data_dir() -> Path:
+    """Where the default database lives: ``$HOMELAB_HELPER_HOME``, else
+    ``$XDG_DATA_HOME/homelab-helper``, else ``~/.local/share/homelab-helper``."""
+    override = os.environ.get(HOME_VAR)
+    if override:
+        return Path(override).expanduser()
+    base = os.environ.get("XDG_DATA_HOME")
+    root = Path(base).expanduser() if base else Path.home() / ".local" / "share"
+    return root / _APP_DIR
+
+
+def config_dir() -> Path:
+    """Where ``helper config init`` writes ``.env``: ``$HOMELAB_HELPER_HOME``,
+    else ``$XDG_CONFIG_HOME/homelab-helper``, else ``~/.config/homelab-helper``."""
+    override = os.environ.get(HOME_VAR)
+    if override:
+        return Path(override).expanduser()
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base).expanduser() if base else Path.home() / ".config"
+    return root / _APP_DIR
+
+
+def default_database_url() -> str:
+    """SQLite in the data directory. Was ``./homelab.db`` relative to the
+    working directory, which made an installed ``helper`` see a different,
+    empty database from every directory it ran in."""
+    return f"sqlite+aiosqlite:///{data_dir() / _DB_FILENAME}"
+
+
+def sqlite_path(url: str) -> Path | None:
+    """The on-disk file for a SQLite URL, or None for other backends / memory."""
+    prefix = "sqlite+aiosqlite:///"
+    if not url.startswith(prefix):
+        return None
+    rest = url[len(prefix) :]
+    if not rest or rest == ":memory:":
+        return None
+    return Path(rest)
+
+
+def ensure_database_parent(url: str) -> None:
+    """Create the directory a SQLite file will live in (SQLite won't)."""
+    path = sqlite_path(url)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
 
 PROBE_ALLOW_VAR = "HOMELAB_HELPER_MCP_PROBE_ALLOW"
 """Comma-separated hostname/IP globs the MCP ``probe_host`` tool may reach
@@ -161,12 +214,13 @@ SOURCES: tuple[SourceConfig, ...] = (
 def find_env_files(start: Path | None = None) -> list[Path]:
     """Env files to load, highest precedence first.
 
-    Two locations, both deliberate: a project ``.env`` found by walking up from
-    ``start`` and stopping at the directory holding ``.git``, then ``~/.env``.
-    The walk is bounded so an unrelated ``.env`` somewhere up the tree is never
-    pulled into a process that talks to live infrastructure — the home-directory
-    file is included because it's named explicitly, not because the walk reached
-    it. A project file wins over the home file key-by-key.
+    Three locations, all deliberate: a project ``.env`` found by walking up from
+    ``start`` and stopping at the directory holding ``.git``; the per-user file
+    ``helper config init`` writes under :func:`config_dir`; then ``~/.env``. The
+    walk is bounded so an unrelated ``.env`` somewhere up the tree is never
+    pulled into a process that talks to live infrastructure — the other two are
+    included because they're named explicitly, not because the walk reached
+    them. Earlier files win key-by-key.
     """
     found: list[Path] = []
     current = (start or Path.cwd()).resolve()
@@ -177,9 +231,9 @@ def find_env_files(start: Path | None = None) -> list[Path]:
             break
         if (directory / ".git").exists():
             break
-    home_env = Path.home() / _ENV_FILENAME
-    if home_env.is_file() and home_env not in found:
-        found.append(home_env)
+    for named in (config_dir() / _ENV_FILENAME, Path.home() / _ENV_FILENAME):
+        if named.is_file() and named not in found:
+            found.append(named)
     return found
 
 
@@ -206,7 +260,7 @@ def load_env(start: Path | None = None) -> list[Path]:
 
 
 def database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or DEFAULT_DATABASE_URL
+    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or default_database_url()
 
 
 def probe_allow_patterns() -> tuple[str, ...]:
@@ -224,6 +278,7 @@ def variable_status(var: str, *, secret: bool) -> dict[str, Any]:
         "set": present,
         "secret": secret,
         "value": None if (secret or not present) else raw,
+        "reference": reference_scheme(raw) if secret else None,
     }
 
 
@@ -269,14 +324,15 @@ def config_status() -> dict[str, Any]:
     """Whole-harness configuration snapshot for the CLI and the MCP surface."""
     env_files = find_env_files()
     url = database_url()
-    sqlite_prefix = "sqlite+aiosqlite:///"
-    db_exists: bool | None = None
-    if url.startswith(sqlite_prefix):
-        db_exists = Path(url[len(sqlite_prefix) :]).exists()
+    db_path = sqlite_path(url)
+    db_exists: bool | None = None if db_path is None else db_path.exists()
     sources = [source_status(s) for s in SOURCES]
     return {
         "database_url": url,
         "database_exists": db_exists,
+        "data_dir": str(data_dir()),
+        "config_dir": str(config_dir()),
+        "config_env_file": str(config_dir() / _ENV_FILENAME),
         "env_files": [str(p) for p in env_files],
         "ssh_key": os.environ.get("HOMELAB_HELPER_SSH_KEY"),
         "mcp_probe_allow": list(probe_allow_patterns()),
@@ -288,11 +344,15 @@ def config_status() -> dict[str, Any]:
 
 
 __all__ = [
-    "DEFAULT_DATABASE_URL",
+    "HOME_VAR",
     "SOURCES",
     "SourceConfig",
+    "config_dir",
     "config_status",
+    "data_dir",
     "database_url",
+    "default_database_url",
+    "ensure_database_parent",
     "find_env_file",
     "llm_status",
     "load_env",

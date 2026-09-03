@@ -33,6 +33,8 @@ from typing import Any
 
 import httpx
 
+from homelab_helper.secrets import secret_from_env
+
 _HTTP_ERROR_THRESHOLD = 400
 _FALSEY = {"0", "false", "no"}
 
@@ -69,7 +71,7 @@ class UniFiConfig:
     @classmethod
     def from_env(cls) -> UniFiConfig:
         url = os.environ.get("HOMELAB_HELPER_UNIFI_URL")
-        api_key = os.environ.get("HOMELAB_HELPER_UNIFI_API_KEY")
+        api_key = secret_from_env("HOMELAB_HELPER_UNIFI_API_KEY")
         if not url or not api_key:
             raise UniFiConfigError(
                 "UniFi URL + API key are required. Set HOMELAB_HELPER_UNIFI_URL and "
@@ -98,7 +100,7 @@ class UniFiConfig:
         for name in names:
             prefix = f"HOMELAB_HELPER_UNIFI_{name.upper().replace('-', '_')}_"
             url = os.environ.get(prefix + "URL")
-            api_key = os.environ.get(prefix + "API_KEY")
+            api_key = secret_from_env(prefix + "API_KEY")
             if not url or not api_key:
                 raise UniFiConfigError(
                     f"UniFi controller {name!r} is listed in "

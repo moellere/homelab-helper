@@ -20,6 +20,7 @@ from sqlalchemy.engine.url import make_url
 
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.config import database_url as _database_url
+from homelab_helper.config import ensure_database_parent
 from homelab_helper.db.migrate import alembic_config, enable_alembic_logging
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.trust import seed_domains
@@ -61,6 +62,7 @@ def db_init(
     ),
 ) -> None:
     """Upgrade the database to the latest revision and register shipped probes."""
+    ensure_database_parent(_database_url())
     cfg = _alembic_config()
     console.print("[cyan]running alembic upgrade head...[/cyan]")
     command.upgrade(cfg, "head")
@@ -136,6 +138,7 @@ def db_reset(
         if not confirmed:
             console.print("[yellow]aborted[/yellow]")
             raise typer.Exit(code=1)
+    ensure_database_parent(_database_url())
     cfg = _alembic_config()
     console.print("[cyan]downgrade base...[/cyan]")
     command.downgrade(cfg, "base")

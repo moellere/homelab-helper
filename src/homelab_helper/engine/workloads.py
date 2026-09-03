@@ -7,7 +7,7 @@ critical one — its **data gravity**: the large dataset it wants to live near.
 ``storage_gb`` is the app's own footprint; the media library it serves is
 gravity, not footprint.
 
-The starter library ships in ``fixtures/workload-library.yaml`` (baselines are
+The starter library ships in ``homelab_helper/data/workload-library.yaml`` (baselines are
 starter estimates, not benchmarks). Operators point
 ``HOMELAB_HELPER_WORKLOAD_LIBRARY`` at their own file to extend/override;
 entries there shadow same-named starters.
@@ -26,7 +26,8 @@ _VALID_GPU = {"none", "optional", "required"}
 _VALID_NETWORK = {"any", "lan-preferred", "lan-required"}
 _VALID_SCALING = {"flat", "with-users", "with-data", "with-cameras", "with-devices"}
 
-DEFAULT_LIBRARY_PATH = Path(__file__).resolve().parents[3] / "fixtures" / "workload-library.yaml"
+DEFAULT_LIBRARY_PATH = Path(__file__).resolve().parent.parent / "data" / "workload-library.yaml"
+"""The starter library, shipped inside the package so an installed wheel finds it."""
 
 LIBRARY_ENV_VAR = "HOMELAB_HELPER_WORKLOAD_LIBRARY"
 

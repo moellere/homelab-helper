@@ -28,16 +28,20 @@ src/homelab_helper/
 ├── db/             Models, enums, async session
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
 │                   placement/rebalance/bottlenecks/network_path planners,
-│                   trust (decide) + executor + escalation + rollback (Phase 6)
+│                   trust (decide) + executor + escalation + rollback (Phase 6),
+│                   manifest (authoring schema for ProposalLog.artifact)
 ├── llm/            LLMRouter + backends, chat context, Narrator/Planner/
 │                   Discovery agents (LLM never in any authorization path)
 └── probes/         host.* + network.* plugins; register via entry points
 ├── migrations/     Alembic env + versions (shipped in the wheel; alembic.ini
 │                   at the root is a dev convenience only)
 mcp_server.py       MCP tools over stdio (helper mcp serve)
+secrets.py          secret references (env:/file:/keyring:) + redact()
+config.py           .env loading, per-user data/config dirs, source status
 tests/              pytest, asyncio_mode = "auto"
-fixtures/           operator-editable YAML (assertions, workload library,
-                    network topology example)
+├── data/           starter workload library (ships in the wheel)
+fixtures/           operator-editable YAML examples (assertion starter,
+                    network topology, example lab)
 ```
 
 ## Toolchain — every command goes through `uv`
@@ -60,6 +64,7 @@ uv run ruff format src tests
 uv run helper <verb>
 
 # DB lifecycle
+uv run helper config init  # per-user .env template (~/.config/homelab-helper)
 uv run helper db init      # alembic upgrade + register entry-point probes
 uv run helper db status
 uv run helper db reset --yes  # DESTRUCTIVE; dev only
@@ -67,7 +72,8 @@ uv run helper db reset --yes  # DESTRUCTIVE; dev only
 
 CI (`.github/workflows/ci.yml`) runs lint → format → mypy → pytest on push +
 PR against `main` under Python 3.12 (matches `.python-version`). Don't push
-red commits.
+red commits. Releases are tag-driven (`.github/workflows/release.yml`, see
+`docs/releasing.md`): the tag must match `pyproject.toml`'s version.
 
 ## Workflow
 
@@ -131,7 +137,11 @@ regression tests enforce it (`test_decide_path_never_imports_llm`,
 transitively imports `homelab_helper.llm`.
 
 Every write path routes through `engine/executor.py`, which is the only caller
-of an adapter's mutate methods; adapter writes carry a block comment saying so.
+of an adapter's mutate methods; adapter writes carry a block comment saying so,
+and `tests/test_write_isolation.py` fails if any other module names one.
+Agents draft manifests through `engine/manifest.py` (`build_artifact`) and the
+MCP `propose_action` tool; the executor re-validates with its own
+`parse_manifest` because that input is untrusted.
 `engine/escalation.py` moves the cell floors *after* the fact — it never
 participates in a decision in flight. The MCP surface can *read* the gradient
 (`trust_status`, `list_receipts`, `pending_actions`) and has no tool that
@@ -184,6 +194,15 @@ gradient (L2 authorization model)".
 - **CLI commands that call `asyncio.run`** must wrap their `_go()` in a
   `try/finally` that `await engine.dispose()`. Otherwise the test suite leaks
   connections across runs.
+- **Secret-valued settings are read via `secrets.secret_from_env`**, never
+  `os.environ.get` directly: the value may be a `file:`/`keyring:`/`env:`
+  reference, and reading through the resolver is also what registers the
+  value for `redact()`. Non-secret settings keep using `os.environ`.
+- **Paths that ship in the wheel** live under `src/homelab_helper/` (migrations,
+  `data/`); never resolve a path relative to the repo root from package code.
+  The default database and config live in per-user dirs (`config.data_dir()`,
+  `config.config_dir()`), and the test suite pins `HOMELAB_HELPER_HOME` to a
+  temp dir so no test can touch a real one.
 
 ## Don't do
 
@@ -211,10 +230,13 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
-| 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F). All six ACs implemented; live-fleet validation outstanding |
+| 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F), agent-side `propose_action` + manifest schema + secret references (agent-access items 4–6). All six ACs implemented; live-fleet validation outstanding |
 
 Live-fleet validation of Phases 4–5 ACs is the outstanding sign-off gate, and
 required before any Phase-6 execution path runs against real infrastructure.
+Packaging is release-ready: `helper` works from `uv tool install` (per-user
+data/config dirs, packaged migrations and workload library), and a `v*` tag
+publishes to PyPI (`docs/releasing.md`).
 
 When in doubt, search `docs/backlog.md` — every committed-but-incomplete item
 has a sub-list of what's left.

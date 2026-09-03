@@ -33,6 +33,8 @@ from typing import Any
 
 import httpx
 
+from homelab_helper.secrets import secret_from_env
+
 _HTTP_ERROR_THRESHOLD = 400
 _API_BASE = "https://api.cloudflare.com/client/v4"
 _PAGE_SIZE = 100
@@ -61,7 +63,7 @@ class CloudflareConfig:
 
     @classmethod
     def from_env(cls) -> CloudflareConfig:
-        token = os.environ.get("HOMELAB_HELPER_CLOUDFLARE_API_TOKEN")
+        token = secret_from_env("HOMELAB_HELPER_CLOUDFLARE_API_TOKEN")
         zone = os.environ.get("HOMELAB_HELPER_CLOUDFLARE_ZONE")
         zone_id = os.environ.get("HOMELAB_HELPER_CLOUDFLARE_ZONE_ID")
         if not token:

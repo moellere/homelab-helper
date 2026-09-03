@@ -16,7 +16,9 @@ doesn't block. Acceptance-criterion references (AC1–AC5, P6-AC1–6) point at
 ## Current status snapshot
 
 **Phases 1 (core), 3, 4, 5 and 6 are build-complete; Phase 2 (continuous
-agent / time-series) is deliberately deferred.** Full suite: 830+ tests green.
+agent / time-series) is deliberately deferred.** Full suite: 870+ tests green.
+Packaging is release-ready (`uv tool install`, per-user dirs, tag-driven PyPI
+release — see `releasing.md`).
 Live-fleet validation of the Phase 4–5 ACs is the outstanding sign-off gate,
 and is required before any Phase-6 execution path runs against real
 infrastructure.
@@ -657,7 +659,10 @@ from the same review are done:
 - [x] Item 1 — planners as MCP tools (`list_workloads`, `recommend_placement`, `plan_rebalance`, `analyze_bottlenecks`, `analyze_surplus`, `network_path`) + `probe_talos` (scoped like `probe_host`; `discover talos` shares `engine/talos_probe.py`)
 - [x] Item 2 — Home Assistant adapter v1 (`adapters/homeassistant.py`, `engine/hass_import.py`, `discover hass --persist`, `run_discovery("hass")`); v2 device registry + `device_tracker` identity still open
 - [x] Item 3 — stdio-only MCP transport documented (README + architecture trust table)
-- [ ] Items 4–6 — cell-keyed write surfaces, `propose_action`, secrets store (Phase 6 track)
+- [x] Item 4 — `engine/manifest.py` (pydantic authoring schema, agreement test with `parse_manifest`) + `tests/test_write_isolation.py` (Proxmox writes reachable only via executor/rollback). Dispatch registry and the SSH restart cell stay open until a second write adapter / a rollback strategy exists
+- [x] Item 5 — MCP `propose_action` / `list_proposals` / `get_proposal` (draft-only; provenance clamp dropped — the gate is cell trust, per the executor's tests)
+- [x] Item 6 — secret references (`secrets.py`: `env:` / `file:` incl. age + sops / `keyring:`), `helper config` reports the scheme, MCP error strings redacted
+- [ ] Item 6 follow-up — move `Host.credentials_ref` (`ssh:<user>:<path>`) onto references; `op://` / `vault://` schemes; redact CLI-printed adapter errors
 
 ---
 

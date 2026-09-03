@@ -13,13 +13,13 @@ assertion-engine slices add new finding categories.
 from __future__ import annotations
 
 import asyncio
-import os
 
 import typer
 from rich.console import Console
 from rich.table import Table
 from sqlalchemy import func, select
 
+from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.enums import FindingSeverity, FindingStatus
 from homelab_helper.db.models import (
     Cluster,
@@ -39,10 +39,6 @@ audit_app = typer.Typer(
 )
 
 console = Console()
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
 @audit_app.callback(invoke_without_command=True)

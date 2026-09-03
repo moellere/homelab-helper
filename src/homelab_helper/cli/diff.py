@@ -10,7 +10,6 @@ findings`` / ``helper audit`` with the usual reopen-on-recurrence lifecycle.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime
 
 import typer
@@ -18,6 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from homelab_helper.adapters.argocd import ArgoCDAdapter, application_is_drifted
+from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
 
@@ -28,10 +28,6 @@ diff_app = typer.Typer(
 )
 
 console = Console()
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
 def _load_argocd_adapter() -> ArgoCDAdapter:

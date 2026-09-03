@@ -1,6 +1,6 @@
 [project]
 name = "homelab-helper"
-version = "0.1.0.dev0"
+version = "0.1.0a1"
 description = "OSS framework for homelab planning, inventory, audit, and (eventually) recommendations."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -37,6 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.29.0"]
+keyring = ["keyring>=25.0"]
 
 [project.scripts]
 helper = "homelab_helper.cli.main:app"
@@ -58,9 +59,9 @@ helper = "homelab_helper.cli.main:app"
 "network.fingerprint" = "homelab_helper.probes.network.fingerprint:NetworkFingerprintProbe"
 
 [project.urls]
-Homepage = "https://github.com/enochroot/homelab-helper"
-Repository = "https://github.com/enochroot/homelab-helper"
-Issues = "https://github.com/enochroot/homelab-helper/issues"
+Homepage = "https://github.com/moellere/homelab-helper"
+Repository = "https://github.com/moellere/homelab-helper"
+Issues = "https://github.com/moellere/homelab-helper/issues"
 
 [dependency-groups]
 dev = [

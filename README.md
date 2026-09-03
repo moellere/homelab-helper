@@ -23,40 +23,56 @@ See [`architecture.md`](./docs/architecture.md) for the architecture document,
 ## What it does today
 
 - Scan a network and fingerprint live hosts
-- Deep-probe Linux hosts over SSH (CPU, memory, storage, network, PCI, GPU, services)
+- Deep-probe Linux hosts over SSH (CPU, memory, storage, network, PCI, GPU, services) and Talos nodes over the machine API
 - Maintain part-level identity that survives moves (DIMMs, SSDs, NICs)
+- Read the management planes — Proxmox, Kubernetes, UniFi, Cloudflare, Argo CD, OpenMediaVault, Home Assistant — and reconcile them against kernel ground truth (DNS split-brain, git-vs-cluster drift, stray config)
 - Push inventory into NetBox via its API
 - Run configuration assertions and produce reconciliation findings
 - Produce a day-one audit against a real homelab
+- Answer questions about the lab in chat (local Ollama by default, BYOK cloud opt-in) and expose everything as MCP tools
+- Recommend placement, rebalancing, and reconfiguration, and flag known bottleneck patterns
+- Execute a proposed guest power action only after you raise its trust cell — deterministic gate, receipts, snapshots, rollback, elevation windows, kill switch
 
 ## Running it locally
 
-> Pre-alpha, run-from-source. There's no packaged release or server to deploy
-> yet (the HTTP API and agent layers are later phases). "Running it locally"
-> means installing from source, initializing a local SQLite database, and
-> driving the `helper` CLI. Everything is **read-only (L1) — it proposes, never
-> applies.**
+> Pre-alpha. Everything is **read-only (L1) — it proposes, never applies** —
+> until you raise a trust cell yourself (Phase 6, opt-in).
 
-**1. Install** (see [Development](#development) for the full toolchain):
+**1. Install.** As a tool on your PATH (no checkout needed):
+
+```bash
+uv tool install homelab-helper          # from PyPI; or: pipx install homelab-helper
+helper --install-completion             # bash / zsh / fish
+# bleeding edge: uv tool install git+https://github.com/moellere/homelab-helper
+```
+
+Or from a checkout for development (see [Development](#development)), where
+every command below is prefixed with `uv run`:
 
 ```bash
 uv sync --all-extras --group dev
 ```
 
-**2. Initialize the database** — a SQLite file `./homelab.db` by default
-(override with `HOMELAB_HELPER_DATABASE_URL`; a `postgres` extra is available
-for Postgres):
+**2. Initialize.** State lives in a per-user directory, not the working
+directory: the database under `~/.local/share/homelab-helper/` and your
+credentials under `~/.config/homelab-helper/.env` (XDG variables are honoured;
+`HOMELAB_HELPER_HOME` puts both in one place, e.g. a container volume).
+`HOMELAB_HELPER_DATABASE_URL` overrides the database entirely; a `postgres`
+extra is available.
 
 ```bash
-uv run helper db init      # alembic upgrade + register entry-point probes
-uv run helper db status
-# uv run helper db reset --yes   # DESTRUCTIVE — dev only
+helper config init         # writes the commented .env template
+helper db init             # alembic upgrade + register entry-point probes
+helper db status
+helper config              # what the harness will actually talk to
+# helper db reset --yes    # DESTRUCTIVE — dev only
 ```
 
-**3. Configure source credentials.** A `.env` at the repo root (gitignored)
-is auto-loaded, then `~/.env`; explicit exports always win. Each source only
-needs its variables when you run that `discover` verb (all are prefixed
-`HOMELAB_HELPER_`):
+**3. Configure source credentials.** Uncomment what you use in the `.env`
+that `helper config init` wrote. A project `.env` (repo checkout, gitignored)
+is loaded first, then the per-user file, then `~/.env`; explicit exports
+always win. Each source only needs its variables when you run that `discover`
+verb (all are prefixed `HOMELAB_HELPER_`):
 
 | Source | Variables |
 |---|---|
@@ -71,32 +87,39 @@ needs its variables when you run that `discover` verb (all are prefixed
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
 | LLM (chat) | `LLM_PRIVACY` (`strict-local`/`prefer-local`/`open`), `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIER`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_BASE_URL` |
 
-Print the effective configuration (secrets shown only as set/unset, never
-printed):
+**Secrets don't have to be plaintext.** Any secret-valued variable accepts a
+reference instead of a literal, resolved with your own tooling and keys:
 
 ```bash
-uv run helper config
+HOMELAB_HELPER_PROXMOX_TOKEN_SECRET=file:~/.config/homelab-helper/secrets.yaml#proxmox   # plain YAML/JSON
+HOMELAB_HELPER_UNIFI_API_KEY=file:~/.config/homelab-helper/secrets.yaml.age#unifi         # age (HOMELAB_HELPER_AGE_IDENTITY)
+HOMELAB_HELPER_NETBOX_TOKEN=file:~/secrets.sops.yaml#netbox                               # sops -d
+HOMELAB_HELPER_HASS_TOKEN=keyring:homelab-helper/hass                                     # OS keyring: install homelab-helper[keyring]
 ```
+
+`helper config` shows `set via file` / `keyring` / `env` for a reference and
+never prints a value; resolved values are scrubbed from the MCP server's
+error strings.
 
 **4. Run.** Discovery is read-only; add `--persist` to write to the DB and
 `--dry-run` to preview:
 
 ```bash
-uv run helper --help
+helper --help
 
-uv run helper discover host <name> --ssh-user <u> --ssh-key <path>
-uv run helper discover unifi --persist
-uv run helper discover cloudflare --persist
-uv run helper discover argocd
-uv run helper discover proxmox --persist
-uv run helper discover omv             # OpenMediaVault NAS: filesystems, disks, shares, services
-uv run helper discover hass --persist  # Home Assistant: version, integrations, entity summary
+helper discover host <name> --ssh-user <u> --ssh-key <path>
+helper discover unifi --persist
+helper discover cloudflare --persist
+helper discover argocd
+helper discover proxmox --persist
+helper discover omv             # OpenMediaVault NAS: filesystems, disks, shares, services
+helper discover hass --persist  # Home Assistant: version, integrations, entity summary
 
-uv run helper view service <name>      # internal/external endpoints + DNS split-brain
-uv run helper view host <name>         # guests, endpoints, findings
-uv run helper diff git-vs-cluster --persist   # Argo CD drift → DRIFT_CANDIDATE findings
-uv run helper audit
-uv run helper findings list
+helper view service <name>      # internal/external endpoints + DNS split-brain
+helper view host <name>         # guests, endpoints, findings
+helper diff git-vs-cluster --persist   # Argo CD drift → DRIFT_CANDIDATE findings
+helper audit
+helper findings list
 ```
 
 Keep tokens and keys in the environment — never commit them.
@@ -111,10 +134,10 @@ anything to a cloud model — the router refuses rather than silently
 downgrading or leaking).
 
 ```bash
-uv run helper chat "what hosts do I have?"     # one-shot
-uv run helper chat                             # REPL ('exit' to leave)
-uv run helper findings narrate                 # open findings as prose
-uv run helper onboard "a new mini-PC"          # conversational host onboarding
+helper chat "what hosts do I have?"     # one-shot
+helper chat                             # REPL ('exit' to leave)
+helper findings narrate                 # open findings as prose
+helper onboard "a new mini-PC"          # conversational host onboarding
 ```
 
 `helper onboard` interviews you about a new machine, then **validates and asks
@@ -137,13 +160,13 @@ network-aware: a path inherits **the worst of its links**, so sync-replicated
 workloads (Ceph, etcd) are refused across a VPN, with the reason spelled out.
 
 ```bash
-uv run helper plan path node0 wyhome --workload ceph-osd   # path verdict
-uv run helper plan workloads                    # browse the library
-uv run helper plan add-workload immich          # ranked hosts + reasons
-uv run helper plan add-workload immich --narrate
-uv run helper plan rebalance --narrate     # 3 candidate plans with tradeoffs
-uv run helper bottlenecks --persist        # known patterns → findings + mitigations
-uv run helper plan surplus                 # idle capacity → reconfiguration options
+helper plan path node0 wyhome --workload ceph-osd   # path verdict
+helper plan workloads                    # browse the library
+helper plan add-workload immich          # ranked hosts + reasons
+helper plan add-workload immich --narrate
+helper plan rebalance --narrate     # 3 candidate plans with tradeoffs
+helper bottlenecks --persist        # known patterns → findings + mitigations
+helper plan surplus                 # idle capacity → reconfiguration options
 ```
 
 As you chat, a **skill profile** builds passively (deterministic keyword
@@ -153,6 +176,28 @@ tunes how much chat explains — and later feeds per-domain trust hints.
 
 Every reply is footed with the backend that served it, e.g.
 `[ollama: llama3.2 (small, local)]`.
+
+### Executing proposals (opt-in, Phase 6)
+
+Nothing executes until you raise a trust cell. The gate is `decide()`, a pure
+function over the cell's level, the domain ceiling, per-host boundaries, open
+elevation windows, and whether a rollback was verified — never an LLM.
+
+```bash
+helper trust show                                   # every cell sits at PROPOSE by default
+helper trust grant hypervisor restart single-host confirm
+helper exec list                                    # pending action proposals
+helper exec run <proposal-id>                       # asks at CONFIRM; runs unattended only at AUTONOMOUS
+helper exec receipts                                # what ran, at which level, with its rollback state
+helper exec rollback <receipt-id>
+helper window open --reason "maintenance" --minutes 60 --host node2
+helper window kill                                  # revoke every open window now
+helper trust history                                # the append-only audit spine
+```
+
+Clean confirmed runs promote a reversible, low-blast cell one rung; one bad
+outcome demotes it and puts it on probation. See `docs/architecture.md`
+("Trust gradient") for the model.
 
 ### Using with Claude / MCP
 
@@ -170,11 +215,13 @@ as deterministic reports (`list_workloads`, `recommend_placement`,
 that the client's own model narrates. Nothing writes to the lab itself.
 
 ```bash
-uv run helper mcp tools    # list the tool roster
-uv run helper mcp serve    # stdio server (launched by a client)
+helper mcp tools    # list the tool roster
+helper mcp serve    # stdio server (launched by a client)
 
 # Register with Claude Code:
-claude mcp add homelab -- uv run --directory /path/to/homelab-helper helper mcp serve
+claude mcp add homelab -- helper mcp serve
+# from a checkout instead:
+# claude mcp add homelab -- uv run --directory /path/to/homelab-helper helper mcp serve
 ```
 
 For Claude Desktop, add the same command under `mcpServers` in its config.
@@ -189,23 +236,28 @@ refuse anything else. To let an MCP client onboard hosts it hasn't seen, set
 must both match. Otherwise add hosts from the CLI (`helper discover host`,
 `helper onboard`) and let the agent probe them from there.
 
-**The trust surface is read-only.** `trust_status`, `list_receipts` and
-`pending_actions` let a model see the gradient — which cells are granted, what
-has executed, what policy would say about each pending action — and give it no
-way to change any of it. There is no MCP tool that grants a cell, opens an
-elevation window, overrides a floor, rolls back, or executes a proposal; those
-are operator gestures at the CLI, and tests enforce the absence rather than
-trusting the convention. `pending_actions` reports its decision
-pessimistically (as if reversibility were unverified), because verifying it
-means probing the target and a query tool has no business doing that.
+**The trust surface is read-only; an agent may draft, never authorize.**
+`trust_status`, `list_receipts` and `pending_actions` let a model see the
+gradient — which cells are granted, what has executed, what policy would say
+about each pending action — and give it no way to change any of it.
+`propose_action` lets it draft a guest power action (start/stop/shutdown/
+restart of a Proxmox VM or container) as a *pending* proposal, validated
+against the manifest schema and returned with the policy preview; you then
+run it with `helper exec run <id>` or reject it. `list_proposals` and
+`get_proposal` read them back. There is no MCP tool that grants a cell, opens
+an elevation window, overrides a floor, rolls back, or executes a proposal;
+those are operator gestures at the CLI, and tests enforce the absence rather
+than trusting the convention. Decisions are reported pessimistically (as if
+reversibility were unverified), because verifying it means probing the target
+and a query tool has no business doing that.
 
 **Transport and trust.** The server speaks stdio only. It runs as you, in
 your shell, and reads the same `.env` the CLI does, so put nothing secret in
 the client's config block: the command line above is all a client needs.
 There is no network transport. Remote MCP would need the HTTP API (a stub
-today) with token auth and TLS, per-token tool allowlists (a remote client
-should never see `probe_host`), and a secrets store; none of that is planned
-before Phase 6 ships.
+today) with token auth and TLS and per-token tool allowlists (a remote client
+should never see `probe_host`); neither is planned before live-fleet
+validation signs Phase 6 off.
 
 ## Repo layout
 

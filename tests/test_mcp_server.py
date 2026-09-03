@@ -43,16 +43,20 @@ from homelab_helper.mcp_server import (
     audit_summary,
     get_finding,
     get_host,
+    get_proposal,
     get_service,
     list_findings,
     list_hosts,
+    list_proposals,
     list_services,
     list_workloads,
     network_path,
+    pending_actions,
     plan_rebalance,
     probe_host,
     probe_talos,
     probe_target_refusal,
+    propose_action,
     recommend_placement,
     run_discovery,
     server,
@@ -86,6 +90,10 @@ EXPECTED_TOOLS = {
     "trust_status",
     "list_receipts",
     "pending_actions",
+    # Agent-side proposals: draft only; the operator runs or rejects them.
+    "propose_action",
+    "list_proposals",
+    "get_proposal",
 }
 
 # Anything that grants, elevates, overrides, rolls back, or executes belongs to
@@ -590,3 +598,78 @@ async def test_run_discovery_hass_persists(seeded_db: str, monkeypatch: pytest.M
     assert out["integrations"] == ["mqtt", "proxmoxve", "unifi"]
     svc = await get_service("home-assistant")
     assert "error" not in svc
+
+
+# ---------------------------------------------------------------------------
+# propose_action / list_proposals / get_proposal — draft only
+# ---------------------------------------------------------------------------
+
+
+async def test_propose_action_writes_pending_proposal_with_preview(seeded_db: str) -> None:
+    out = await propose_action(
+        action_kind="restart",
+        node="node0",
+        vmid=105,
+        vm_kind="qemu",
+        title="Restart ha (qemu/105)",
+        description="drafted by a test",
+    )
+    assert "error" not in out, out
+    assert out["outcome"] == "pending"
+    assert out["proposed_by"] == "agent:mcp"
+    assert out["cell"] == "hypervisor/restart/single-host"
+    assert out["decision_if_run_now"] == "propose"  # L1 floor: no grants in the seeded DB
+    assert out["decision_basis"].startswith("pessimistic")
+    assert "helper exec run" in out["next"]
+    assert out["affected"] == [{"target_type": "host", "target_id": "node0"}]
+
+    listed = await list_proposals(outcome="pending")
+    assert isinstance(listed, list)
+    assert [p["id"] for p in listed] == [out["id"]]
+    fetched = await get_proposal(out["id"][:8])
+    assert fetched["id"] == out["id"]
+    assert fetched["artifact"]["kind"] == "action"
+    assert fetched["artifact"]["action"]["domain"] == "hypervisor"
+    assert fetched["decision_if_run_now"] == "propose"
+    pending = await pending_actions()
+    assert [p["id"] for p in pending] == [out["id"]]
+
+
+async def test_propose_action_rejects_bad_manifests_without_writing(seeded_db: str) -> None:
+    bad_kind = await propose_action("explode", "node0", 1, "lxc", "t")
+    assert "action_kind" in bad_kind["error"]
+    bad_guest = await propose_action("stop", "node0", 1, "docker", "t")
+    assert "vm_kind" in bad_guest["error"]
+    bad_radius = await propose_action("stop", "node0", 1, "lxc", "t", blast_radius="galaxy")
+    assert "blast_radius" in bad_radius["error"]
+    assert await list_proposals() == []
+
+
+async def test_list_proposals_rejects_unknown_outcome(seeded_db: str) -> None:
+    out = await list_proposals(outcome="maybe")
+    assert isinstance(out, dict)
+    assert "unknown outcome" in out["error"]
+
+
+async def test_get_proposal_unknown_and_ambiguous(seeded_db: str) -> None:
+    assert "no proposal" in (await get_proposal("ffffffff"))["error"]
+    a = await propose_action("start", "node0", 1, "lxc", "a")
+    b = await propose_action("start", "node0", 2, "lxc", "b")
+    assert "error" not in a
+    assert "error" not in b
+    # Every uuid7 minted in the same millisecond shares a prefix; the empty
+    # prefix is the one guaranteed to be ambiguous.
+    assert "ambiguous" in (await get_proposal(""))["error"]
+
+
+def test_error_strings_are_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An adapter error may echo a credential; the MCP surface scrubs it."""
+    from homelab_helper.secrets import forget_secrets, secret_from_env
+
+    forget_secrets()
+    monkeypatch.setenv("HOMELAB_HELPER_UNIFI_API_KEY", "unifi-key-0123456789")
+    secret_from_env("HOMELAB_HELPER_UNIFI_API_KEY")
+    from homelab_helper.secrets import redact
+
+    assert redact("401 for X-API-KEY unifi-key-0123456789") == "401 for X-API-KEY ***"
+    forget_secrets()

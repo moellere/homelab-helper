@@ -13,7 +13,6 @@ practice.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -24,6 +23,7 @@ from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
+from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus
 from homelab_helper.db.models import ReconciliationFinding
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
@@ -55,10 +55,6 @@ _STATUS_COLOR = {
     FindingStatus.RESOLVED: "green",
     FindingStatus.SUPPRESSED: "dim",
 }
-
-
-def _database_url() -> str:
-    return os.environ.get("HOMELAB_HELPER_DATABASE_URL") or "sqlite+aiosqlite:///./homelab.db"
 
 
 async def _resolve_fingerprint(session: AsyncSession, prefix: str) -> ReconciliationFinding:

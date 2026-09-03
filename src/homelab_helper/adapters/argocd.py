@@ -32,6 +32,8 @@ from typing import Any
 
 import httpx
 
+from homelab_helper.secrets import secret_from_env
+
 _HTTP_ERROR_THRESHOLD = 400
 _FALSEY = {"0", "false", "no"}
 _SYNCED = "Synced"
@@ -61,7 +63,7 @@ class ArgoCDConfig:
     @classmethod
     def from_env(cls) -> ArgoCDConfig:
         url = os.environ.get("HOMELAB_HELPER_ARGOCD_URL")
-        token = os.environ.get("HOMELAB_HELPER_ARGOCD_API_TOKEN")
+        token = secret_from_env("HOMELAB_HELPER_ARGOCD_API_TOKEN")
         if not url or not token:
             raise ArgoCDConfigError(
                 "Argo CD URL + API token are required. Set HOMELAB_HELPER_ARGOCD_URL and "

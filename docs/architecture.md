@@ -62,7 +62,7 @@ The flow is top-down for user-driven interactions, bottom-up for observations. A
 
 - **Harness DB** — SQLAlchemy 2.0 models per `harness-schema-slice1.md`. SQLite by default for low-friction install; Postgres optional for users who want it or who run multi-process workers. Alembic migrations.
 - **NetBox** — separate stack the user runs (via netbox-docker, or NetBox Cloud, or any deployment). The harness depends on it being reachable; if it's not, write operations queue and reads fall back to cached state.
-- **Secrets store** — never in harness DB. Initial implementation: encrypted file with a key from OS keyring. Later: SOPS, Vault, 1Password CLI, any external secret backend. Harness DB only holds *references* (`credentials_ref` columns).
+- **Secrets** — never in harness DB. Every secret-valued setting is a literal or a *reference* resolved by `homelab_helper/secrets.py` with the operator's own tooling: `file:<path>#<key>` (plain, `age`, or `sops`), `keyring:<service>/<user>`, `env:VAR`. Vault / 1Password are future schemes. Harness DB only holds *references* (`credentials_ref` columns).
 - **Observation store** — conceptually distinct because it's append-only time-series; physically lives in the harness DB Observation table. May graduate to a dedicated TSDB if scale demands.
 
 ### Adapter layer
@@ -92,7 +92,7 @@ Concrete adapters:
 | **CloudflareAdapter** | P3 | DNS records, ACME certs, zone state | (read-only at L1) |
 | **GitArgoCDAdapter** | P3 | Declared app state from Git, ArgoCD sync status | (read-only) |
 
-L1 means write capability is wired only for harness-owned tables and NetBox. The other adapters' write paths exist as interfaces (so L2 doesn't repaint) but are gated off.
+L1 means every trust cell sits at PROPOSE. The one infrastructure write surface today is Proxmox guest power (`vm_power`, snapshots) and it is callable only from `engine/executor.py`, which consults `decide()` first; a test fails if any other module names those methods. NetBox custom-field/InventoryItem/VM sync keeps its own diff/confirm path.
 
 Adapter discovery is dynamic: the framework scans configured adapters on startup, runs each one's `health_check`, and produces a finding if any required adapter is unreachable.
 
@@ -337,7 +337,7 @@ helper-server stays at the primary site (Covington). Agents at Wyola post observ
 ### Credentials
 
 - **Never in harness DB.** Only `credentials_ref` columns pointing to the secrets store.
-- **Secrets store options** (in order of friction): encrypted file with OS-keyring-stored key, SOPS, age, HashiCorp Vault, 1Password CLI, Bitwarden CLI.
+- **Secret references** (`secrets.py`): `file:` (plain / age / sops, decrypted by the operator's binary, never written to disk), `keyring:` (OS keyring, optional extra), `env:`. Every resolved value is registered for `redact()`, which scrubs MCP error strings. Vault / 1Password / Bitwarden are future schemes.
 - **SSH credentials**: helper-server holds the SSH key(s) for probe access; helper-agent doesn't need SSH (it runs locally).
 - **API tokens** (NetBox, Proxmox, K8s, UniFi, Cloudflare, Argo CD, OMV, Home Assistant): scoped read+limited-write per L1 policy. NetBox token has write scope to Devices, Custom Fields, InventoryItems, Services. Everything else: read-only.
 - **Agent enrollment**: `helper agent enroll <hostname>` generates a per-host bearer token. Token gives the agent permission to post observations *for that specific host only*; can't post observations claiming to be from another host.
@@ -363,7 +363,7 @@ The LLM never sees raw secrets, raw SSH output, or anything that hasn't been thr
 - The only writes the engine performs are:
   - Harness DB tables (inventory, findings, proposals — harness's own state)
   - NetBox custom fields and InventoryItems (per the NetBox sync invariants in the schema doc)
-- Adapters for Proxmox/K8s/UniFi/Cloudflare have their write methods *implemented* (for L2-ready interfaces) but their dispatcher gates them behind a policy check that always returns False at L1.
+- Proxmox is the only adapter with write methods (guest power, snapshots); they are reachable only through `engine/executor.py`, which is the gate's enforcement point (`tests/test_write_isolation.py`). Every other adapter is read-only.
 - Future L2 lift is the trust gradient (below) plus an Executor that consumes pending proposals — not a re-architecture. At L1, the gradient is present but every cell is pinned to `PROPOSE`.
 
 ### Trust gradient (L2 authorization model)

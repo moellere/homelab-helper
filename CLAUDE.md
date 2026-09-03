@@ -1,7 +1,7 @@
 # CLAUDE.md — instructions for Claude Code sessions on this repo
 
-A pre-alpha framework for homelab planning, inventory, audit, and (eventually)
-recommendations. Async Python 3.12 + SQLAlchemy 2.0 + httpx + Typer. **L1
+A beta framework for homelab inventory, audit, recommendations, and
+operator-gated execution. Async Python 3.12 + SQLAlchemy 2.0 + httpx + Typer. **L1
 stance: propose, never apply.** L2 (execution) is the planned final phase,
 gated by a deterministic trust gradient — see `docs/architecture.md`.
 

@@ -17,7 +17,7 @@ deliberate reserve is a legitimate configuration, and declaring it
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -44,6 +44,10 @@ class SurplusHit:
     stopped_vms: list[str] = field(default_factory=list)
     spare_dimm_gb: list[float] = field(default_factory=list)
     options: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe view for the MCP surface."""
+        return asdict(self)
 
 
 async def analyze_surplus(session: AsyncSession) -> list[SurplusHit]:

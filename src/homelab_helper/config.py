@@ -143,6 +143,13 @@ SOURCES: tuple[SourceConfig, ...] = (
         secret=frozenset({"HOMELAB_HELPER_OMV_PASSWORD"}),
     ),
     SourceConfig(
+        name="hass",
+        required=("HOMELAB_HELPER_HASS_URL", "HOMELAB_HELPER_HASS_TOKEN"),
+        optional=("HOMELAB_HELPER_HASS_VERIFY_SSL",),
+        secret=frozenset({"HOMELAB_HELPER_HASS_TOKEN"}),
+        note="Home Assistant; a long-lived access token",
+    ),
+    SourceConfig(
         name="k8s",
         required=(),
         optional=("HOMELAB_HELPER_KUBECONFIG", "HOMELAB_HELPER_KUBE_CONTEXT"),

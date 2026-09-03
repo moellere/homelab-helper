@@ -7,8 +7,11 @@ natural language without shelling out.
 
 **Read-only against infrastructure (L1).** Query tools only read the harness
 DB. ``run_discovery`` reads live sources (UniFi, Cloudflare, Argo CD, Proxmox,
-K8s, OMV — credentials from the same ``HOMELAB_HELPER_*`` env vars the CLI
-uses) and persists into the harness DB — never a write to the lab itself.
+K8s, OMV, Home Assistant — credentials from the same ``HOMELAB_HELPER_*`` env
+vars the CLI uses) and persists into the harness DB — never a write to the lab
+itself. The Phase-5 planners (placement, rebalance, bottlenecks, surplus,
+network path) are exposed as deterministic reports; the client's own model
+narrates them, so the harness never spends an LLM call on a tool's behalf.
 
 Tools return plain dicts/lists (the SDK ships them as structured content).
 Lookup misses return ``{"error": ...}`` rather than raising, so an LLM caller
@@ -31,6 +34,7 @@ from sqlalchemy import func, or_, select
 
 from homelab_helper.adapters.argocd import ArgoCDAdapter
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
+from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
@@ -48,15 +52,26 @@ from homelab_helper.db.models import (
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
+from homelab_helper.engine.bottlenecks import analyze_bottlenecks as _analyze_bottlenecks
+from homelab_helper.engine.bottlenecks import persist_bottlenecks
 from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
 )
+from homelab_helper.engine.hass_import import import_home_assistant
 from homelab_helper.engine.host_probe import HostProbeRequest, UnknownProbeError
 from homelab_helper.engine.host_probe import probe_host as _probe_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
+from homelab_helper.engine.network_path import TOPOLOGY_ENV_VAR, TopologyError, load_topology
+from homelab_helper.engine.placement import network_verdict
+from homelab_helper.engine.placement import recommend_placement as _recommend_placement
+from homelab_helper.engine.rebalance import plan_rebalance as _plan_rebalance
+from homelab_helper.engine.reconfigure import analyze_surplus as _analyze_surplus
 from homelab_helper.engine.stray_config import reconcile_stray_config
+from homelab_helper.engine.talos_probe import TalosProbeRequest
+from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
+from homelab_helper.engine.workloads import WorkloadLibraryError, load_workload_library
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -429,6 +444,11 @@ def _load_omv_adapter() -> OpenMediaVaultAdapter:
     return OpenMediaVaultAdapter.from_env()
 
 
+def _load_hass_adapter() -> HomeAssistantAdapter:
+    """Factory (monkeypatched in tests)."""
+    return HomeAssistantAdapter.from_env()
+
+
 async def _discover_one_unifi(session: AsyncSession, adapter: UniFiAdapter) -> dict[str, Any]:
     cfg = adapter.config
     try:
@@ -554,6 +574,25 @@ async def _discover_omv(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _discover_hass(session: AsyncSession) -> dict[str, Any]:
+    adapter = _load_hass_adapter()
+    try:
+        config = await adapter.get_config()
+        states = await adapter.list_states()
+        service_domains = await adapter.list_service_domains()
+    finally:
+        await adapter.aclose()
+    result = await import_home_assistant(
+        session,
+        config=config,
+        states=states,
+        service_domains=service_domains,
+        url=adapter.config.url,
+        when=datetime.now(UTC),
+    )
+    return result.as_dict()
+
+
 _DISCOVERERS = {
     "unifi": _discover_unifi,
     "cloudflare": _discover_cloudflare,
@@ -561,13 +600,14 @@ _DISCOVERERS = {
     "proxmox": _discover_proxmox,
     "k8s": _discover_k8s,
     "omv": _discover_omv,
+    "hass": _discover_hass,
 }
 
 
 @server.tool()
 async def run_discovery(source: str) -> dict[str, Any]:
     """Run a management-plane discovery and persist into the harness DB.
-    Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv.
+    Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass.
     Reads the live source (credentials from HOMELAB_HELPER_* env vars); never
     writes to the infrastructure itself."""
     discoverer = _DISCOVERERS.get(source)
@@ -816,6 +856,204 @@ async def probe_host(
                     ssh_key_path=key_path,
                     primary_ip=primary_ip,
                     ssh_port=ssh_port,
+                    probe_names=tuple(probes) if probes else None,
+                ),
+            )
+            return result.as_dict()
+    except UnknownProbeError as exc:
+        return {"error": f"unknown probe {exc.args[0]!r}"}
+    except Exception as exc:
+        return {"hostname": hostname, "error": str(exc)}
+    finally:
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 planners — deterministic reports; the MCP client's own model narrates
+# ---------------------------------------------------------------------------
+
+
+def _workload_library() -> dict[str, Any] | Any:
+    """The merged library, or an error dict when a library file is malformed."""
+    try:
+        return load_workload_library()
+    except (WorkloadLibraryError, OSError) as exc:
+        return {"error": f"workload library error: {exc}"}
+
+
+@server.tool()
+async def list_workloads(category: str | None = None) -> list[dict[str, Any]] | dict[str, Any]:
+    """The workload profile library (baseline CPU/RAM/storage, arch, GPU need,
+    data gravity, network class) — the inputs recommend_placement ranks against.
+    Optionally filter by category."""
+    library = _workload_library()
+    if isinstance(library, dict) and "error" in library:
+        return library
+    return [
+        p.as_dict()
+        for p in sorted(library.values(), key=lambda p: (p.category, p.name))
+        if category is None or p.category == category
+    ]
+
+
+@server.tool()
+async def recommend_placement(workload: str) -> dict[str, Any]:
+    """Where should this workload run? Ranks every known host for one library
+    profile with a reason per point of score, rejections with their failed
+    constraint, and caveats where a fact is unknown. Deterministic; nothing is
+    changed. Use list_workloads for valid names."""
+    library = _workload_library()
+    if isinstance(library, dict) and "error" in library:
+        return library
+    profile = library.get(workload)
+    if profile is None:
+        from difflib import get_close_matches  # noqa: PLC0415 — only on the miss path
+
+        close = get_close_matches(workload.lower(), list(library), n=5, cutoff=0.6)
+        return {
+            "error": f"no workload named {workload!r} in the library",
+            "did_you_mean": close,
+        }
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            report = await _recommend_placement(session, profile)
+        return {"profile": profile.as_dict(), **report.as_dict()}
+    except (TopologyError, OSError) as exc:
+        return {"error": f"topology error: {exc}"}
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def plan_rebalance() -> dict[str, Any]:
+    """Fleet memory load per host plus up to three candidate rebalancing plans
+    across cost classes (VM migrations only; one DIMM move; one DIMM purchase),
+    each with steps, tradeoffs, and resulting load. Proposals only — the
+    operator migrates, moves, or buys by hand."""
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            report = await _plan_rebalance(session)
+        return report.as_dict()
+    except (TopologyError, OSError) as exc:
+        return {"error": f"topology error: {exc}"}
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def analyze_bottlenecks(persist: bool = False) -> dict[str, Any]:
+    """Detect known bottleneck patterns over the reconciled fleet (cluster link
+    asymmetry, memory pressure, single-uplink bulk storage) with candidate
+    mitigations built from the detected facts. ``persist`` records hits as
+    findings in the harness DB (reopen/resolve lifecycle); nothing touches the
+    lab."""
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            hits = await _analyze_bottlenecks(session)
+        out: dict[str, Any] = {"hits": [h.as_dict() for h in hits]}
+        if persist:
+            async with session_scope(sm) as session:
+                result = await persist_bottlenecks(session, hits, when=datetime.now(UTC))
+            out["findings"] = {
+                "opened": list(result.opened),
+                "reopened": list(result.reopened),
+                "updated": list(result.updated),
+                "resolved": list(result.resolved),
+            }
+        return out
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def analyze_surplus() -> dict[str, Any]:
+    """Hosts with capacity to spare and something reconfigurable about it
+    (stopped VMs, spare DIMMs), each with the honest options: use it, move it,
+    or declare the reserve deliberate."""
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            hits = await _analyze_surplus(session)
+        return {"hits": [h.as_dict() for h in hits]}
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def network_path(host_a: str, host_b: str, workload: str | None = None) -> dict[str, Any]:
+    """The network path between two hosts from the declared topology
+    (HOMELAB_HELPER_NETWORK_TOPOLOGY) and what a workload inherits from its
+    worst link. With ``workload``, adds an ok/warn/refuse verdict for that
+    profile's network class. No topology declared means every host is assumed
+    on one LAN."""
+    try:
+        topology = load_topology()
+    except (TopologyError, OSError) as exc:
+        return {"error": f"topology error: {exc}"}
+    out: dict[str, Any] = {"host_a": host_a, "host_b": host_b}
+    if topology is None:
+        out["topology_declared"] = False
+        out["note"] = (
+            "no topology declared — all hosts assumed on one LAN; "
+            f"set {TOPOLOGY_ENV_VAR} to a topology file"
+        )
+        return out
+    path = topology.path(host_a, host_b)
+    out["topology_declared"] = True
+    if path is None:
+        out["error"] = f"no route between {host_a} and {host_b} in the topology"
+        return out
+    out["path"] = path.as_dict()
+    if workload is not None:
+        library = _workload_library()
+        if isinstance(library, dict) and "error" in library:
+            return library
+        profile = library.get(workload)
+        if profile is None:
+            out["error"] = f"no workload named {workload!r} in the library"
+            return out
+        verdict, message = network_verdict(profile, path)
+        out["verdict"] = {"workload": workload, "level": verdict, "message": message}
+    return out
+
+
+@server.tool()
+async def probe_talos(
+    hostname: str,
+    node: str | None = None,
+    talosconfig: str | None = None,
+    probes: list[str] | None = None,
+) -> dict[str, Any]:
+    """Discover a Talos Linux node over its machine API (no SSH) via the
+    operator's talosctl credentials, persist the observations, and reconcile.
+    ``node`` is the API endpoint when it differs from the host's recorded
+    address.
+
+    Scoped like probe_host: a known host is probed at its recorded address (a
+    different ``node`` is refused); an unknown host must match a glob in
+    HOMELAB_HELPER_MCP_PROBE_ALLOW.
+    """
+    engine = make_engine(_database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            known = await _known_host(session, hostname, node)
+            refusal = probe_target_refusal(hostname, node, known, probe_allow_patterns())
+            if refusal is not None:
+                return {"hostname": hostname, "error": refusal}
+            result = await _probe_talos(
+                session,
+                TalosProbeRequest(
+                    name=hostname,
+                    node=node,
+                    talosconfig=talosconfig,
                     probe_names=tuple(probes) if probes else None,
                 ),
             )

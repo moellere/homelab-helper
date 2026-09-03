@@ -339,7 +339,7 @@ helper-server stays at the primary site (Covington). Agents at Wyola post observ
 - **Never in harness DB.** Only `credentials_ref` columns pointing to the secrets store.
 - **Secrets store options** (in order of friction): encrypted file with OS-keyring-stored key, SOPS, age, HashiCorp Vault, 1Password CLI, Bitwarden CLI.
 - **SSH credentials**: helper-server holds the SSH key(s) for probe access; helper-agent doesn't need SSH (it runs locally).
-- **API tokens** (NetBox, Proxmox, K8s, UniFi, Cloudflare): scoped read+limited-write per L1 policy. NetBox token has write scope to Devices, Custom Fields, InventoryItems, Services. Everything else: read-only.
+- **API tokens** (NetBox, Proxmox, K8s, UniFi, Cloudflare, Argo CD, OMV, Home Assistant): scoped read+limited-write per L1 policy. NetBox token has write scope to Devices, Custom Fields, InventoryItems, Services. Everything else: read-only.
 - **Agent enrollment**: `helper agent enroll <hostname>` generates a per-host bearer token. Token gives the agent permission to post observations *for that specific host only*; can't post observations claiming to be from another host.
 
 ### Trust boundaries
@@ -349,7 +349,8 @@ helper-server stays at the primary site (Covington). Agents at Wyola post observ
 | helper-server | Fully trusted; holds keys |
 | helper-agent | Trusted within its host's scope |
 | NetBox | Trusted as far as its API token allows |
-| Proxmox / K8s / UniFi / Cloudflare | Trusted as far as their API tokens allow |
+| Proxmox / K8s / UniFi / Cloudflare / Argo CD / OMV / Home Assistant | Trusted as far as their API tokens allow |
+| MCP client (Claude Code / Desktop, Cursor) | Trusted as the operator: stdio only, runs in the operator's shell with the operator's `.env`. No network transport at L1; remote MCP is gated on the HTTP API + token auth + a secrets store |
 | Local LLM (Ollama) | Untrusted; never gets raw credentials |
 | Cloud LLM (Anthropic/OpenAI) | Untrusted; never gets credentials or PII the user hasn't authorized |
 | User chat input | Untrusted; treat as data, not commands |

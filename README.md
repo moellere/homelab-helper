@@ -67,6 +67,7 @@ needs its variables when you run that `discover` verb (all are prefixed
 | Proxmox | `PROXMOX_URL`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`, `PROXMOX_VERIFY_SSL` |
 | Kubernetes | `KUBECONFIG`, `KUBE_CONTEXT` |
 | OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
+| Home Assistant | `HASS_URL`, `HASS_TOKEN` (a long-lived access token; a non-admin user is enough), `HASS_VERIFY_SSL` |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
 | LLM (chat) | `LLM_PRIVACY` (`strict-local`/`prefer-local`/`open`), `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIER`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_BASE_URL` |
 
@@ -89,6 +90,7 @@ uv run helper discover cloudflare --persist
 uv run helper discover argocd
 uv run helper discover proxmox --persist
 uv run helper discover omv             # OpenMediaVault NAS: filesystems, disks, shares, services
+uv run helper discover hass --persist  # Home Assistant: version, integrations, entity summary
 
 uv run helper view service <name>      # internal/external endpoints + DNS split-brain
 uv run helper view host <name>         # guests, endpoints, findings
@@ -159,9 +161,13 @@ exposes its query surface as tools for Claude Desktop / Claude Code / Cursor:
 queries (`list_hosts`, `get_host`, `list_findings`, `get_finding`,
 `list_services`, `get_service`, `audit_summary`, `config_status`), the
 findings lifecycle (`ack_finding`, `resolve_finding`, `suppress_finding` —
-harness-DB writes only), `run_discovery` over the management-plane sources,
-and `probe_host` (SSH deep discovery; key path or env reference only — no
-secrets through tool arguments). Nothing writes to the lab itself.
+harness-DB writes only), `run_discovery` over the management-plane sources
+(UniFi, Cloudflare, Argo CD, Proxmox, K8s, OMV, Home Assistant), `probe_host`
+(SSH deep discovery; key path or env reference only — no secrets through tool
+arguments) and `probe_talos` (the Talos machine API), and the Phase-5 planners
+as deterministic reports (`list_workloads`, `recommend_placement`,
+`plan_rebalance`, `analyze_bottlenecks`, `analyze_surplus`, `network_path`)
+that the client's own model narrates. Nothing writes to the lab itself.
 
 ```bash
 uv run helper mcp tools    # list the tool roster
@@ -182,6 +188,14 @@ refuse anything else. To let an MCP client onboard hosts it hasn't seen, set
 (`"*.lan,10.0.1.*"`); an unknown host's name, and its `primary_ip` when given,
 must both match. Otherwise add hosts from the CLI (`helper discover host`,
 `helper onboard`) and let the agent probe them from there.
+
+**Transport and trust.** The server speaks stdio only. It runs as you, in
+your shell, and reads the same `.env` the CLI does, so put nothing secret in
+the client's config block: the command line above is all a client needs.
+There is no network transport. Remote MCP would need the HTTP API (a stub
+today) with token auth and TLS, per-token tool allowlists (a remote client
+should never see `probe_host`), and a secrets store; none of that is planned
+before Phase 6 ships.
 
 ## Repo layout
 

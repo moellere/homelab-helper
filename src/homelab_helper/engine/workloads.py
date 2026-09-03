@@ -16,7 +16,7 @@ entries there shadow same-named starters.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,10 @@ class WorkloadProfile:
     """Path sensitivity: lan-required = sync replication, replicas must be
     LAN-grade of each other; lan-preferred = degraded-but-works cross-site."""
     artifacts: tuple[str, ...] = field(default=())
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe view for the MCP surface (tuples become lists)."""
+        return {k: list(v) if isinstance(v, tuple) else v for k, v in asdict(self).items()}
 
 
 def _parse_entry(name: str, raw: dict[str, Any]) -> WorkloadProfile:

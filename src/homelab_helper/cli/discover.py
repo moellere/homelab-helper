@@ -21,11 +21,15 @@ from sqlalchemy import select
 
 from homelab_helper.adapters.argocd import ArgoCDAdapter, application_is_drifted
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
+from homelab_helper.adapters.homeassistant import (
+    HomeAssistantAdapter,
+    integrations_of_interest,
+    summarize_states,
+)
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
-from homelab_helper.adapters.talos import TalosAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.db.models import Host, Observation
@@ -34,6 +38,7 @@ from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
 )
+from homelab_helper.engine.hass_import import import_home_assistant
 from homelab_helper.engine.host_probe import (
     HostProbeRequest,
     ProbeOutcome,
@@ -41,8 +46,6 @@ from homelab_helper.engine.host_probe import (
     probe_host,
     select_host_probes,
 )
-from homelab_helper.engine.host_probe import mark_kernel_probed as _mark_kernel_probed
-from homelab_helper.engine.host_probe import resolve_host as _resolve_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
 from homelab_helper.engine.reconciler import Reconciler, ReconcileResult
@@ -54,11 +57,11 @@ from homelab_helper.engine.scan_import import (
     parse_scan_csv,
 )
 from homelab_helper.engine.stray_config import reconcile_stray_config
+from homelab_helper.engine.talos_probe import TalosProbeRequest, probe_talos, select_talos_probes
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
 from homelab_helper.probes.network.fingerprint import NetworkFingerprintProbe
 from homelab_helper.probes.network.subnet_scan import NetworkSubnetScanProbe
-from homelab_helper.probes.registry import discover_probes
 
 if TYPE_CHECKING:
     import uuid
@@ -134,6 +137,11 @@ def _load_argocd_adapter() -> ArgoCDAdapter:
 def _load_omv_adapter() -> OpenMediaVaultAdapter:
     """Factory (monkeypatched in tests) — builds an OpenMediaVault adapter from env."""
     return OpenMediaVaultAdapter.from_env()
+
+
+def _load_hass_adapter() -> HomeAssistantAdapter:
+    """Factory (monkeypatched in tests) — builds a Home Assistant adapter from env."""
+    return HomeAssistantAdapter.from_env()
 
 
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
@@ -279,72 +287,51 @@ def discover_talos(
         console.print("[dim]syncing probe entry points...[/dim]")
         sync_probes_sync(_database_url())
 
-    available = discover_probes()
-    if probe_names:
-        probe_classes: list[type[Probe]] = []
-        for n in probe_names:
-            if n not in available:
-                console.print(f"[red]unknown probe:[/red] {n}")
-                raise typer.Exit(code=2)
-            probe_classes.append(available[n])
-    else:
-        probe_classes = [cls for cls in available.values() if "talos" in cls.target_kinds]
+    try:
+        probe_classes = select_talos_probes(probe_names)
+    except UnknownProbeError as exc:
+        console.print(f"[red]unknown probe:[/red] {exc.args[0]}")
+        raise typer.Exit(code=2) from exc
     if not probe_classes:
         console.print("[red]error:[/red] no talos probes matched the filter.")
         raise typer.Exit(code=2)
 
-    talos_adapter = TalosAdapter(talosconfig=str(talosconfig) if talosconfig else None)
-    runner = ProbeRunner(AdapterRegistry({"talos": talos_adapter}))
+    def _on_probe(outcome: ProbeOutcome) -> None:
+        console.print(f"[cyan]→ {outcome.probe}[/cyan] v{outcome.version}")
+        if outcome.success:
+            console.print(f"  [green]ok[/green] - {outcome.observations} observation(s)")
+        else:
+            console.print(f"  [red]failed[/red] - {outcome.error}")
 
     async def _go() -> int:
         engine = make_engine(_database_url())
         try:
             sm = make_sessionmaker(engine)
-            total_observations = 0
-            failures = 0
             async with session_scope(sm) as session:
-                host = await _resolve_host(session, name, node)
-                api_node = node or host.primary_ip or host.hostname or name
-
-                ok, err = await talos_adapter.health_check(api_node)
-                if not ok:
-                    console.print(f"[red]talos node {api_node} unreachable:[/red] {err}")
-                    failures += 1
-                else:
-                    target = ProbeTarget(
-                        kind="talos",
-                        host_id=str(host.id),
-                        hostname=host.hostname,
-                        primary_ip=host.primary_ip or api_node,
-                    )
-                    for cls in probe_classes:
-                        probe = cls()
-                        console.print(f"[cyan]→ {probe.name}[/cyan] v{probe.version}")
-                        _run_row, result = await runner.run(
-                            probe, target, session, host_id=host.id, triggered_by="manual"
-                        )
-                        if result.success:
-                            n = len(result.observations)
-                            total_observations += n
-                            console.print(f"  [green]ok[/green] - {n} observation(s)")
-                        else:
-                            failures += 1
-                            console.print(f"  [red]failed[/red] - {result.error}")
-
-                    _mark_kernel_probed(host, total_observations)
-
-                await _reconcile_and_report(session, host.id)
-
+                result = await probe_talos(
+                    session,
+                    TalosProbeRequest(
+                        name=name,
+                        node=node,
+                        talosconfig=str(talosconfig) if talosconfig else None,
+                        probe_names=tuple(probe_names) if probe_names else None,
+                    ),
+                    probe_classes=probe_classes,
+                    on_probe=_on_probe,
+                )
+                if result.session_error:
+                    console.print(f"[red]{result.session_error}[/red]")
+                if result.reconcile is not None:
+                    _report_reconcile(result.reconcile)
             console.print(
-                f"\nrun complete: [bold]{total_observations}[/bold] observation(s), "
-                f"[bold]{failures}[/bold] failure(s)"
+                f"\nrun complete: [bold]{result.observations}[/bold] observation(s), "
+                f"[bold]{result.failures}[/bold] failure(s)"
             )
-            return 0 if failures == 0 else 1
+            return 0 if result.failures == 0 else 1
         finally:
             await engine.dispose()
 
-    exit_code = asyncio.run(_go())
-    raise typer.Exit(code=exit_code)
+    raise typer.Exit(code=asyncio.run(_go()))
 
 
 @discover_app.command(name="import")
@@ -992,6 +979,73 @@ def discover_omv() -> None:
 
         running = [s for s in services if s.get("running")]
         console.print(f"[bold]services[/bold]: {len(running)}/{len(services)} running")
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="hass")
+def discover_hass(
+    persist: bool = typer.Option(
+        False,
+        "--persist",
+        help="Upsert the home-assistant Service (+ endpoint) into the harness DB.",
+    ),
+) -> None:
+    """Read a Home Assistant instance (read-only): version, integrations, entities."""
+
+    async def _go() -> int:
+        adapter = _load_hass_adapter()
+        try:
+            ok, err = await adapter.health_check()
+            if not ok:
+                console.print(f"[red]home assistant unreachable:[/red] {err}")
+                return 1
+            config = await adapter.get_config()
+            states = await adapter.list_states()
+            service_domains = await adapter.list_service_domains()
+        finally:
+            await adapter.aclose()
+
+        by_domain = summarize_states(states)
+        integrations = integrations_of_interest(config["components"])
+        console.print(
+            f"[cyan]home assistant[/cyan] {config.get('version') or '?'} "
+            f"at {config.get('location_name') or '?'}: {len(states)} entit(ies) across "
+            f"{len(by_domain)} domain(s), {len(config['components'])} component(s) loaded"
+        )
+        if integrations:
+            console.print(f"[bold]integrations of interest[/bold]: {', '.join(integrations)}")
+
+        table = Table(title="entities by domain")
+        for col in ("domain", "entities"):
+            table.add_column(col, no_wrap=True)
+        for domain, count in by_domain.items():
+            table.add_row(domain, str(count))
+        console.print(table)
+        console.print(f"[dim]service domains: {len(service_domains)}[/dim]")
+
+        if not persist:
+            return 0
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                result = await import_home_assistant(
+                    session,
+                    config=config,
+                    states=states,
+                    service_domains=service_domains,
+                    url=adapter.config.url,
+                    when=datetime.now(UTC),
+                )
+        finally:
+            await engine.dispose()
+        verb = "created" if result.created else "updated"
+        console.print(
+            f"[green]persisted[/green]: service {result.service!r} {verb}"
+            + (f", endpoint {result.endpoint_hostname}" if result.endpoint_hostname else "")
+        )
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))

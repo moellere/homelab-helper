@@ -27,6 +27,13 @@ Current agent surface, for reference — the MCP server over stdio:
 
 ## 1. Planners as MCP tools (+ Talos in `run_discovery`)
 
+- [x] **Landed.** `list_workloads`, `recommend_placement`, `plan_rebalance`,
+  `analyze_bottlenecks`, `analyze_surplus`, `network_path`, and `probe_talos`.
+  One deviation from the table below: Talos is its own `probe_talos` tool
+  rather than a `run_discovery` target, because it names a host and so gets
+  the same allow-list scoping as `probe_host` (the `discover talos` CLI verb
+  now shares `engine/talos_probe.py` with it).
+
 **Why.** Placement, rebalance, bottlenecks, surplus, and network path exist
 as `helper plan ...` / `helper bottlenecks` verbs but not as tools, so the
 recommendation engine — the most useful thing an agent could reach — is
@@ -58,6 +65,14 @@ per tool, reusing `test_cli_plan.py`'s fixtures); README roster.
 **Effort.** 1–2 days. No new dependencies, no schema change.
 
 ## 2. Home Assistant adapter (read-only)
+
+- [x] **v1 landed.** `adapters/homeassistant.py`, `engine/hass_import.py`,
+  `helper discover hass [--persist]`, `run_discovery("hass")`, the `hass`
+  source in `helper config`. `DiscoverySource.HOME_ASSISTANT` shipped without
+  a migration, following the repo precedent for enum members (SQLite's
+  `SAEnum` has no CHECK constraint); a Postgres deployment needs the
+  `ALTER TYPE` when that backend is first exercised. v2 (device registry,
+  `device_tracker` identity) is still open.
 
 **Why.** HA is the most common service in the target audience's labs and the
 only one on the list with no adapter. It also carries cross-source signal
@@ -98,6 +113,9 @@ credential-scope note (a token from a non-admin HA user is sufficient).
 **Effort.** 2–3 days for v1; 2 days for v2.
 
 ## 3. MCP transport stays stdio — document, don't build
+
+- [x] **Landed.** README "Transport and trust" paragraph under the MCP
+  section; `architecture.md` trust-boundaries row for the MCP client.
 
 **Why.** Stdio inherits the operator's shell and `.env`, which is the right
 trust boundary for the test audience: the MCP client is the same person as
@@ -222,9 +240,9 @@ merges.
 
 | Order | Item | Blocks | Effort |
 |---|---|---|---|
-| 1 | 3. stdio-only note | nothing | 1 h |
-| 2 | 1. planner tools + Talos | nothing | 1–2 d |
-| 3 | 2. Home Assistant v1 | nothing | 2–3 d |
+| 1 | 3. stdio-only note — **done** | nothing | 1 h |
+| 2 | 1. planner tools + Talos — **done** | nothing | 1–2 d |
+| 3 | 2. Home Assistant v1 — **done** | nothing | 2–3 d |
 | 4 | 5. read-only half (`list_proposals`, `get_proposal`, `trust_status`) | nothing | 1 d |
 | 5 | 6. secrets store | item 4 merging | 3–5 d |
 | 6 | 4. executor + first cell (Phase 6 PR B) | item 6 | 1–2 w |

@@ -58,6 +58,23 @@ class PlacementReport:
     def best(self) -> PlacementCandidate | None:
         return self.candidates[0] if self.candidates else None
 
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe view for the MCP surface; candidates keep their rank order."""
+        return {
+            "workload": self.workload,
+            "candidates": [
+                {
+                    "rank": i,
+                    "hostname": c.hostname,
+                    "score": round(c.score, 2),
+                    "reasons": list(c.reasons),
+                    "caveats": list(c.caveats),
+                }
+                for i, c in enumerate(self.candidates, 1)
+            ],
+            "rejected": [{"hostname": h, "reason": r} for h, r in self.rejected],
+        }
+
 
 def _cap(host: Host, key: str) -> Any:
     return (host.capabilities or {}).get(key)

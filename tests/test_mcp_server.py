@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
+
+    from homelab_helper.engine.talos_probe import TalosProbeRequest
 
 import homelab_helper.mcp_server as mcp_srv
+from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli.main import app
 from homelab_helper.config import PROBE_ALLOW_VAR
@@ -34,6 +38,8 @@ from homelab_helper.db.models import (
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.host_probe import HostProbeRequest, HostProbeResult
 from homelab_helper.mcp_server import (
+    analyze_bottlenecks,
+    analyze_surplus,
     audit_summary,
     get_finding,
     get_host,
@@ -41,11 +47,17 @@ from homelab_helper.mcp_server import (
     list_findings,
     list_hosts,
     list_services,
+    list_workloads,
+    network_path,
+    plan_rebalance,
     probe_host,
+    probe_talos,
     probe_target_refusal,
+    recommend_placement,
     run_discovery,
     server,
 )
+from tests.test_homeassistant_adapter import CONFIG_PAYLOAD, SERVICES_PAYLOAD, STATES_PAYLOAD
 
 runner = CliRunner()
 
@@ -63,6 +75,13 @@ EXPECTED_TOOLS = {
     "resolve_finding",
     "suppress_finding",
     "probe_host",
+    "probe_talos",
+    "list_workloads",
+    "recommend_placement",
+    "plan_rebalance",
+    "analyze_bottlenecks",
+    "analyze_surplus",
+    "network_path",
 }
 
 
@@ -369,3 +388,150 @@ def test_probe_target_refusal_known_host_without_ip_needs_allowed_address() -> N
 
 def test_probe_target_refusal_matches_case_insensitively() -> None:
     assert probe_target_refusal("NODE9.LAN", None, None, ("*.lan",)) is None
+
+
+# ---------------------------------------------------------------------------
+# probe_talos scoping
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def talos_calls(monkeypatch: pytest.MonkeyPatch) -> list[TalosProbeRequest]:
+    calls: list[TalosProbeRequest] = []
+
+    async def _fake(session: object, request: TalosProbeRequest) -> HostProbeResult:
+        calls.append(request)
+        return HostProbeResult(
+            hostname=request.name, host_id="00000000-0000-0000-0000-000000000000"
+        )
+
+    monkeypatch.setattr(mcp_srv, "_probe_talos", _fake)
+    monkeypatch.delenv(PROBE_ALLOW_VAR, raising=False)
+    return calls
+
+
+async def test_probe_talos_known_host_runs(seeded_db: str, talos_calls: list) -> None:
+    out = await probe_talos("node0")
+    assert "error" not in out
+    assert [c.name for c in talos_calls] == ["node0"]
+
+
+async def test_probe_talos_known_host_other_node_refused(seeded_db: str, talos_calls: list) -> None:
+    out = await probe_talos("node0", node="203.0.113.7")
+    assert "recorded at 10.0.1.20" in out["error"]
+    assert talos_calls == []
+
+
+async def test_probe_talos_unknown_refused_by_default(seeded_db: str, talos_calls: list) -> None:
+    out = await probe_talos("rogue")
+    assert PROBE_ALLOW_VAR in out["error"]
+    assert talos_calls == []
+
+
+# ---------------------------------------------------------------------------
+# planners
+# ---------------------------------------------------------------------------
+
+
+async def test_list_workloads_and_category_filter() -> None:
+    everything = await list_workloads()
+    assert isinstance(everything, list)
+    names = {p["name"] for p in everything}
+    assert "immich" in names
+    assert all(isinstance(p["arch"], list) for p in everything)
+    nvr = await list_workloads(category="nvr")
+    assert isinstance(nvr, list)
+    assert {p["name"] for p in nvr} == {p["name"] for p in everything if p["category"] == "nvr"}
+
+
+async def test_recommend_placement_ranks_and_rejects(seeded_db: str) -> None:
+    out = await recommend_placement("immich")
+    assert out["workload"] == "immich"
+    assert out["profile"]["name"] == "immich"
+    listed = {c["hostname"] for c in out["candidates"]} | {r["hostname"] for r in out["rejected"]}
+    assert "node0" in listed
+    for c in out["candidates"]:
+        assert isinstance(c["rank"], int)
+
+
+async def test_recommend_placement_unknown_suggests(seeded_db: str) -> None:
+    out = await recommend_placement("imich")
+    assert "error" in out
+    assert "immich" in out["did_you_mean"]
+
+
+async def test_plan_rebalance_reports_fleet(seeded_db: str) -> None:
+    out = await plan_rebalance()
+    assert set(out) >= {"balanced", "hosts", "plans", "unknown_hosts", "spread"}
+    assert "node0" in {h["hostname"] for h in out["hosts"]} | set(out["unknown_hosts"])
+
+
+async def test_analyze_bottlenecks_and_surplus_return_hit_lists(seeded_db: str) -> None:
+    hits = await analyze_bottlenecks()
+    assert isinstance(hits["hits"], list)
+    assert "findings" not in hits
+    persisted = await analyze_bottlenecks(persist=True)
+    assert set(persisted["findings"]) == {"opened", "reopened", "updated", "resolved"}
+    surplus = await analyze_surplus()
+    assert isinstance(surplus["hits"], list)
+
+
+async def test_network_path_without_topology(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HOMELAB_HELPER_NETWORK_TOPOLOGY", raising=False)
+    out = await network_path("a", "b")
+    assert out["topology_declared"] is False
+    assert "HOMELAB_HELPER_NETWORK_TOPOLOGY" in out["note"]
+
+
+_TOPOLOGY_EXAMPLE = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "network-topology.example.yaml"
+)
+
+
+def _example_topology_hosts() -> list[str]:
+    sites = yaml.safe_load(_TOPOLOGY_EXAMPLE.read_text())["sites"]
+    return [h for spec in sites.values() for h in (spec or {}).get("hosts") or []]
+
+
+async def test_network_path_with_example_topology(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOMELAB_HELPER_NETWORK_TOPOLOGY", str(_TOPOLOGY_EXAMPLE))
+    hosts = _example_topology_hosts()
+    out = await network_path(hosts[0], hosts[-1], workload="immich")
+    assert out["topology_declared"] is True
+    assert "path" in out
+    assert out["path"]["summary"]
+    assert out["verdict"]["level"] in {"ok", "warn", "refuse"}
+
+
+# ---------------------------------------------------------------------------
+# run_discovery("hass")
+# ---------------------------------------------------------------------------
+
+
+def _hass(handler: Callable[[httpx.Request], httpx.Response]) -> HomeAssistantAdapter:
+    client = httpx.AsyncClient(
+        base_url="http://ha.example.lan:8123", transport=httpx.MockTransport(handler)
+    )
+    return HomeAssistantAdapter(
+        HomeAssistantConfig(url="http://ha.example.lan:8123", token="tok"), client=client
+    )
+
+
+def _hass_handler(request: httpx.Request) -> httpx.Response:
+    routes = {
+        "/api/config": CONFIG_PAYLOAD,
+        "/api/states": STATES_PAYLOAD,
+        "/api/services": SERVICES_PAYLOAD,
+    }
+    body = routes.get(request.url.path)
+    return httpx.Response(200, json=body) if body is not None else httpx.Response(404)
+
+
+async def test_run_discovery_hass_persists(seeded_db: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mcp_srv, "_load_hass_adapter", lambda: _hass(_hass_handler))
+    out = await run_discovery("hass")
+    assert out["source"] == "hass"
+    assert out["created"] is True
+    assert out["integrations"] == ["mqtt", "proxmoxve", "unifi"]
+    svc = await get_service("home-assistant")
+    assert "error" not in svc

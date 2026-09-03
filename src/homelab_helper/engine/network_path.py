@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import heapq
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +85,19 @@ class PathCharacteristics:
             self.links,
             key=lambda x: (_RELIABILITIES.index(x.reliability), x.latency_ms),
         )
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe view for the MCP surface."""
+        return {
+            "hops": list(self.hops),
+            "links": [asdict(link) for link in self.links],
+            "bandwidth_mbps": self.bandwidth_mbps,
+            "latency_ms": self.latency_ms,
+            "reliability": self.reliability,
+            "same_site": self.same_site,
+            "lan_grade": self.lan_grade,
+            "summary": self.describe(),
+        }
 
     def describe(self) -> str:
         if self.same_site:

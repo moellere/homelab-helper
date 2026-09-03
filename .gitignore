@@ -51,7 +51,7 @@ coverage.xml
 *.log
 
 # Alembic
-# (keep alembic/versions/*.py — they ARE the history)
+# (keep src/homelab_helper/migrations/versions/*.py — they ARE the history)
 
 # Secrets / local config
 .env

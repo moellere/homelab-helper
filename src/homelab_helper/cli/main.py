@@ -29,6 +29,7 @@ from homelab_helper.cli.config import config_app
 from homelab_helper.cli.db import db_app
 from homelab_helper.cli.diff import diff_app
 from homelab_helper.cli.discover import discover_app
+from homelab_helper.cli.execute import exec_app
 from homelab_helper.cli.findings import findings_app
 from homelab_helper.cli.host import host_app
 from homelab_helper.cli.mcp import mcp_app
@@ -59,6 +60,7 @@ app.add_typer(skills_app)
 app.add_typer(plan_app)
 app.add_typer(bottlenecks_app)
 app.add_typer(trust_app)
+app.add_typer(exec_app)
 
 console = Console()
 

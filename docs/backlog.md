@@ -540,9 +540,25 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 
 ### Execution
 
-- [ ] **Executor** — consume approved `ProposalLog` artifacts → adapter `write()` paths; transactional where supported; emit a receipt per action. _P6-AC2._
-- [ ] **Adapter write-gate wiring** — route *every* adapter write through `decide()`; flip the L1 gate that currently always returns `False`
-- [ ] **Snapshot/rollback orchestrator** — per-blast-radius capture (ZFS/LVM/VM snapshot, config backup) before execution; the verified-rollback gate that caps autonomy. _P6-AC4._
+- [x] **Executor** (`engine/executor.py`, migration `a9c4e7f2d8b3`) — consumes
+  pending `ProposalLog` action manifests (`{"kind": "action", ...}`; manifest
+  is untrusted input: validated, and the declared domain must match the guest
+  kind so a manifest can't shop for a softer cell); gates through
+  `load_trust_context` + `decide()`; BLOCK/PROPOSE never dispatch and never
+  write a receipt; CONFIRM needs the operator callback; rollback state (prior
+  power state) captured before dispatch; exactly one `ExecutionReceipt` per
+  dispatch (success or failure — failure stays PENDING/retryable, success
+  closes the proposal USER_ACCEPTED). _P6-AC2._
+- [x] **First write path** — Proxmox guest power (`vm_power`:
+  start|stop|shutdown|restart→reboot, qemu+lxc; `vm_current_status` for
+  rollback capture); the only write surface in any adapter, executor-only by
+  block-comment contract. AC2's canonical cell is
+  `containers/restart/single-host`. MockTransport-only tests; live execution
+  waits on the user's fleet-validation gate.
+  - [ ] Remaining write-gate wiring as more adapter writes land (NetBox
+    `cf_*` sync already has its own diff/confirm path; anything new routes
+    through the executor)
+- [ ] **Snapshot/rollback orchestrator** — per-blast-radius capture (ZFS/LVM/VM snapshot, config backup) before execution; the verified-rollback gate that caps autonomy. _P6-AC4._ (Executor already degrades unverified-rollback AUTONOMOUS to CONFIRM and records `rollback_state` per receipt.)
 
 ### Trust dynamics
 
@@ -554,8 +570,12 @@ gradient") and `harness-schema-slice1.md` ("Trust gradient tables"). The
 
 ### Surface & audit
 
-- [ ] CLI remainder: `helper window open|revoke`, `helper exec` (trust grant|show landed with PR A)
-- [ ] Receipts + audit spine: write-back to `ProposalLog` (outcome, restore handle); `TrustHistory` append-only for every grant / auto-promote / demote / override / window open+revoke
+- [ ] CLI remainder: `helper window open|revoke` (`helper exec
+  list|run|receipts` landed with PR B; trust grant|show with PR A)
+- [x] Receipts + audit spine: `ExecutionReceipt` (decision level + full
+  reason trace + window id + rollback state + outcome/error/duration) with
+  write-back to `ProposalLog`; `TrustHistory` append-only for grants (the
+  auto-promote / demote / override / window events land with their features)
 - [ ] Decide the `AuditLog`/receipt detail beyond `ProposalLog` + `TrustHistory`
 
 ---

@@ -16,6 +16,7 @@ from .part import PhysicalPart
 from .placement import Placement
 from .probe import Probe
 from .proposal import ProposalLog
+from .receipt import ExecutionReceipt
 from .service import Service, ServiceEndpoint
 from .skill import SkillProfile
 from .trust import CellTrust, Domain, ElevationWindow, TrustBoundary, TrustHistory
@@ -29,6 +30,7 @@ __all__ = [
     "DiscoveryRun",
     "Domain",
     "ElevationWindow",
+    "ExecutionReceipt",
     "Host",
     "Observation",
     "OperationalIntent",

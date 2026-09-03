@@ -81,6 +81,7 @@ async def test_expected_tables_in_metadata() -> None:
         "trust_boundary",
         "elevation_window",
         "trust_history",
+        "execution_receipt",
     }
     assert set(Base.metadata.tables.keys()) == expected
 

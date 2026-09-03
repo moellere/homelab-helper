@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import typer
 from typer.testing import CliRunner
 
 if TYPE_CHECKING:
@@ -137,7 +138,8 @@ def test_workload_library_ships_inside_the_package() -> None:
     assert "immich" in load_workload_library()
 
 
-def test_root_help_offers_completion() -> None:
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
-    assert "--install-completion" in result.stdout
+def test_root_command_offers_completion() -> None:
+    """Assert on the Click parameters, not the rendered help: under CI the
+    help is styled and wrapped, so the option name isn't one contiguous string."""
+    names = {p.name for p in typer.main.get_command(app).params}
+    assert {"install_completion", "show_completion"} <= names

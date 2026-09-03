@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from dotenv import load_dotenv
 
 from homelab_helper.llm import backends_from_env, privacy_from_env
+from homelab_helper.secrets import reference_scheme
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -277,6 +278,7 @@ def variable_status(var: str, *, secret: bool) -> dict[str, Any]:
         "set": present,
         "secret": secret,
         "value": None if (secret or not present) else raw,
+        "reference": reference_scheme(raw) if secret else None,
     }
 
 

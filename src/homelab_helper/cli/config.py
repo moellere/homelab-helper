@@ -47,6 +47,7 @@ _GENERAL_VARS: tuple[tuple[str, str], ...] = (
         "HOMELAB_HELPER_WORKLOAD_LIBRARY",
         "operator workload profiles layered over the starter library",
     ),
+    ("HOMELAB_HELPER_AGE_IDENTITY", "age key for file:<path.age>#<key> secret references"),
 )
 
 _LLM_VARS: tuple[tuple[str, str], ...] = (
@@ -71,6 +72,11 @@ def render_env_template() -> str:
         "# homelab-helper configuration. Uncomment and fill what you use.",
         "# Loaded after a project .env (repo checkout) and before ~/.env;",
         "# an exported variable always wins. Keep this file private.",
+        "#",
+        "# Any secret may be a reference instead of a literal:",
+        "#   file:~/.config/homelab-helper/secrets.yaml#proxmox_token   (plain, .age, or .sops.*)",
+        "#   keyring:homelab-helper/proxmox                              (OS keyring; [keyring] extra)",
+        "#   env:OTHER_VARIABLE",
         "",
         "# --- general",
     ]
@@ -138,7 +144,12 @@ def _detail(row: dict) -> str:
     if row.get("controllers"):
         return "controllers: " + ", ".join(row["controllers"])
     bits = [
-        f"{_short(v['variable'])}=" + ("set" if v["secret"] else str(v["value"]))
+        f"{_short(v['variable'])}="
+        + (
+            ("set" + (f" via {v['reference']}" if v.get("reference") else ""))
+            if v["secret"]
+            else str(v["value"])
+        )
         for v in row["variables"]
         if v["set"]
     ]

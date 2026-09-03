@@ -138,103 +138,79 @@ should never see `probe_host`); and the secrets store from item 6.
 
 ## 4. Adapter write surfaces designed against trust cells
 
-**Why.** No adapter has a write method today (the architecture doc's "gated
-dispatcher" does not exist in code). When Phase 6's executor lands, writes
-must be added per *cell*, not per adapter, so each one is authorized and
-snapshotted the way `decide()` expects.
+- [x] **Re-baselined and landed in reduced form.** Between the original
+  scoping and this work, Phase 6 PRs B–F merged: `engine/executor.py`
+  (Proxmox guest power via `vm_power`, snapshot capture + rollback,
+  receipts), auto-escalation, elevation windows, the kill switch, and the
+  per-action override. What was still missing and now exists:
+  `engine/manifest.py` (the pydantic authoring schema; the executor's own
+  `parse_manifest` stays as the untrusted-input validator, and a test holds
+  the two in agreement) and `tests/test_write_isolation.py` (no module
+  outside the executor/rollback pair may name a Proxmox write method — the
+  block-comment contract is now mechanical).
+- **Deliberately not built:** the `(domain, action_kind) → callable`
+  registry (one write adapter does not justify it; add it with the second),
+  and the SSH `containers/restart/single-host` cell (it needs a rollback
+  strategy the orchestrator doesn't have yet, and every new write path is
+  behind the live-fleet validation gate). NetBox custom-field/VM sync keeps
+  its own diff/confirm path, as the backlog already records.
 
-**Design.**
+**Why.** No adapter had a write method when this was scoped; the executor
+now exists, so the work is keeping every *future* write path on the same
+rails: a typed manifest at the authoring boundary, one enforcement point,
+and a mechanical guard.
 
-- **Manifest.** `ProposalLog.artifact` carries
-  `{"domain", "action_kind", "blast_radius", "target": {...}, "params": {...},
-  "rollback": {"verified": bool, "handle": ...}}`; `ActionRequest` is built
-  from it. A pydantic model validates it at the boundary.
-- **Registry.** `engine/executor.py` holds a dispatch table keyed by
-  `(domain, action_kind)` → a write callable. Write callables live in
-  `adapters/writes/<adapter>.py`, never on the read adapters, and are imported
-  *only* by the executor. A regression test (same shape as the trust module's
-  no-LLM import check) asserts nothing under `cli/`, `llm/`, or
-  `mcp_server.py` imports `adapters.writes`.
-- **Flow.** `helper exec <proposal>` → load `ActionRequest` from the manifest
-  → `load_trust_context` → `decide()` → BLOCK/PROPOSE: stop; CONFIRM: prompt;
-  AUTONOMOUS: run → snapshot (if the cell declares one) → write → receipt
-  written back to `ProposalLog` (`outcome`, `outcome_by`, restore handle).
-- **First cells**, per roadmap P6-AC2, and their write callables:
+**Files (landed).** `engine/manifest.py`, `engine/executor.py` (imports the
+shared `VM_KIND_DOMAIN`/`ManifestError`), `tests/test_manifest.py`,
+`tests/test_write_isolation.py`.
 
-  | Cell | Callable | Snapshot | Rollback verified? |
-  |---|---|---|---|
-  | `containers/restart/single-host` | SSH `systemctl restart <unit>` / `docker restart <name>` | none | no → caps at CONFIRM |
-  | `hypervisor/restart/single-host` | Proxmox `POST /nodes/{n}/{qemu\|lxc}/{vmid}/status/reboot` | Proxmox snapshot API before reboot | yes once snapshot verified |
-  | `inventory-metadata/sync/metadata-only` | the existing NetBox `sync_host` | none needed | yes (idempotent re-sync) |
-
-  Everything else stays PROPOSE until a cell is designed the same way.
-
-**Files.** `engine/executor.py`, `engine/manifest.py`, `adapters/writes/`,
-`cli/exec.py`, `tests/test_executor.py`, `tests/test_no_write_imports.py`.
-
-**Effort.** Executor skeleton + the SSH restart cell under CONFIRM: 1–2
-weeks (PR B in the Phase 6 sequence). Proxmox restart with snapshot: 3–5
-days (PR C). Each later cell: 2–3 days.
+**Effort (remaining).** Registry + SSH restart cell with a rollback
+strategy: 1–2 weeks, after live-fleet validation.
 
 ## 5. `propose_action` for agents; never `exec`
 
-**Why.** The architecture lets an agent *draft* an action manifest and never
-authorize one. Today the MCP surface can do neither. Giving agents a
-proposal tool closes the loop without touching the gate.
-
-**Design.**
-
-- `propose_action(domain, action_kind, blast_radius, title, target, params, description=None)`
-  validates against the item-4 manifest model, writes a `ProposalLog` row
-  with `proposed_by="mcp"` and the manifest's `provenance="agent"`, outcome
-  PENDING, and returns the row id plus a **preview** of `decide()` (level +
-  reasons) so the agent can tell the operator what would happen. It never
-  executes.
-- `list_proposals(outcome=None)`, `get_proposal(id)`: read-only.
-- `trust_status()`: the `helper trust show` data, read-only, so an agent can
-  explain the gradient's state.
-- Deliberately absent, enforced by a roster test: `exec`, `grant`, `window`,
-  `override`, `revoke`. These stay CLI-only and interactive.
-- `decide()` already carries `provenance` on `ActionRequest`; the policy
-  should clamp `provenance="agent"` one step below the cell level (an
-  agent-drafted action never runs AUTONOMOUS on the strength of a cell the
-  framework's own reconciler earned). Small change in `engine/trust.py` with
-  a reason string.
-
-**Files.** `mcp_server.py`, `engine/trust.py` (provenance clamp),
-`tests/test_mcp_server.py`, `tests/test_trust.py`.
-
-**Effort.** 2–3 days once item 4's manifest model exists; the read-only
-tools can land earlier.
+- [x] **Landed.** MCP `propose_action(action_kind, node, vmid, vm_kind,
+  title, description?, blast_radius="single-host", hostnames?)` validates
+  through `engine/manifest.py`, writes a PENDING `ProposalLog` with
+  `proposed_by="agent:mcp"`, and returns the pessimistic `decide()` preview
+  plus the `helper exec run <id>` next step. `list_proposals(outcome?,
+  limit?)` and `get_proposal(id | prefix)` are read-only. `trust_status`,
+  `list_receipts`, and `pending_actions` had already landed with PR F. The
+  roster test pins the tool set and the forbidden-substring test keeps
+  `exec`/`grant`/`window`/`override`/`rollback` out of the MCP surface.
+- **Dropped: the provenance clamp.** The original proposal would have
+  capped agent-drafted actions at CONFIRM. The executor's tests, landed
+  with PR B, deliberately run `agent:planner` proposals at AUTONOMOUS once
+  a cell has earned it through clean confirmed runs — the gate is *cell
+  trust*, not who drafted the manifest, and auto-escalation is the
+  mechanism that makes an agent-drafted action trustworthy over time. A
+  string-prefix clamp would contradict that design, so `provenance` stays
+  informational (recorded on every receipt) and `decide()` is unchanged.
 
 ## 6. Secrets store
 
-**Why.** Every token lives in a plaintext `.env` and `Host.credentials_ref`
-is the string `ssh:<user>:<key-path>`. Acceptable for a read-only alpha, not
-once any write-capable token exists — which is the moment item 4 merges.
+- [x] **Landed as secret references** (`homelab_helper/secrets.py`). Every
+  secret-valued variable accepts a literal (unchanged behaviour) or a
+  reference: `env:VAR`, `file:<path>#<key>` (plain YAML/JSON, `.age` via the
+  operator's `age` binary and `HOMELAB_HELPER_AGE_IDENTITY`, `*.sops.*` or a
+  `sops` marker via `sops -d`), or `keyring:<service>/<user>` (optional
+  `[keyring]` extra). Adapters and LLM backends read through
+  `secret_from_env`; `helper config` shows `set via file|keyring|env`;
+  `helper config init` documents the forms. `redact()` scrubs every
+  resolved value from the MCP surface's error strings.
+- **Not built:** `Host.credentials_ref` is still the literal
+  `ssh:<user>:<key-path>` string (nothing reads it); moving SSH key paths
+  onto references is a separate, small change. `op://` and `vault://` stay
+  future schemes. Redaction covers MCP error returns; CLI output prints
+  adapter errors unredacted (they rarely echo a header, but it is a gap).
 
-**Design.**
+**Why.** Every token lived in a plaintext `.env`. With execution now
+possible, write-capable tokens exist, and a plaintext file must be a choice.
 
-- `secrets/` package with a `SecretsBackend` protocol: `resolve(ref) -> str`.
-  `credentials_ref` values and source variables become URIs:
-  `env:HOMELAB_HELPER_PROXMOX_TOKEN_SECRET` (default, today's behaviour),
-  `file:<path>#<key>` (an age- or sops-encrypted YAML decrypted via the
-  operator's `age`/`sops` binary, subprocess, never a vendored key),
-  `keyring:<service>/<user>` (OS keyring via the `keyring` package),
-  and later `op://` (1Password CLI) and `vault://`.
-- `config.py` resolves through the backend; `SourceConfig.secret` variables
-  accept either a literal (env backend) or a URI. `helper config` reports the
-  backend and set/unset, never values. Redaction: a single `redact()` helper
-  applied to every log line and MCP error string that could echo a header.
-- Migration path: with no URI anywhere, behaviour is bit-for-bit today's.
-
-**Files.** `secrets/{base,env,file,keyring}.py`, `config.py`, `cli/config.py`,
-`adapters/*` (take resolved values, unchanged), `tests/test_secrets.py`.
-
-**Effort.** 3–5 days for env + file + keyring. Required before item 4's PR B
-merges.
-
----
+**Files (landed).** `secrets.py`, `config.py` (`reference` in
+`variable_status`), `cli/config.py`, seven adapters, `llm/backends.py`,
+`mcp_server.py` (redaction), `tests/test_secrets.py`, `pyproject.toml`
+(`keyring` extra).
 
 ## Sequencing
 
@@ -243,10 +219,10 @@ merges.
 | 1 | 3. stdio-only note — **done** | nothing | 1 h |
 | 2 | 1. planner tools + Talos — **done** | nothing | 1–2 d |
 | 3 | 2. Home Assistant v1 — **done** | nothing | 2–3 d |
-| 4 | 5. read-only half (`list_proposals`, `get_proposal`, `trust_status`) | nothing | 1 d |
-| 5 | 6. secrets store | item 4 merging | 3–5 d |
-| 6 | 4. executor + first cell (Phase 6 PR B) | item 6 | 1–2 w |
-| 7 | 5. `propose_action` + provenance clamp | item 4's manifest model | 2 d |
+| 4 | 5. read-only half (`list_proposals`, `get_proposal`, `trust_status`) — **done** | nothing | 1 d |
+| 5 | 6. secrets store — **done** (references; `credentials_ref` migration open) | item 4 merging | 3–5 d |
+| 6 | 4. executor + first cell — **done via Phase 6 PRs B–F**; manifest schema + write-isolation test added; registry + SSH cell open | item 6 | 1–2 w |
+| 7 | 5. `propose_action` — **done**; provenance clamp dropped (see §5) | item 4's manifest model | 2 d |
 | 8 | 2. Home Assistant v2 | v1 | 2 d |
 
 Items 1–4 in this order are all read-only and can ship to the test audience

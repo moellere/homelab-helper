@@ -32,6 +32,7 @@ from typing import Any
 import httpx
 
 from homelab_helper.llm.router import BackendError, CapabilityTier
+from homelab_helper.secrets import secret_from_env
 
 _HTTP_ERROR_THRESHOLD = 400
 
@@ -180,7 +181,7 @@ class AnthropicBackend(_HTTPBackend):
 
     @classmethod
     def from_env(cls) -> AnthropicBackend | None:
-        key = os.environ.get("HOMELAB_HELPER_ANTHROPIC_API_KEY") or os.environ.get(
+        key = secret_from_env("HOMELAB_HELPER_ANTHROPIC_API_KEY") or secret_from_env(
             "ANTHROPIC_API_KEY"
         )
         if not key:
@@ -243,7 +244,7 @@ class OpenAIBackend(_HTTPBackend):
 
     @classmethod
     def from_env(cls) -> OpenAIBackend | None:
-        key = os.environ.get("HOMELAB_HELPER_OPENAI_API_KEY")
+        key = secret_from_env("HOMELAB_HELPER_OPENAI_API_KEY")
         if not key:
             return None
         return cls(
@@ -290,7 +291,7 @@ class OpenAICompatibleBackend(OpenAIBackend):
         if not base:
             return None
         backend = cls(
-            api_key=os.environ.get("HOMELAB_HELPER_OPENAI_COMPAT_API_KEY") or "none",
+            api_key=secret_from_env("HOMELAB_HELPER_OPENAI_COMPAT_API_KEY") or "none",
             model=os.environ.get("HOMELAB_HELPER_OPENAI_COMPAT_MODEL") or "default",
             base_url=base,
         )

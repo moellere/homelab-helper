@@ -44,6 +44,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
+from homelab_helper.secrets import secret_from_env
+
 _HTTP_ERROR_THRESHOLD = 400
 
 if TYPE_CHECKING:
@@ -65,7 +67,7 @@ class NetBoxConfig:
     @classmethod
     def from_env(cls) -> NetBoxConfig:
         url = os.environ.get("HOMELAB_HELPER_NETBOX_URL")
-        token = os.environ.get("HOMELAB_HELPER_NETBOX_TOKEN")
+        token = secret_from_env("HOMELAB_HELPER_NETBOX_TOKEN")
         if not url or not token:
             raise NetBoxConfigError(
                 "NetBox URL and token are required. Set HOMELAB_HELPER_NETBOX_URL "

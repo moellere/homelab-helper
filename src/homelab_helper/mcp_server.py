@@ -74,6 +74,7 @@ from homelab_helper.engine.hass_import import import_home_assistant
 from homelab_helper.engine.host_probe import HostProbeRequest, UnknownProbeError
 from homelab_helper.engine.host_probe import probe_host as _probe_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
+from homelab_helper.engine.manifest import BLAST_RADII, build_artifact
 from homelab_helper.engine.network_path import TOPOLOGY_ENV_VAR, TopologyError, load_topology
 from homelab_helper.engine.placement import network_verdict
 from homelab_helper.engine.placement import recommend_placement as _recommend_placement
@@ -85,6 +86,7 @@ from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
 from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
 from homelab_helper.engine.workloads import WorkloadLibraryError, load_workload_library
+from homelab_helper.secrets import redact
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -495,7 +497,7 @@ async def _discover_unifi(session: AsyncSession) -> dict[str, Any]:
         try:
             results.append(await _discover_one_unifi(session, adapter))
         except Exception as exc:
-            results.append({"controller": adapter.config.name, "error": str(exc)})
+            results.append({"controller": adapter.config.name, "error": redact(str(exc))})
     if len(results) == 1:
         return results[0]
     return {"controllers": results}
@@ -629,7 +631,7 @@ async def run_discovery(source: str) -> dict[str, Any]:
             result = await discoverer(session)
         return {"source": source, **result}
     except Exception as exc:  # surface adapter/config errors as data, not protocol faults
-        return {"source": source, "error": str(exc)}
+        return {"source": source, "error": redact(str(exc))}
     finally:
         await engine.dispose()
 
@@ -872,7 +874,7 @@ async def probe_host(
     except UnknownProbeError as exc:
         return {"error": f"unknown probe {exc.args[0]!r}"}
     except Exception as exc:
-        return {"hostname": hostname, "error": str(exc)}
+        return {"hostname": hostname, "error": redact(str(exc))}
     finally:
         await engine.dispose()
 
@@ -1070,7 +1072,7 @@ async def probe_talos(
     except UnknownProbeError as exc:
         return {"error": f"unknown probe {exc.args[0]!r}"}
     except Exception as exc:
-        return {"hostname": hostname, "error": str(exc)}
+        return {"hostname": hostname, "error": redact(str(exc))}
     finally:
         await engine.dispose()
 
@@ -1255,6 +1257,172 @@ async def pending_actions() -> list[dict[str, Any]]:
                     }
                 )
                 out.append(entry)
+            return out
+    finally:
+        await engine.dispose()
+
+
+# ------------------------------------------------------ proposals (agent-side)
+#
+# An agent may *draft* an action; it may never authorize one. propose_action
+# writes a PENDING ProposalLog row and reports what the gradient would say
+# about it — the operator then runs `helper exec run <id>` (or rejects it).
+# Nothing here dispatches, grants, or lifts a floor.
+
+
+def _proposal_dict(p: ProposalLog) -> dict[str, Any]:
+    return {
+        "id": str(p.id),
+        "proposed_at": _iso(p.proposed_at),
+        "proposed_by": p.proposed_by,
+        "title": p.title,
+        "description": p.description,
+        "kind": (p.artifact or {}).get("kind"),
+        "blast_radius": p.blast_radius,
+        "affected": list(p.affected or []),
+        "outcome": p.outcome.value,
+        "outcome_at": _iso(p.outcome_at),
+        "outcome_by": p.outcome_by,
+        "outcome_notes": p.outcome_notes,
+    }
+
+
+async def _pessimistic_preview(session: AsyncSession, proposal: ProposalLog) -> dict[str, Any]:
+    manifest = parse_manifest(proposal)
+    action = ActionRequest(
+        domain=manifest.domain,
+        action_kind=manifest.action_kind,
+        blast_radius=manifest.blast_radius,
+        hostnames=manifest.hostnames,
+        rollback_verified=False,
+        provenance=proposal.proposed_by,
+    )
+    decision = decide(action, await load_trust_context(session, action))
+    return {
+        "cell": manifest.cell_key,
+        "target": manifest.target_label,
+        "decision_if_run_now": decision.level.value,
+        "decision_reasons": list(decision.reasons),
+        "decision_basis": "pessimistic: rollback treated as unverified",
+    }
+
+
+@server.tool()
+async def propose_action(
+    action_kind: str,
+    node: str,
+    vmid: int,
+    vm_kind: str,
+    title: str,
+    description: str | None = None,
+    blast_radius: str = "single-host",
+    hostnames: list[str] | None = None,
+) -> dict[str, Any]:
+    """Draft a guest power action (start/stop/shutdown/restart of a Proxmox
+    VM or container) as a PENDING proposal for the operator to run or reject
+    with `helper exec`. Validates the manifest, writes only to the harness DB,
+    and returns what policy would decide right now. Never executes; an agent
+    cannot grant, override, or open a window."""
+    if blast_radius not in BLAST_RADII:
+        return {"error": f"blast_radius must be one of {', '.join(BLAST_RADII)}"}
+    try:
+        artifact = build_artifact(
+            action_kind=action_kind,
+            node=node,
+            vmid=vmid,
+            vm_kind=vm_kind,
+            hostnames=tuple(hostnames) if hostnames else None,
+        )
+    except ManifestError as exc:
+        return {"error": str(exc)}
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            proposal = ProposalLog(
+                title=title.strip()[:512],
+                description=description,
+                artifact=artifact,
+                affected=[
+                    {"target_type": "host", "target_id": h} for h in artifact["action"]["hostnames"]
+                ],
+                blast_radius=blast_radius,
+                proposed_by="agent:mcp",
+            )
+            session.add(proposal)
+            await session.flush()
+            preview = await _pessimistic_preview(session, proposal)
+            return {
+                **_proposal_dict(proposal),
+                **preview,
+                "next": f"an operator runs `helper exec run {proposal.id}` or `helper exec reject {proposal.id}`",
+            }
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def list_proposals(
+    outcome: str | None = None, limit: int = 50
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Proposals in the harness DB, newest first. ``outcome`` filters by
+    pending / user-accepted / user-rejected / user-deferred / superseded /
+    expired; omit for all."""
+    wanted: ProposalOutcome | None = None
+    if outcome is not None:
+        try:
+            wanted = ProposalOutcome(outcome)
+        except ValueError:
+            return {
+                "error": f"unknown outcome {outcome!r}; expected one of {[o.value for o in ProposalOutcome]}"
+            }
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            stmt = (
+                select(ProposalLog)
+                .order_by(ProposalLog.proposed_at.desc())
+                .limit(max(1, min(limit, 500)))
+            )
+            if wanted is not None:
+                stmt = stmt.where(ProposalLog.outcome == wanted)
+            rows = (await session.execute(stmt)).scalars().all()
+            return [_proposal_dict(p) for p in rows]
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def get_proposal(proposal_id: str) -> dict[str, Any]:
+    """One proposal by id (or a unique id prefix), with its artifact and, for
+    an action, the pessimistic policy preview."""
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(ProposalLog).order_by(ProposalLog.proposed_at.desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            matches = [p for p in rows if str(p.id).startswith(proposal_id.lower())]
+            if not matches:
+                return {"error": f"no proposal with id {proposal_id!r}"}
+            if len(matches) > 1:
+                return {"error": f"prefix {proposal_id!r} is ambiguous ({len(matches)} matches)"}
+            proposal = matches[0]
+            out = _proposal_dict(proposal)
+            out["artifact"] = proposal.artifact
+            if (proposal.artifact or {}).get("kind") == "action":
+                try:
+                    out.update(await _pessimistic_preview(session, proposal))
+                except ManifestError as exc:
+                    out["error"] = str(exc)
             return out
     finally:
         await engine.dispose()

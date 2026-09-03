@@ -31,6 +31,8 @@ from typing import Any
 
 import httpx
 
+from homelab_helper.secrets import secret_from_env
+
 _HTTP_ERROR_THRESHOLD = 400
 _FALSEY = {"0", "false", "no"}
 
@@ -60,7 +62,7 @@ class ProxmoxConfig:
     def from_env(cls) -> ProxmoxConfig:
         url = os.environ.get("HOMELAB_HELPER_PROXMOX_URL")
         token_id = os.environ.get("HOMELAB_HELPER_PROXMOX_TOKEN_ID")
-        token_secret = os.environ.get("HOMELAB_HELPER_PROXMOX_TOKEN_SECRET")
+        token_secret = secret_from_env("HOMELAB_HELPER_PROXMOX_TOKEN_SECRET")
         if not url or not token_id or not token_secret:
             raise ProxmoxConfigError(
                 "Proxmox URL + token are required. Set HOMELAB_HELPER_PROXMOX_URL, "

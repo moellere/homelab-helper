@@ -21,11 +21,11 @@ artifacts attached and notes generated from the merged PRs.
 
 ```bash
 # on main, green CI
-uv version 0.1.0a2                 # bumps pyproject.toml; pick the next version
-git commit -am "Release 0.1.0a2"
+uv version 0.1.0b2                 # bumps pyproject.toml; pick the next version
+git commit -am "Release 0.1.0b2"
 git push origin main               # let CI pass on the release commit
-git tag v0.1.0a2
-git push origin v0.1.0a2           # triggers the release workflow
+git tag v0.1.0b2
+git push origin v0.1.0b2           # triggers the release workflow
 ```
 
 The workflow refuses a tag that doesn't match `pyproject.toml`'s version, so

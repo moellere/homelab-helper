@@ -1,24 +1,32 @@
 # homelab-helper
 
-> An OSS framework for homelab planning, inventory, audit, and (eventually) recommendations.
+> An open-source framework for homelab inventory, audit, recommendations, and
+> operator-gated execution.
 
-**Status:** Pre-alpha, run-from-source. The read-only product (Phases 1–5:
-inventory, audit, chat, placement/rebalancing recommendations) is built and
-under live-fleet validation; Phase 6 (gated execution behind the trust
-gradient) is in design. APIs and schemas are still unstable.
+**Status: beta.** The read-only product — discovery, inventory, audit, chat,
+MCP tools, placement and rebalancing recommendations — is complete, installs
+from PyPI, and has been run against a real multi-site lab. Execution (Phase 6)
+is built and tested but **opt-in and off by default**: nothing runs until you
+raise a trust cell, and you should validate it against your own fleet before
+you do. Expect the CLI verbs, MCP tool names, and configuration variables to
+stay stable through the 0.1 series; database schema changes ship as Alembic
+migrations that `helper db init` applies.
 
-`homelab-helper` is a framework for people who run their own infrastructure at home.
-It discovers what you have, maintains a coherent inventory across the many sources
-of truth a real homelab spans (NetBox, Proxmox, Kubernetes, UniFi, Cloudflare,
-kernel probes), surfaces drift and gaps as auditable findings, and proposes
-changes. Phases 1–5 are strictly "propose, never apply" (L1) — and remain a
-complete product for anyone who never opts in. Phase 6 (L2) adds execution,
-but only behind the **trust gradient**: a deterministic, operator-controlled
-authorization model that the framework can never escalate on its own.
+`homelab-helper` is for people who run their own infrastructure at home. It
+discovers what you have, maintains one coherent inventory across the many
+sources of truth a real homelab spans (kernel probes, NetBox, Proxmox,
+Kubernetes, Talos, UniFi, Cloudflare, Argo CD, OpenMediaVault, Home
+Assistant), surfaces drift and gaps as auditable findings, and proposes
+changes. Everything is "propose, never apply" (L1) unless you opt in — and
+that read-only product is complete on its own. Execution (L2) sits behind the
+**trust gradient**: a deterministic, operator-controlled authorization model
+that the framework can never escalate on its own, and that no LLM is ever in
+the path of.
 
-See [`architecture.md`](./docs/architecture.md) for the architecture document,
-[`roadmap.md`](./docs/roadmap.md) for the phased delivery plan, and
-[`backlog.md`](./docs/backlog.md) for the concrete task list of what's left.
+See [`architecture.md`](./docs/architecture.md) for the design,
+[`roadmap.md`](./docs/roadmap.md) for the phased plan,
+[`backlog.md`](./docs/backlog.md) for what's left, and
+[`releasing.md`](./docs/releasing.md) for how versions ship.
 
 ## What it does today
 
@@ -35,8 +43,17 @@ See [`architecture.md`](./docs/architecture.md) for the architecture document,
 
 ## Running it locally
 
-> Pre-alpha. Everything is **read-only (L1) — it proposes, never applies** —
-> until you raise a trust cell yourself (Phase 6, opt-in).
+> Everything is **read-only (L1) — it proposes, never applies** — until you
+> raise a trust cell yourself (Phase 6, opt-in). Every write to the lab goes
+> through one gate, and every discovery is a read.
+
+**Requirements.** Python 3.12+ on Linux or macOS for the tool itself. Hosts
+you deep-probe need SSH with key auth; the SMART and DIMM probes run
+`smartctl` and `dmidecode` under `sudo -n`, so give the probe user passwordless
+sudo for those two commands or accept that disks and DIMMs report without
+identity. Talos nodes need a working `talosctl`; Kubernetes needs `kubectl`
+and a kubeconfig. Chat works out of the box against a local
+[Ollama](https://ollama.com); cloud models are bring-your-own-key.
 
 **1. Install.** As a tool on your PATH (no checkout needed):
 
@@ -122,7 +139,8 @@ helper audit
 helper findings list
 ```
 
-Keep tokens and keys in the environment — never commit them.
+Keep tokens and keys in the per-user `.env` or behind a secret reference —
+never in a checkout, never in an MCP client's config block.
 
 ### Chat with your lab
 
@@ -225,8 +243,9 @@ claude mcp add homelab -- helper mcp serve
 ```
 
 For Claude Desktop, add the same command under `mcpServers` in its config.
-Everything the server can do stays within the read-only L1 stance; source
-credentials come from the same `HOMELAB_HELPER_*` env vars as the CLI.
+Nothing the server can do writes to the lab: tools read the harness DB, run
+read-only discovery, or draft proposals for you to act on. Source credentials
+come from the same `HOMELAB_HELPER_*` env vars as the CLI.
 
 `probe_host` is scoped, because it authenticates with your SSH key: it will
 probe a host the harness already knows, at that host's recorded address, and
@@ -263,23 +282,36 @@ validation signs Phase 6 off.
 
 ```
 .
-├── docs/architecture.md            # System architecture (locked decisions)
+├── docs/architecture.md            # System design and locked decisions, incl. the trust gradient
 ├── docs/roadmap.md                 # Phased delivery plan
-├── docs/backlog.md                 # Concrete task list (Phase 1 gaps + Phase 6)
-├── docs/harness-schema-slice1.md   # Slice 1 DB schema spec (11 tables) + trust-gradient forward spec
-├── docs/netbox-modeling-walkthrough.md  # NetBox modeling decisions for the example lab
-├── pyproject.toml                  # uv-managed project metadata
-├── src/homelab_helper/             # The package
-│   ├── db/                         # Models, enums, session
-│   ├── adapters/                   # NetBox, Kernel-SSH (P1); Proxmox, K8s, UniFi, ... (P3+)
-│   ├── probes/                     # Probe plugin SDK + first-party probes
-│   ├── engine/                     # Reconciler, assertion engine, scheduler, fingerprint
+├── docs/backlog.md                 # What's done and what's left, per phase
+├── docs/agent-access-scope.md      # How agents reach each service, and what stays operator-only
+├── docs/harness-schema-slice1.md   # DB schema spec + trust-gradient tables
+├── docs/releasing.md               # Tag-driven releases to PyPI
+├── fixtures/                       # Operator-editable examples: assertion library, topology, example lab
+├── src/homelab_helper/
+│   ├── adapters/                   # NetBox, Kernel-SSH, Talos, Proxmox, K8s, UniFi, Cloudflare, Argo CD, OMV, Home Assistant
+│   ├── probes/                     # Probe plugin SDK + first-party host/network/talos probes
+│   ├── engine/                     # Reconciler, assertions, planners, trust gate, executor, rollback
+│   ├── llm/                        # LLM router + backends, chat context, narrator/planner/discovery agents
+│   ├── db/                         # Models, enums, async session
 │   ├── migrations/                 # Alembic env + versions (ship in the wheel)
+│   ├── data/                       # Starter workload library (ships in the wheel)
 │   ├── cli/                        # `helper` Typer app
-│   ├── api/                        # FastAPI HTTP API (P1+)
-│   └── agent/                      # helper-agent daemon (P2)
-└── tests/                          # pytest suite
+│   ├── mcp_server.py               # MCP tools over stdio
+│   ├── config.py                   # .env loading, per-user dirs, source status
+│   ├── secrets.py                  # Secret references (file/age/sops/keyring) + redaction
+│   └── api/                        # HTTP API — a stub; not part of the 0.1 product
+├── tests/                          # pytest suite (~880 tests, no live infrastructure)
+└── .github/workflows/              # CI gate on every PR; tag-driven release
 ```
+
+## Reporting issues
+
+Open a GitHub issue with the output of `helper version` and `helper config`
+(secrets show only as set/unset, never as values) and the command that
+misbehaved. For anything that looks like a credential or authorization
+problem, see [`SECURITY.md`](./SECURITY.md) instead of filing it publicly.
 
 ## Development
 
@@ -287,28 +319,21 @@ This project uses [uv](https://docs.astral.sh/uv/) for environment and dependenc
 management. Install uv first if you don't have it.
 
 ```bash
-# Sync dev environment (creates .venv, installs all deps including dev group)
-uv sync --all-extras --group dev
+uv sync --all-extras --group dev   # creates .venv with every extra and the dev group
+uv run helper --help               # the CLI from the checkout
 
-# Run the test suite
-uv run pytest
-
-# Run the CLI
-uv run helper --help
-
-# Format + lint
-uv run ruff format .
-uv run ruff check . --fix
-
-# Typecheck
+# The CI gate — run all four before pushing
+uv run ruff check src tests
+uv run ruff format --check src tests
 uv run mypy src
+uv run pytest -q
 ```
 
-### Pre-commit
-
-```bash
-uv run pre-commit install
-```
+Tests never touch live infrastructure: adapters run against `httpx`
+`MockTransport`, probes against loopback servers, and the CLI against a
+temporary SQLite file. `uv run pre-commit install` wires the same checks into
+your commits. Pull requests target `main` and are squash-merged; releases are
+cut from tags (see [`releasing.md`](./docs/releasing.md)).
 
 ## License
 

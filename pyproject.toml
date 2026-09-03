@@ -1,17 +1,18 @@
 [project]
 name = "homelab-helper"
-version = "0.1.0a1"
-description = "OSS framework for homelab planning, inventory, audit, and (eventually) recommendations."
+version = "0.1.0b1"
+description = "Homelab inventory, audit, recommendations, and operator-gated execution across Proxmox, Kubernetes, UniFi, NetBox, and more."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Enoch", email = "enoch@tweektech.com" }]
 requires-python = ">=3.12"
 keywords = ["homelab", "inventory", "netbox", "proxmox", "kubernetes", "audit"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Topic :: System :: Systems Administration",

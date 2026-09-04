@@ -1,6 +1,6 @@
 [project]
 name = "homelab-helper"
-version = "0.1.0b1"
+version = "0.1.0b2"
 description = "Homelab inventory, audit, recommendations, and operator-gated execution across Proxmox, Kubernetes, UniFi, NetBox, and more."
 readme = "README.md"
 license = { file = "LICENSE" }

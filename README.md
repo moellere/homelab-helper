@@ -135,7 +135,7 @@ helper discover unifi --persist
 helper discover cloudflare --persist
 helper discover argocd
 helper discover proxmox --persist
-helper discover omv             # OpenMediaVault NAS: filesystems, disks, shares, services
+helper discover omv --persist   # OpenMediaVault NAS: filesystems, disks, shares; stray exports → findings
 helper discover hass --persist  # Home Assistant: version, integrations, entity summary
 
 helper view service <name>      # internal/external endpoints + DNS split-brain

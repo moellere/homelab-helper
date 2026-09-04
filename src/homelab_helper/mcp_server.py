@@ -83,6 +83,7 @@ from homelab_helper.engine.reconfigure import analyze_surplus as _analyze_surplu
 from homelab_helper.engine.retire import is_retired, retired_host_ids
 from homelab_helper.engine.retire import retire_host as _retire_host
 from homelab_helper.engine.stray_config import reconcile_stray_config
+from homelab_helper.engine.stray_export import reconcile_stray_exports
 from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
 from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
@@ -583,13 +584,23 @@ async def _discover_omv(session: AsyncSession) -> dict[str, Any]:
         smb = await adapter.list_smb_shares()
     finally:
         await adapter.aclose()
+    result = await reconcile_stray_exports(
+        session, filesystems, shares, [*nfs, *smb], when=datetime.now(UTC)
+    )
     return {
         "filesystems": len(filesystems),
         "disks": len(disks),
         "shares": len(shares),
         "nfs_exports": len(nfs),
         "smb_shares": len(smb),
-        "note": "read-only summary; OMV facts are not yet persisted to the harness DB",
+        "stray_exports": [hit.as_dict() for hit in result.hits],
+        "stray_export_findings": {
+            "opened": len(result.opened),
+            "reopened": len(result.reopened),
+            "updated": len(result.updated),
+            "resolved": len(result.resolved),
+        },
+        "note": "stray-export findings persisted; other OMV facts are read-only summaries",
     }
 
 

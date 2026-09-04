@@ -58,6 +58,11 @@ from homelab_helper.engine.scan_import import (
     parse_scan_csv,
 )
 from homelab_helper.engine.stray_config import reconcile_stray_config
+from homelab_helper.engine.stray_export import (
+    StrayExport,
+    detect_stray_exports,
+    reconcile_stray_exports,
+)
 from homelab_helper.engine.talos_probe import TalosProbeRequest, probe_talos, select_talos_probes
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
@@ -922,9 +927,86 @@ def _fmt_bytes(n: int | None) -> str:
     return f"{n} B"
 
 
+def _print_omv(
+    filesystems: list[dict[str, Any]],
+    disks: list[dict[str, Any]],
+    shares: list[dict[str, Any]],
+    services: list[dict[str, Any]],
+    nfs: list[dict[str, Any]],
+    smb: list[dict[str, Any]],
+) -> None:
+    console.print(
+        f"[cyan]openmediavault[/cyan]: {len(filesystems)} filesystem(s), "
+        f"{len(disks)} disk(s), {len(shares)} share(s), {len(services)} service(s), "
+        f"{len(nfs)} NFS + {len(smb)} SMB export(s)"
+    )
+
+    fs_table = Table(title="filesystems")
+    for col in ("device", "type", "mountpoint", "size", "used %"):
+        fs_table.add_column(col, overflow="fold")
+    for fs in sorted(filesystems, key=lambda f: str(f.get("device"))):
+        fs_table.add_row(
+            str(fs.get("device")),
+            str(fs.get("type") or "—"),
+            str(fs.get("mountpoint") or "—"),
+            _fmt_bytes(fs.get("size_bytes")),
+            f"{fs.get('used_percent')}%" if fs.get("used_percent") is not None else "—",
+        )
+    console.print(fs_table)
+
+    share_table = Table(title="shared folders")
+    for col in ("name", "path", "comment"):
+        share_table.add_column(col, overflow="fold")
+    for sh in sorted(shares, key=lambda s: str(s.get("name"))):
+        share_table.add_row(
+            str(sh.get("name")), str(sh.get("path") or "—"), str(sh.get("comment") or "—")
+        )
+    console.print(share_table)
+
+    if nfs or smb:
+        exp_table = Table(title="exports")
+        for col in ("protocol", "share", "detail"):
+            exp_table.add_column(col, overflow="fold")
+        for e in nfs:
+            exp_table.add_row(
+                "nfs", str(e.get("shared_folder") or "—"), str(e.get("client") or "—")
+            )
+        for e in smb:
+            detail = "ro" if e.get("readonly") else "rw"
+            # OMV leaves `name` empty on SMB rows — the shared folder is the
+            # identifying label, same as the NFS side.
+            exp_table.add_row("smb", str(e.get("name") or e.get("shared_folder") or "—"), detail)
+        console.print(exp_table)
+
+    running = [s for s in services if s.get("running")]
+    console.print(f"[bold]services[/bold]: {len(running)}/{len(services)} running")
+
+
+def _print_stray_exports(strays: list[StrayExport], skipped: int) -> None:
+    if strays:
+        stray_table = Table(title="stray exports (nothing behind them)")
+        for col in ("protocol", "export", "reason"):
+            stray_table.add_column(col, overflow="fold")
+        for hit in strays:
+            stray_table.add_row(hit.protocol, hit.label, hit.detail)
+        console.print(stray_table)
+    else:
+        console.print("[green]no stray exports[/green]")
+    if skipped:
+        console.print(
+            f"[dim]{skipped} shared folder(s) report no backing device — not judged[/dim]"
+        )
+
+
 @discover_app.command(name="omv")
-def discover_omv() -> None:
-    """Read an OpenMediaVault NAS (read-only): filesystems, disks, shares, services."""
+def discover_omv(
+    persist: bool = typer.Option(
+        False,
+        "--persist",
+        help="Record stray exports (nothing behind them) as STRAY_CONFIG findings.",
+    ),
+) -> None:
+    """Read an OpenMediaVault NAS (read-only): filesystems, disks, shares, services, stray exports."""
 
     async def _go() -> int:
         adapter = _load_omv_adapter()
@@ -942,53 +1024,26 @@ def discover_omv() -> None:
         finally:
             await adapter.aclose()
 
+        _print_omv(filesystems, disks, shares, services, nfs, smb)
+        strays, skipped = detect_stray_exports(filesystems, shares, [*nfs, *smb])
+        _print_stray_exports(strays, skipped)
+
+        if not persist:
+            return 0
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                result = await reconcile_stray_exports(
+                    session, filesystems, shares, [*nfs, *smb], when=datetime.now(UTC)
+                )
+        finally:
+            await engine.dispose()
         console.print(
-            f"[cyan]openmediavault[/cyan]: {len(filesystems)} filesystem(s), "
-            f"{len(disks)} disk(s), {len(shares)} share(s), {len(services)} service(s), "
-            f"{len(nfs)} NFS + {len(smb)} SMB export(s)"
+            f"[green]stray-export[/green]: {len(result.opened)} opened, "
+            f"{len(result.reopened)} reopened, {len(result.updated)} re-seen, "
+            f"{len(result.resolved)} resolved"
         )
-
-        fs_table = Table(title="filesystems")
-        for col in ("device", "type", "mountpoint", "size", "used %"):
-            fs_table.add_column(col, overflow="fold")
-        for fs in sorted(filesystems, key=lambda f: str(f.get("device"))):
-            fs_table.add_row(
-                str(fs.get("device")),
-                str(fs.get("type") or "—"),
-                str(fs.get("mountpoint") or "—"),
-                _fmt_bytes(fs.get("size_bytes")),
-                f"{fs.get('used_percent')}%" if fs.get("used_percent") is not None else "—",
-            )
-        console.print(fs_table)
-
-        share_table = Table(title="shared folders")
-        for col in ("name", "path", "comment"):
-            share_table.add_column(col, overflow="fold")
-        for sh in sorted(shares, key=lambda s: str(s.get("name"))):
-            share_table.add_row(
-                str(sh.get("name")), str(sh.get("path") or "—"), str(sh.get("comment") or "—")
-            )
-        console.print(share_table)
-
-        if nfs or smb:
-            exp_table = Table(title="exports")
-            for col in ("protocol", "share", "detail"):
-                exp_table.add_column(col, overflow="fold")
-            for e in nfs:
-                exp_table.add_row(
-                    "nfs", str(e.get("shared_folder") or "—"), str(e.get("client") or "—")
-                )
-            for e in smb:
-                detail = "ro" if e.get("readonly") else "rw"
-                # OMV leaves `name` empty on SMB rows — the shared folder is the
-                # identifying label, same as the NFS side.
-                exp_table.add_row(
-                    "smb", str(e.get("name") or e.get("shared_folder") or "—"), detail
-                )
-            console.print(exp_table)
-
-        running = [s for s in services if s.get("running")]
-        console.print(f"[bold]services[/bold]: {len(running)}/{len(services)} running")
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))

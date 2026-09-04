@@ -88,3 +88,58 @@ def test_discover_omv_unreachable_exits_nonzero(monkeypatch: pytest.MonkeyPatch)
 def test_discover_omv_help_loads() -> None:
     result = runner.invoke(app, ["discover", "omv", "--help"])
     assert result.exit_code == 0
+
+
+def test_discover_omv_flags_stray_exports_and_persists(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A share whose folder is gone shows in the table, and --persist records it."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from homelab_helper.db.base import Base
+    from homelab_helper.db.models import ReconciliationFinding
+    from homelab_helper.db.session import make_engine, make_sessionmaker
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'omv.db'}"
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
+
+    async def _init() -> None:
+        engine = make_engine(url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+    asyncio.run(_init())
+
+    responses = dict(_RESPONSES)
+    responses[("SMB", "getShareList")] = [
+        {"uuid": "s1", "name": "media", "sharedfoldername": "media"},
+        {"uuid": "s9", "name": "Ghost", "sharedfoldername": "gone"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_ok(responses.get(_rpc_of(request), [])))
+
+    monkeypatch.setattr(cli_discover, "_load_omv_adapter", lambda: _omv(handler))
+    result = runner.invoke(app, ["discover", "omv"])
+    assert result.exit_code == 0, result.stdout
+    assert "stray exports" in result.stdout
+    assert "Ghost" in result.stdout
+
+    persisted = runner.invoke(app, ["discover", "omv", "--persist"])
+    assert persisted.exit_code == 0, persisted.stdout
+    assert "1 opened" in persisted.stdout
+
+    async def _count() -> list[str]:
+        engine = make_engine(url)
+        try:
+            sm = make_sessionmaker(engine)
+            async with sm() as s:
+                rows = (await s.execute(select(ReconciliationFinding))).scalars().all()
+                return [f.affected[0]["target_id"] for f in rows]
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(_count()) == ["smb:Ghost"]

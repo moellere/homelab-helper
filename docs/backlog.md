@@ -252,9 +252,11 @@ The rest of Phase 1, and all of Phase 6, is below.
   inventoried, flag an exported share whose backing shared-folder/filesystem is
   gone (or an export no client mounts, once temporal data lands) as a
   `STRAY_CONFIG` on the storage side. Complements the UniFi network stray-config.
-- [ ] **Explicit service alias map** — an operator-editable fixture that overrides
-  the leftmost-label heuristic when two distinct services share a short name (or
-  one service spans unrelated short names). Refines cross-resolver identity.
+- [x] **Explicit service alias map** — `engine/service_aliases.py` +
+  `HOMELAB_HELPER_SERVICE_ALIASES` (`fixtures/service-aliases.example.yaml`):
+  exact hostnames and globs → service name, exceptions only. The DNS reconcile
+  names new endpoints through it and re-points existing ones (`moved`), cleaning
+  the orphaned service. `helper service aliases` shows the map as loaded.
 
 ### Phase 4 — conversational layer (started)
 
@@ -343,7 +345,14 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [x] **Findings lifecycle over MCP** — `ack_finding`, `resolve_finding`,
   `suppress_finding`, sharing the CLI's fingerprint-prefix matching (ambiguity
   reported, never guessed). Harness-DB writes only.
-- [ ] **Host retire + part merge** — the cleanup path that decommissioned and
+- [x] **Host retire + part merge** — landed as `engine/retire.py`: `helper host
+  retire` (DECOMMISSIONING intent, explicit placement close, findings resolved,
+  idempotent; planners skip retired hosts, chat tags them; MCP `retire_host`),
+  `helper part show|merge` (operator-driven fold of a duplicate identity, audited
+  under `attributes.merged_from`), and `helper service resolvers|retire-resolver`
+  for the orphaned-slice case below, with the endpoint reconcile now reporting
+  `superseded_resolvers` when a sync duplicates another slice. Original notes:
+  the cleanup path that decommissioned and
   repurposed hardware needs, and the reason stale rows currently accumulate.
   `IntentState.DECOMMISSIONING` exists in the enum with **zero consumers**;
   needs the OperationalIntent write path, reconciler consumption, a CLI verb,

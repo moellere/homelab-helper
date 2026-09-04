@@ -24,6 +24,7 @@ from homelab_helper.db.models import (
     ServiceEndpoint,
     VirtualMachine,
 )
+from homelab_helper.engine.retire import retired_host_ids
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,9 +43,10 @@ async def build_lab_context(session: AsyncSession) -> str:
     sections: list[str] = []
 
     hosts = (await session.execute(select(Host).order_by(Host.hostname))).scalars().all()
+    retired = await retired_host_ids(session)
     host_lines = [
         f"  - {h.hostname} ip={h.primary_ip or '?'} arch={h.arch.value} "
-        f"source={h.discovery_source.value}"
+        f"source={h.discovery_source.value}" + (" RETIRED" if h.id in retired else "")
         for h in hosts
     ]
     sections.append(f"HOSTS ({len(hosts)}):\n" + "\n".join(_capped(host_lines, len(hosts))))

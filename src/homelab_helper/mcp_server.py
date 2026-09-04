@@ -80,6 +80,8 @@ from homelab_helper.engine.placement import network_verdict
 from homelab_helper.engine.placement import recommend_placement as _recommend_placement
 from homelab_helper.engine.rebalance import plan_rebalance as _plan_rebalance
 from homelab_helper.engine.reconfigure import analyze_surplus as _analyze_surplus
+from homelab_helper.engine.retire import is_retired, retired_host_ids
+from homelab_helper.engine.retire import retire_host as _retire_host
 from homelab_helper.engine.stray_config import reconcile_stray_config
 from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
@@ -164,6 +166,7 @@ async def list_hosts() -> list[dict[str, Any]]:
         sm = make_sessionmaker(engine)
         async with sm() as session:
             hosts = (await session.execute(select(Host).order_by(Host.hostname))).scalars().all()
+            retired = await retired_host_ids(session)
             return [
                 {
                     "hostname": h.hostname,
@@ -171,6 +174,7 @@ async def list_hosts() -> list[dict[str, Any]]:
                     "arch": h.arch.value,
                     "discovery_source": h.discovery_source.value,
                     "last_verified": _iso(h.last_verified),
+                    "retired": h.id in retired,
                 }
                 for h in hosts
             ]
@@ -212,6 +216,7 @@ async def get_host(hostname: str) -> dict[str, Any]:
                     .all()
                 )
             host_id = str(host.id)
+            retired = await is_retired(session, host.id)
             findings = [
                 _finding_dict(f)
                 for f in await _open_findings(session)
@@ -222,6 +227,7 @@ async def get_host(hostname: str) -> dict[str, Any]:
             ]
             return {
                 "hostname": host.hostname,
+                "retired": retired,
                 "primary_ip": host.primary_ip,
                 "arch": host.arch.value,
                 "discovery_source": host.discovery_source.value,
@@ -483,7 +489,9 @@ async def _discover_one_unifi(session: AsyncSession, adapter: UniFiAdapter) -> d
             "created": len(eps.created),
             "updated": len(eps.updated),
             "removed": len(eps.removed),
+            "moved": len(eps.moved),
         },
+        "superseded_resolvers": list(eps.superseded_resolvers),
         "stray_config": {"opened": len(stray.opened), "resolved": len(stray.resolved)},
     }
 
@@ -749,6 +757,27 @@ async def suppress_finding(
             f.notes = notes
 
     return await _transition_finding(fingerprint, _apply)
+
+
+@server.tool()
+async def retire_host(hostname: str, rationale: str | None = None) -> dict[str, Any]:
+    """Mark a host decommissioned: records a DECOMMISSIONING intent, closes its
+    open part placements explicitly, and resolves its open findings. Harness-DB
+    only — nothing touches the host. Idempotent. The planners skip retired
+    hosts; `helper host retire` is the same operation from the CLI."""
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            host = (
+                await session.execute(select(Host).where(Host.hostname == hostname))
+            ).scalar_one_or_none()
+            if host is None:
+                return {"error": f"no host named {hostname!r}"}
+            result = await _retire_host(session, host, declared_by="agent:mcp", rationale=rationale)
+            return result.as_dict()
+    finally:
+        await engine.dispose()
 
 
 def _matches_any(value: str | None, patterns: tuple[str, ...]) -> bool:

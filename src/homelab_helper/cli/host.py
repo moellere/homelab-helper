@@ -1,9 +1,11 @@
-"""`helper host ...` subcommands — read-only views of inventory state.
+"""`helper host ...` subcommands — per-host views and the retire verb.
 
-Today this is just ``show``: the operator-facing summary of one host
-(typed columns, capability bag, current placements, recent findings). As
-more verbs land (``edit``, ``intent set``, ``credentials set``) they'll
-share this file's session pattern.
+``show`` is the operator-facing summary of one host (typed columns,
+capability bag, current placements, recent findings). ``retire`` is the
+cleanup path for decommissioned or reflashed hardware: it records a
+DECOMMISSIONING intent, closes the host's open placements explicitly, and
+resolves its findings — the operator-attributed closure the reconciler's
+absence rule deliberately refuses to infer.
 """
 
 from __future__ import annotations
@@ -25,7 +27,9 @@ from homelab_helper.db.models import (
     Placement,
     ReconciliationFinding,
 )
-from homelab_helper.db.session import make_engine, make_sessionmaker
+from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.retire import is_retired, retire_host
+from homelab_helper.engine.trust import operator_identity
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,11 +90,56 @@ def host_show(
             async with sm() as session:
                 host = await _load_host(session, hostname)
                 _print_identity(host)
+                if await is_retired(session, host.id):
+                    console.print("[yellow]RETIRED[/yellow] — decommissioning intent recorded")
                 _print_capabilities(host)
                 await _print_placements(session, host)
                 await _print_recent_findings(session, host)
         finally:
             await engine.dispose()
+
+    asyncio.run(_go())
+
+
+@host_app.command(name="retire")
+def host_retire(
+    hostname: str = typer.Argument(..., help="Hostname (must already exist in the harness DB)."),
+    rationale: str | None = typer.Option(
+        None, "--rationale", "-r", help="Why (recorded on the intent)."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Mark a host decommissioned: record the intent, close its placements, resolve its findings."""
+    if not yes:
+        confirmed = typer.confirm(
+            f"Retire {hostname}? This closes its open placements and resolves its findings.",
+            default=False,
+        )
+        if not confirmed:
+            console.print("[yellow]aborted[/yellow]")
+            raise typer.Exit(code=1)
+
+    async def _go() -> None:
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                host = await _load_host(session, hostname)
+                result = await retire_host(
+                    session, host, declared_by=operator_identity(), rationale=rationale
+                )
+        finally:
+            await engine.dispose()
+        state = "already retired" if result.already_retired else "retired"
+        console.print(
+            f"[green]{state}[/green] {result.hostname}: "
+            f"{len(result.placements_closed)} placement(s) closed, "
+            f"{len(result.findings_resolved)} finding(s) resolved"
+        )
+        for serial, slot in result.placements_closed:
+            console.print(f"  [dim]- placement[/dim] {serial or '?'} @ {slot}")
+        for fingerprint in result.findings_resolved:
+            console.print(f"  [dim]- finding[/dim] {fingerprint}")
 
     asyncio.run(_go())
 

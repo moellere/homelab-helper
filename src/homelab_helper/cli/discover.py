@@ -141,6 +141,16 @@ def _load_hass_adapter() -> HomeAssistantAdapter:
     return HomeAssistantAdapter.from_env()
 
 
+def _warn_superseded(resolvers: list[str]) -> None:
+    """A slice whose rows another resolver now duplicates is a renamed controller's orphan."""
+    for other in resolvers:
+        console.print(
+            f"[yellow]superseded slice:[/yellow] resolver {other!r} holds the same endpoints "
+            f"this sync just wrote — a renamed controller? "
+            f"`helper service retire-resolver {other}` removes the orphan."
+        )
+
+
 async def _reconcile_and_report(session: AsyncSession, host_id: uuid.UUID) -> None:
     """Run the reconciler for a host and print the deltas."""
     _report_reconcile(await Reconciler().reconcile_host(session, host_id))
@@ -770,7 +780,9 @@ def discover_unifi(
                         f"[green]endpoints[/green] ({cfg.resolver}/internal): "
                         f"{len(result.created)} created, {len(result.updated)} updated, "
                         f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
+                        + (f", {len(result.moved)} re-aliased" if result.moved else "")
                     )
+                    _warn_superseded(result.superseded_resolvers)
                     console.print(
                         f"[green]stray-config[/green] ({cfg.name}): {len(stray.opened)} opened, "
                         f"{len(stray.reopened)} reopened, {len(stray.updated)} re-seen, "
@@ -840,6 +852,7 @@ def discover_cloudflare(
                 f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
                 + (" [dim](dry-run, rolled back)[/dim]" if dry_run else "")
             )
+            _warn_superseded(result.superseded_resolvers)
         finally:
             await engine.dispose()
         return 0

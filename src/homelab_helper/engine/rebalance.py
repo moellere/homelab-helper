@@ -35,6 +35,7 @@ from sqlalchemy import select
 from homelab_helper.db.enums import PartKind
 from homelab_helper.db.models import Host, PhysicalPart, Placement, VirtualMachine
 from homelab_helper.engine.network_path import Topology, load_topology
+from homelab_helper.engine.retire import retired_host_ids
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,7 +142,12 @@ class RebalanceReport:
 
 
 async def _load_fleet(session: AsyncSession) -> tuple[list[HostLoad], list[str]]:
-    hosts = (await session.execute(select(Host).order_by(Host.hostname))).scalars().all()
+    retired = await retired_host_ids(session)
+    hosts = [
+        h
+        for h in (await session.execute(select(Host).order_by(Host.hostname))).scalars().all()
+        if h.id not in retired
+    ]
     by_id: dict[Any, HostLoad] = {}
     unknown: list[str] = []
     for h in hosts:

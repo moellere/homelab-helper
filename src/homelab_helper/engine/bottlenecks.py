@@ -41,6 +41,7 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.engine.fingerprint import make_fingerprint
+from homelab_helper.engine.retire import retired_host_ids
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,7 +101,12 @@ class _Fleet:
 
 
 async def _load_fleet(session: AsyncSession) -> _Fleet:
-    hosts = list((await session.execute(select(Host).order_by(Host.hostname))).scalars().all())
+    retired = await retired_host_ids(session)
+    hosts = [
+        h
+        for h in (await session.execute(select(Host).order_by(Host.hostname))).scalars().all()
+        if h.id not in retired
+    ]
     by_id = {h.id: h for h in hosts}
 
     nic_speed: dict[Any, int] = {}

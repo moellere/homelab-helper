@@ -58,6 +58,7 @@ from homelab_helper.mcp_server import (
     probe_target_refusal,
     propose_action,
     recommend_placement,
+    retire_host,
     run_discovery,
     server,
 )
@@ -78,6 +79,7 @@ EXPECTED_TOOLS = {
     "ack_finding",
     "resolve_finding",
     "suppress_finding",
+    "retire_host",
     "probe_host",
     "probe_talos",
     "list_workloads",
@@ -673,3 +675,21 @@ def test_error_strings_are_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert redact("401 for X-API-KEY unifi-key-0123456789") == "401 for X-API-KEY ***"
     forget_secrets()
+
+
+# ---------------------------------------------------------------------------
+# retire_host
+# ---------------------------------------------------------------------------
+
+
+async def test_retire_host_marks_and_flags(seeded_db: str) -> None:
+    before = await list_hosts()
+    assert [h["retired"] for h in before] == [False]
+    out = await retire_host("node0", rationale="decommissioned")
+    assert out["already_retired"] is False
+    assert out["findings_resolved"] == ["deadbeefcafe0000"]
+    after = await list_hosts()
+    assert [h["retired"] for h in after] == [True]
+    full = await get_host("node0")
+    assert full["retired"] is True
+    assert "error" in await retire_host("ghost")

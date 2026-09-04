@@ -38,7 +38,8 @@ pre-releases on GitHub; `pip`/`uv` won't install them unless asked
 ## What users get
 
 ```bash
-uv tool install homelab-helper          # or pipx install homelab-helper
+uv tool install --prerelease allow homelab-helper   # while only pre-releases exist
+# or: pipx install homelab-helper==<version>
 helper --install-completion
 helper config init && helper db init
 ```

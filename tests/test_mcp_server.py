@@ -701,8 +701,7 @@ async def test_retire_host_marks_and_flags(seeded_db: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _omv(handler: Callable[[httpx.Request], httpx.Response]) -> OpenMediaVaultAdapter:
-    client = httpx.AsyncClient(base_url="https://nas.lan", transport=httpx.MockTransport(handler))
+def _omv(client: httpx.AsyncClient) -> OpenMediaVaultAdapter:
     return OpenMediaVaultAdapter(
         OpenMediaVaultConfig(url="https://nas.lan", username="admin", password="pw"), client=client
     )
@@ -732,8 +731,12 @@ async def test_run_discovery_omv_persists_stray_exports(
         key = (body["service"], body["method"])
         return httpx.Response(200, json={"response": responses.get(key, []), "error": None})
 
-    monkeypatch.setattr(mcp_srv, "_load_omv_adapter", lambda: _omv(handler))
-    out = await run_discovery("omv")
+    client = httpx.AsyncClient(base_url="https://nas.lan", transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(mcp_srv, "_load_omv_adapter", lambda: _omv(client))
+    try:
+        out = await run_discovery("omv")
+    finally:
+        await client.aclose()  # injected: the adapter must not close it, so the test does
     assert out["source"] == "omv"
     assert [s["export"] for s in out["stray_exports"]] == ["Ghost"]
     assert out["stray_export_findings"]["opened"] == 1

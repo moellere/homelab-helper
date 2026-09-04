@@ -121,11 +121,11 @@ def detect_stray_exports(
     by_uuid = {_norm(f.get("uuid")): f for f in shared_folders if f.get("uuid")}
     backing: dict[str, bool | None] = {}
     skipped = 0
-    for folder in shared_folders:
-        verdict = _folder_is_backed(folder, filesystems)
+    for candidate in shared_folders:
+        verdict = _folder_is_backed(candidate, filesystems)
         if verdict is None:
             skipped += 1
-        backing[_norm(folder.get("uuid"))] = verdict
+        backing[_norm(candidate.get("uuid"))] = verdict
 
     strays: list[StrayExport] = []
     for export in exports:

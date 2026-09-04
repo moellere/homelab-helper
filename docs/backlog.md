@@ -19,7 +19,8 @@ doesn't block. Acceptance-criterion references (AC1–AC5, P6-AC1–6) point at
 agent / time-series) is deliberately deferred.** Full suite: 870+ tests green.
 Packaging is release-ready (`uv tool install`, per-user dirs, tag-driven PyPI
 release — see `releasing.md`).
-Live-fleet validation of the Phase 4–5 ACs is the outstanding sign-off gate,
+Live-fleet validation of the Phase 4–5 ACs is the outstanding sign-off gate
+(runbook: `docs/live-validation.md`),
 and is required before any Phase-6 execution path runs against real
 infrastructure.
 

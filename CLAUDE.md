@@ -12,6 +12,8 @@ Before any non-trivial change, skim:
 - `docs/architecture.md` — locked decisions, including the trust gradient
 - `docs/roadmap.md` — the six phases + acceptance criteria
 - `docs/backlog.md` — the actual punch list (what's done vs. what's left)
+- `docs/live-validation.md` — the live-fleet runbook; the suite is all
+  mocks, so this is the only place the ACs meet real infrastructure
 - `docs/harness-schema-slice1.md` — DB schema + forward-spec for L2 trust tables
 
 `README.md` is the operator-facing intro; the docs above are what to consult

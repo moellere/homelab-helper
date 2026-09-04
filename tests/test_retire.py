@@ -247,7 +247,9 @@ async def test_find_part_by_prefix_serial_wwid_and_ambiguity(sessionmaker) -> No
     async with session_scope(sessionmaker) as s:
         await _seed(s)
         ssd = await find_part(s, "ssd-a")  # case-insensitive serial
-        assert (await find_part(s, str(ssd.id)[:20])).id == ssd.id  # uuid7: the first 12 chars are the millisecond
+        assert (
+            await find_part(s, str(ssd.id)[:20])
+        ).id == ssd.id  # uuid7: the first 12 chars are the millisecond
         with pytest.raises(PartLookupError, match="no part"):
             await find_part(s, "nope")
         with pytest.raises(PartLookupError, match="empty"):

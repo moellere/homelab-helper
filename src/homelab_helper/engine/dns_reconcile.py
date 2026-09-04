@@ -28,6 +28,7 @@ from sqlalchemy import select
 
 from homelab_helper.db.enums import DiscoverySource, ResolutionScope
 from homelab_helper.db.models import Service, ServiceEndpoint
+from homelab_helper.engine.service_aliases import ServiceAliasMap, load_service_aliases, service_key
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -44,10 +45,16 @@ class EndpointReconcileResult:
     updated: list[str] = field(default_factory=list)
     unchanged: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
+    moved: list[str] = field(default_factory=list)
+    """Endpoints re-pointed at a different Service because the alias map says so."""
+    superseded_resolvers: list[str] = field(default_factory=list)
+    """Other resolvers at this scope whose whole (hostname, ip) set this slice now
+    duplicates — the signature of a renamed controller leaving an orphan slice
+    behind. Reported, never reaped: `helper service retire-resolver` is the verb."""
 
     @property
     def changed(self) -> int:
-        return len(self.created) + len(self.updated) + len(self.removed)
+        return len(self.created) + len(self.updated) + len(self.removed) + len(self.moved)
 
 
 def _address_records(dns_records: list[dict[str, Any]]) -> dict[str, str]:
@@ -70,19 +77,6 @@ def _address_records(dns_records: list[dict[str, Any]]) -> dict[str, str]:
     return out
 
 
-def service_key(hostname: str) -> str:
-    """Canonical service name shared across resolvers and domains.
-
-    Internal and external DNS suffix the same service differently (``ha.lan``
-    inside, ``ha.example.com`` outside). Both should attach to one ``Service``,
-    so the key is the leftmost DNS label, lowercased — the part that actually
-    names the service. Two distinct services that happen to share a short name
-    will merge onto one ``Service``; that's an acceptable trade for a homelab,
-    and an explicit alias map can override it later (see backlog).
-    """
-    return hostname.strip().lower().split(".", 1)[0]
-
-
 async def _get_or_create_service(session: AsyncSession, name: str) -> Service:
     svc = (await session.execute(select(Service).where(Service.name == name))).scalar_one_or_none()
     if svc is None:
@@ -90,6 +84,52 @@ async def _get_or_create_service(session: AsyncSession, name: str) -> Service:
         session.add(svc)
         await session.flush()
     return svc
+
+
+async def _upsert_endpoint(
+    session: AsyncSession,
+    ep: ServiceEndpoint | None,
+    hostname: str,
+    ip: str,
+    wanted: str,
+    *,
+    scope: ResolutionScope,
+    resolver: str,
+    source: DiscoverySource,
+    when: datetime | None,
+    result: EndpointReconcileResult,
+    vacated: set[Any],
+) -> None:
+    """Create, re-point, update, or leave one endpoint; ``vacated`` collects
+    services an endpoint moved away from so the caller can reap the empty ones."""
+    if ep is None:
+        service = await _get_or_create_service(session, wanted)
+        session.add(
+            ServiceEndpoint(
+                service_id=service.id,
+                scope=scope,
+                hostname=hostname,
+                ip=ip,
+                resolver=resolver,
+                discovery_source=source,
+            )
+        )
+        result.created.append(hostname)
+        return
+    current = await session.get(Service, ep.service_id)
+    moved = current is None or current.name != wanted
+    if moved:
+        service = await _get_or_create_service(session, wanted)
+        vacated.add(ep.service_id)
+        ep.service_id = service.id
+        result.moved.append(hostname)
+    if ep.ip != ip:
+        ep.ip = ip
+        if when is not None:
+            ep.updated_at = when
+        result.updated.append(hostname)
+    elif not moved:
+        result.unchanged.append(hostname)
 
 
 async def reconcile_endpoints(
@@ -100,8 +140,15 @@ async def reconcile_endpoints(
     resolver: str,
     source: DiscoverySource,
     when: datetime | None = None,
+    aliases: ServiceAliasMap | None = None,
 ) -> EndpointReconcileResult:
-    """Upsert ServiceEndpoints for one ``(scope, resolver)`` from address records."""
+    """Upsert ServiceEndpoints for one ``(scope, resolver)`` from address records.
+
+    ``aliases`` defaults to the operator's file (``HOMELAB_HELPER_SERVICE_ALIASES``);
+    an existing endpoint whose service no longer matches the map is re-pointed.
+    """
+    if aliases is None:
+        aliases = load_service_aliases()
     result = EndpointReconcileResult(resolver=resolver)
     desired = _address_records(dns_records)  # hostname_lower -> ip
 
@@ -120,28 +167,21 @@ async def reconcile_endpoints(
     )
     existing = {ep.hostname: ep for ep in existing_rows}
 
+    vacated: set[Any] = set()
     for hostname, ip in desired.items():
-        ep = existing.get(hostname)
-        if ep is None:
-            service = await _get_or_create_service(session, service_key(hostname))
-            session.add(
-                ServiceEndpoint(
-                    service_id=service.id,
-                    scope=scope,
-                    hostname=hostname,
-                    ip=ip,
-                    resolver=resolver,
-                    discovery_source=source,
-                )
-            )
-            result.created.append(hostname)
-        elif ep.ip != ip:
-            ep.ip = ip
-            if when is not None:
-                ep.updated_at = when
-            result.updated.append(hostname)
-        else:
-            result.unchanged.append(hostname)
+        await _upsert_endpoint(
+            session,
+            existing.get(hostname),
+            hostname,
+            ip,
+            service_key(hostname, aliases),
+            scope=scope,
+            resolver=resolver,
+            source=source,
+            when=when,
+            result=result,
+            vacated=vacated,
+        )
 
     # Remove endpoints the source no longer reports; clean up orphaned Services.
     for hostname, ep in existing.items():
@@ -166,7 +206,49 @@ async def reconcile_endpoints(
                 await session.delete(orphan)
 
     await session.flush()
+    for service_id in vacated:
+        remaining = (
+            (
+                await session.execute(
+                    select(ServiceEndpoint).where(ServiceEndpoint.service_id == service_id)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if remaining is None:
+            orphan = await session.get(Service, service_id)
+            if orphan is not None:
+                await session.delete(orphan)
+    await session.flush()
+
+    result.superseded_resolvers = await _superseded_resolvers(session, scope, resolver, desired)
     return result
+
+
+async def _superseded_resolvers(
+    session: AsyncSession, scope: ResolutionScope, resolver: str, desired: dict[str, str]
+) -> list[str]:
+    """Other resolvers at this scope whose (hostname, ip) set this slice covers.
+
+    Renaming a controller changes its resolver tag; the old slice is left
+    behind with identical rows and nothing ever reaps it. Surfacing the
+    duplicate turns a silent orphan into a visible one.
+    """
+    if not desired:
+        return []
+    mine = set(desired.items())
+    rows = (
+        await session.execute(
+            select(ServiceEndpoint.resolver, ServiceEndpoint.hostname, ServiceEndpoint.ip).where(
+                ServiceEndpoint.scope == scope, ServiceEndpoint.resolver != resolver
+            )
+        )
+    ).all()
+    others: dict[str, set[tuple[str, str | None]]] = {}
+    for other, hostname, ip in rows:
+        others.setdefault(other, set()).add((hostname, ip))
+    return sorted(other for other, pairs in others.items() if pairs and pairs <= mine)
 
 
 async def reconcile_internal_endpoints(
@@ -176,6 +258,7 @@ async def reconcile_internal_endpoints(
     resolver: str = "unifi",
     source: DiscoverySource = DiscoverySource.UNIFI,
     when: datetime | None = None,
+    aliases: ServiceAliasMap | None = None,
 ) -> EndpointReconcileResult:
     """Upsert internal ServiceEndpoints (UniFi by default) — internal DNS."""
     return await reconcile_endpoints(
@@ -185,6 +268,7 @@ async def reconcile_internal_endpoints(
         resolver=resolver,
         source=source,
         when=when,
+        aliases=aliases,
     )
 
 
@@ -195,6 +279,7 @@ async def reconcile_external_endpoints(
     resolver: str = "cloudflare",
     source: DiscoverySource = DiscoverySource.CLOUDFLARE,
     when: datetime | None = None,
+    aliases: ServiceAliasMap | None = None,
 ) -> EndpointReconcileResult:
     """Upsert external ServiceEndpoints (Cloudflare by default) — public DNS."""
     return await reconcile_endpoints(
@@ -204,6 +289,7 @@ async def reconcile_external_endpoints(
         resolver=resolver,
         source=source,
         when=when,
+        aliases=aliases,
     )
 
 

@@ -106,6 +106,7 @@ verb (all are prefixed `HOMELAB_HELPER_`):
 | Kubernetes | `KUBECONFIG`, `KUBE_CONTEXT` |
 | OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
 | Home Assistant | `HASS_URL`, `HASS_TOKEN` (a long-lived access token; a non-admin user is enough), `HASS_VERIFY_SSL` |
+| Service identity | `SERVICE_ALIASES` — YAML mapping hostnames to service names when the leftmost-label default is wrong (see `fixtures/service-aliases.example.yaml`) |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
 | LLM (chat) | `LLM_PRIVACY` (`strict-local`/`prefer-local`/`open`), `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIER`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_BASE_URL` |
 
@@ -146,6 +147,28 @@ helper findings list
 
 Keep tokens and keys in the per-user `.env` or behind a secret reference —
 never in a checkout, never in an MCP client's config block.
+
+### Keeping the inventory honest
+
+Hardware gets reflashed, moved, and renamed; nothing in discovery can prove
+that "the drive that used to be in `pi-cp1`" is "the drive now in `wyhome`",
+so the cleanup verbs are explicit and operator-driven:
+
+```bash
+helper host retire pi-cp1 -r "reflashed as wyhome"   # records the intent, closes its placements, resolves its findings
+helper part show SSD-A                               # a part's identity and placement history
+helper part merge 0x5000c500deadbeef --into SSD-A    # same drive under a second identity: fold it in
+helper service resolvers                             # every (scope, resolver) endpoint slice
+helper service retire-resolver unifi                 # drop the slice a renamed controller left behind
+helper service aliases                               # the alias map as loaded
+```
+
+A retired host stays in the inventory (history is history) but leaves the
+planners, and chat sees it as retired. Renaming a UniFi controller changes
+its resolver tag; the next sync warns when the old slice is now a duplicate,
+and `retire-resolver` removes it. When two distinct services share a short
+name, or one service spans unrelated names, the alias map overrides the
+leftmost-label default; re-running discovery re-points existing endpoints.
 
 ### Chat with your lab
 

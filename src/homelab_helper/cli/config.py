@@ -48,6 +48,10 @@ _GENERAL_VARS: tuple[tuple[str, str], ...] = (
         "operator workload profiles layered over the starter library",
     ),
     ("HOMELAB_HELPER_AGE_IDENTITY", "age key for file:<path.age>#<key> secret references"),
+    (
+        "HOMELAB_HELPER_SERVICE_ALIASES",
+        "service alias map YAML (see fixtures/service-aliases.example.yaml)",
+    ),
 )
 
 _LLM_VARS: tuple[tuple[str, str], ...] = (

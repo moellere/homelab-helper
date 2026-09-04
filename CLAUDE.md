@@ -43,7 +43,7 @@ config.py           .env loading, per-user data/config dirs, source status
 tests/              pytest, asyncio_mode = "auto"
 ├── data/           starter workload library (ships in the wheel)
 fixtures/           operator-editable YAML examples (assertion starter,
-                    network topology, example lab)
+                    network topology, service aliases, example lab)
 ```
 
 ## Toolchain — every command goes through `uv`

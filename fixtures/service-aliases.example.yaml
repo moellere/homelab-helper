@@ -1,0 +1,26 @@
+# Service alias map — the operator's override for cross-resolver identity.
+#
+# By default a service is named by the leftmost DNS label, so ha.lan (UniFi)
+# and ha.example.com (Cloudflare) share one Service called "ha". List only the
+# exceptions here; everything else keeps the default. Point
+# HOMELAB_HELPER_SERVICE_ALIASES at this file (copy it somewhere outside the
+# checkout, e.g. ~/.config/homelab-helper/service-aliases.yaml).
+#
+# A hostname may belong to exactly one service. Globs (* ? [..]) are matched
+# after exact names.
+
+services:
+  # One service spanning unrelated names — and the fixed name the Home
+  # Assistant adapter uses, so its endpoint and the DNS-derived ones merge.
+  home-assistant:
+    hostnames:
+      - ha.lan
+      - homeassistant.lan
+      - ha.example.com
+
+  # Two distinct services that share a short name: keep the primary site's
+  # grafana as "grafana" (default) and split the second site off.
+  grafana-wyola:
+    hostnames:
+      - grafana.wyola.lan
+      - "*.grafana.wyola.lan"

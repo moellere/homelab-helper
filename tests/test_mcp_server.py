@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 import homelab_helper.mcp_server as mcp_srv
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
+from homelab_helper.adapters.mikrotik import MikroTikAdapter, MikroTikConfig
+from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter, OpenMediaVaultConfig
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli.main import app
 from homelab_helper.config import PROBE_ALLOW_VAR
@@ -693,3 +695,85 @@ async def test_retire_host_marks_and_flags(seeded_db: str) -> None:
     full = await get_host("node0")
     assert full["retired"] is True
     assert "error" in await retire_host("ghost")
+
+
+# ---------------------------------------------------------------------------
+# run_discovery("omv") persists stray-export findings
+# ---------------------------------------------------------------------------
+
+
+def _omv(client: httpx.AsyncClient) -> OpenMediaVaultAdapter:
+    return OpenMediaVaultAdapter(
+        OpenMediaVaultConfig(url="https://nas.lan", username="admin", password="pw"), client=client
+    )
+
+
+async def test_run_discovery_omv_persists_stray_exports(
+    seeded_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    responses = {
+        ("session", "login"): {"authenticated": True},
+        ("FileSystemMgmt", "enumerateMountedFilesystems"): [
+            {"canonicaldevicefile": "/dev/sda1", "mountpoint": "/srv/data"}
+        ],
+        ("Smart", "enumerateDevices"): [],
+        ("ShareMgmt", "enumerateSharedFolders"): [
+            {"uuid": "u1", "name": "media", "reldirpath": "media/", "device": "/dev/sda1"}
+        ],
+        ("Services", "getStatus"): {"total": 0, "data": []},
+        ("NFS", "getShareList"): [{"uuid": "n1", "sharedfoldername": "media"}],
+        ("SMB", "getShareList"): [{"uuid": "s9", "name": "Ghost", "sharedfoldername": "gone"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        key = (body["service"], body["method"])
+        return httpx.Response(200, json={"response": responses.get(key, []), "error": None})
+
+    client = httpx.AsyncClient(base_url="https://nas.lan", transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(mcp_srv, "_load_omv_adapter", lambda: _omv(client))
+    try:
+        out = await run_discovery("omv")
+    finally:
+        await client.aclose()  # injected: the adapter must not close it, so the test does
+    assert out["source"] == "omv"
+    assert [s["export"] for s in out["stray_exports"]] == ["Ghost"]
+    assert out["stray_export_findings"]["opened"] == 1
+    listed = await list_findings()
+    assert any(f["title"].startswith("Stray export: SMB Ghost") for f in listed)
+
+
+# ---------------------------------------------------------------------------
+# run_discovery("mikrotik")
+# ---------------------------------------------------------------------------
+
+
+async def test_run_discovery_mikrotik_persists(
+    seeded_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_mikrotik_adapter import ROUTES
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = ROUTES.get(request.url.path)
+        return httpx.Response(200, json=body) if body is not None else httpx.Response(404)
+
+    client = httpx.AsyncClient(
+        base_url="https://r.lan/rest", transport=httpx.MockTransport(handler)
+    )
+    adapter = MikroTikAdapter(
+        MikroTikConfig(url="https://r.lan", username="ro", password="pw", name="wyola"),
+        client=client,
+    )
+    monkeypatch.setattr(mcp_srv, "_load_mikrotik_adapter", lambda: adapter)
+    monkeypatch.delenv("HOMELAB_HELPER_SERVICE_ALIASES", raising=False)
+    try:
+        out = await run_discovery("mikrotik")
+    finally:
+        await client.aclose()
+    assert out["source"] == "mikrotik"
+    assert out["router"] == "core-router"
+    assert out["resolver"] == "mikrotik:wyola"
+    assert out["endpoints"]["created"] == 2
+    assert out["stray_config"]["opened"] == 1

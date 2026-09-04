@@ -8,6 +8,7 @@ they're auto-included unless ``--probe`` filters them.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import sys
 from datetime import UTC, datetime
@@ -27,12 +28,14 @@ from homelab_helper.adapters.homeassistant import (
     summarize_states,
 )
 from homelab_helper.adapters.kubernetes import K8sAdapter
+from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.config import database_url as _database_url
+from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.dns_reconcile import (
@@ -58,6 +61,11 @@ from homelab_helper.engine.scan_import import (
     parse_scan_csv,
 )
 from homelab_helper.engine.stray_config import reconcile_stray_config
+from homelab_helper.engine.stray_export import (
+    StrayExport,
+    detect_stray_exports,
+    reconcile_stray_exports,
+)
 from homelab_helper.engine.talos_probe import TalosProbeRequest, probe_talos, select_talos_probes
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
@@ -139,6 +147,11 @@ def _load_omv_adapter() -> OpenMediaVaultAdapter:
 def _load_hass_adapter() -> HomeAssistantAdapter:
     """Factory (monkeypatched in tests) — builds a Home Assistant adapter from env."""
     return HomeAssistantAdapter.from_env()
+
+
+def _load_mikrotik_adapter() -> MikroTikAdapter:
+    """Factory (monkeypatched in tests) — builds a MikroTik adapter from env."""
+    return MikroTikAdapter.from_env()
 
 
 def _warn_superseded(resolvers: list[str]) -> None:
@@ -803,6 +816,102 @@ def discover_unifi(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
+@discover_app.command(name="mikrotik")
+def discover_mikrotik(
+    persist: bool = typer.Option(
+        False,
+        "--persist",
+        help="Reconcile internal ServiceEndpoints from static DNS + stray-config from addresses/leases.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --persist, preview + roll back."),
+) -> None:
+    """Read a MikroTik RouterOS 7 router (read-only): identity, interfaces, subnets, leases, static DNS."""
+
+    async def _go() -> int:
+        adapter = _load_mikrotik_adapter()
+        cfg = adapter.config
+        try:
+            ok, err = await adapter.health_check()
+            if not ok:
+                console.print(f"[red]mikrotik[/red] [bold]{cfg.name}[/bold] unreachable: {err}")
+                return 1
+            identity = await adapter.identity()
+            resource = await adapter.resource()
+            interfaces = await adapter.list_interfaces()
+            addresses = await adapter.list_addresses()
+            leases = await adapter.list_leases()
+            dns = await adapter.list_dns_records()
+        finally:
+            await adapter.aclose()
+
+        console.print(
+            f"[cyan]mikrotik[/cyan] [bold]{identity or cfg.name}[/bold] "
+            f"({resource.get('board') or '?'}, RouterOS {resource.get('version') or '?'}): "
+            f"{len(interfaces)} interface(s), {len(addresses)} address(es), "
+            f"{len(leases)} lease(s), {len(dns)} static DNS record(s)"
+        )
+        table = Table(title=f"subnets - {identity or cfg.name}")
+        for col in ("interface", "subnet", "enabled", "leases"):
+            table.add_column(col, no_wrap=True)
+        for net in sorted(addresses, key=lambda n: str(n.get("name"))):
+            subnet = str(net.get("subnet") or "?")
+            count = sum(1 for c in leases if _in_subnet(c.get("ip"), subnet))
+            table.add_row(str(net.get("name")), subnet, str(net.get("enabled")), str(count))
+        console.print(table)
+        dns_table = Table(title="static DNS")
+        for col in ("hostname", "value", "type", "enabled"):
+            dns_table.add_column(col)
+        for r in sorted(dns, key=lambda d: str(d.get("hostname"))):
+            dns_table.add_row(
+                str(r.get("hostname")),
+                str(r.get("value")),
+                str(r.get("record_type")),
+                str(r.get("enabled")),
+            )
+        console.print(dns_table)
+
+        if not persist:
+            return 0
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                now = datetime.now(UTC)
+                result = await reconcile_internal_endpoints(
+                    session, dns, resolver=cfg.resolver, source=DiscoverySource.MIKROTIK, when=now
+                )
+                stray = await reconcile_stray_config(session, addresses, leases, when=now)
+                console.print(
+                    f"[green]endpoints[/green] ({cfg.resolver}/internal): "
+                    f"{len(result.created)} created, {len(result.updated)} updated, "
+                    f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
+                    + (f", {len(result.moved)} re-aliased" if result.moved else "")
+                )
+                _warn_superseded(result.superseded_resolvers)
+                console.print(
+                    f"[green]stray-config[/green] ({cfg.name}): {len(stray.opened)} opened, "
+                    f"{len(stray.reopened)} reopened, {len(stray.updated)} re-seen, "
+                    f"{len(stray.resolved)} resolved"
+                )
+                if dry_run:
+                    await session.rollback()
+                    console.print("[dim](dry-run, rolled back)[/dim]")
+        finally:
+            await engine.dispose()
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+def _in_subnet(ip: str | None, subnet: str) -> bool:
+    if not ip:
+        return False
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(subnet, strict=False)
+    except ValueError:
+        return False
+
+
 @discover_app.command(name="cloudflare")
 def discover_cloudflare(
     persist: bool = typer.Option(
@@ -922,9 +1031,86 @@ def _fmt_bytes(n: int | None) -> str:
     return f"{n} B"
 
 
+def _print_omv(
+    filesystems: list[dict[str, Any]],
+    disks: list[dict[str, Any]],
+    shares: list[dict[str, Any]],
+    services: list[dict[str, Any]],
+    nfs: list[dict[str, Any]],
+    smb: list[dict[str, Any]],
+) -> None:
+    console.print(
+        f"[cyan]openmediavault[/cyan]: {len(filesystems)} filesystem(s), "
+        f"{len(disks)} disk(s), {len(shares)} share(s), {len(services)} service(s), "
+        f"{len(nfs)} NFS + {len(smb)} SMB export(s)"
+    )
+
+    fs_table = Table(title="filesystems")
+    for col in ("device", "type", "mountpoint", "size", "used %"):
+        fs_table.add_column(col, overflow="fold")
+    for fs in sorted(filesystems, key=lambda f: str(f.get("device"))):
+        fs_table.add_row(
+            str(fs.get("device")),
+            str(fs.get("type") or "—"),
+            str(fs.get("mountpoint") or "—"),
+            _fmt_bytes(fs.get("size_bytes")),
+            f"{fs.get('used_percent')}%" if fs.get("used_percent") is not None else "—",
+        )
+    console.print(fs_table)
+
+    share_table = Table(title="shared folders")
+    for col in ("name", "path", "comment"):
+        share_table.add_column(col, overflow="fold")
+    for sh in sorted(shares, key=lambda s: str(s.get("name"))):
+        share_table.add_row(
+            str(sh.get("name")), str(sh.get("path") or "—"), str(sh.get("comment") or "—")
+        )
+    console.print(share_table)
+
+    if nfs or smb:
+        exp_table = Table(title="exports")
+        for col in ("protocol", "share", "detail"):
+            exp_table.add_column(col, overflow="fold")
+        for e in nfs:
+            exp_table.add_row(
+                "nfs", str(e.get("shared_folder") or "—"), str(e.get("client") or "—")
+            )
+        for e in smb:
+            detail = "ro" if e.get("readonly") else "rw"
+            # OMV leaves `name` empty on SMB rows — the shared folder is the
+            # identifying label, same as the NFS side.
+            exp_table.add_row("smb", str(e.get("name") or e.get("shared_folder") or "—"), detail)
+        console.print(exp_table)
+
+    running = [s for s in services if s.get("running")]
+    console.print(f"[bold]services[/bold]: {len(running)}/{len(services)} running")
+
+
+def _print_stray_exports(strays: list[StrayExport], skipped: int) -> None:
+    if strays:
+        stray_table = Table(title="stray exports (nothing behind them)")
+        for col in ("protocol", "export", "reason"):
+            stray_table.add_column(col, overflow="fold")
+        for hit in strays:
+            stray_table.add_row(hit.protocol, hit.label, hit.detail)
+        console.print(stray_table)
+    else:
+        console.print("[green]no stray exports[/green]")
+    if skipped:
+        console.print(
+            f"[dim]{skipped} shared folder(s) report no backing device — not judged[/dim]"
+        )
+
+
 @discover_app.command(name="omv")
-def discover_omv() -> None:
-    """Read an OpenMediaVault NAS (read-only): filesystems, disks, shares, services."""
+def discover_omv(
+    persist: bool = typer.Option(
+        False,
+        "--persist",
+        help="Record stray exports (nothing behind them) as STRAY_CONFIG findings.",
+    ),
+) -> None:
+    """Read an OpenMediaVault NAS (read-only): filesystems, disks, shares, services, stray exports."""
 
     async def _go() -> int:
         adapter = _load_omv_adapter()
@@ -942,53 +1128,26 @@ def discover_omv() -> None:
         finally:
             await adapter.aclose()
 
+        _print_omv(filesystems, disks, shares, services, nfs, smb)
+        strays, skipped = detect_stray_exports(filesystems, shares, [*nfs, *smb])
+        _print_stray_exports(strays, skipped)
+
+        if not persist:
+            return 0
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                result = await reconcile_stray_exports(
+                    session, filesystems, shares, [*nfs, *smb], when=datetime.now(UTC)
+                )
+        finally:
+            await engine.dispose()
         console.print(
-            f"[cyan]openmediavault[/cyan]: {len(filesystems)} filesystem(s), "
-            f"{len(disks)} disk(s), {len(shares)} share(s), {len(services)} service(s), "
-            f"{len(nfs)} NFS + {len(smb)} SMB export(s)"
+            f"[green]stray-export[/green]: {len(result.opened)} opened, "
+            f"{len(result.reopened)} reopened, {len(result.updated)} re-seen, "
+            f"{len(result.resolved)} resolved"
         )
-
-        fs_table = Table(title="filesystems")
-        for col in ("device", "type", "mountpoint", "size", "used %"):
-            fs_table.add_column(col, overflow="fold")
-        for fs in sorted(filesystems, key=lambda f: str(f.get("device"))):
-            fs_table.add_row(
-                str(fs.get("device")),
-                str(fs.get("type") or "—"),
-                str(fs.get("mountpoint") or "—"),
-                _fmt_bytes(fs.get("size_bytes")),
-                f"{fs.get('used_percent')}%" if fs.get("used_percent") is not None else "—",
-            )
-        console.print(fs_table)
-
-        share_table = Table(title="shared folders")
-        for col in ("name", "path", "comment"):
-            share_table.add_column(col, overflow="fold")
-        for sh in sorted(shares, key=lambda s: str(s.get("name"))):
-            share_table.add_row(
-                str(sh.get("name")), str(sh.get("path") or "—"), str(sh.get("comment") or "—")
-            )
-        console.print(share_table)
-
-        if nfs or smb:
-            exp_table = Table(title="exports")
-            for col in ("protocol", "share", "detail"):
-                exp_table.add_column(col, overflow="fold")
-            for e in nfs:
-                exp_table.add_row(
-                    "nfs", str(e.get("shared_folder") or "—"), str(e.get("client") or "—")
-                )
-            for e in smb:
-                detail = "ro" if e.get("readonly") else "rw"
-                # OMV leaves `name` empty on SMB rows — the shared folder is the
-                # identifying label, same as the NFS side.
-                exp_table.add_row(
-                    "smb", str(e.get("name") or e.get("shared_folder") or "—"), detail
-                )
-            console.print(exp_table)
-
-        running = [s for s in services if s.get("running")]
-        console.print(f"[bold]services[/bold]: {len(running)}/{len(services)} running")
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))

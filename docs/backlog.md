@@ -249,10 +249,22 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Discovery sources & probes (next up)
 
-- [ ] **OMV export → stray-export detection** — with NFS/SMB exports now
-  inventoried, flag an exported share whose backing shared-folder/filesystem is
-  gone (or an export no client mounts, once temporal data lands) as a
-  `STRAY_CONFIG` on the storage side. Complements the UniFi network stray-config.
+- [x] **MikroTik RouterOS adapter** — `adapters/mikrotik.py` over the RouterOS 7
+  REST API (basic auth, read-only user): identity/resource, interfaces, `/ip/address`
+  subnets, DHCP leases, static DNS. Records are shaped like UniFi's, so the same
+  reconcilers consume them: static DNS → internal endpoints under resolver
+  `mikrotik[:<name>]`, addresses + leases → stray-config. `helper discover
+  mikrotik [--persist] [--dry-run]`, `run_discovery("mikrotik")`, `mikrotik`
+  source in `helper config`. `DiscoverySource.MIKROTIK` (no migration; SQLite
+  precedent). Not yet: routes, firewall address-lists, CAPsMAN/wireless clients.
+
+- [x] **OMV export → stray-export detection** — `engine/stray_export.py`: an NFS
+  export or SMB share whose shared folder is gone, or whose folder's backing
+  filesystem is not mounted (matched by device, mountpoint uuid, or label),
+  becomes a `STRAY_CONFIG` finding keyed per export with the standard
+  reopen/resolve lifecycle; absent exports never auto-resolve. `helper discover
+  omv` prints the hits, `--persist` records them, `run_discovery("omv")`
+  persists. "An export no client mounts" still waits on Phase-2 temporal data.
 - [x] **Explicit service alias map** — `engine/service_aliases.py` +
   `HOMELAB_HELPER_SERVICE_ALIASES` (`fixtures/service-aliases.example.yaml`):
   exact hostnames and globs → service name, exceptions only. The DNS reconcile

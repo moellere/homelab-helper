@@ -249,6 +249,15 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Discovery sources & probes (next up)
 
+- [x] **MikroTik RouterOS adapter** — `adapters/mikrotik.py` over the RouterOS 7
+  REST API (basic auth, read-only user): identity/resource, interfaces, `/ip/address`
+  subnets, DHCP leases, static DNS. Records are shaped like UniFi's, so the same
+  reconcilers consume them: static DNS → internal endpoints under resolver
+  `mikrotik[:<name>]`, addresses + leases → stray-config. `helper discover
+  mikrotik [--persist] [--dry-run]`, `run_discovery("mikrotik")`, `mikrotik`
+  source in `helper config`. `DiscoverySource.MIKROTIK` (no migration; SQLite
+  precedent). Not yet: routes, firewall address-lists, CAPsMAN/wireless clients.
+
 - [x] **OMV export → stray-export detection** — `engine/stray_export.py`: an NFS
   export or SMB share whose shared folder is gone, or whose folder's backing
   filesystem is not mounted (matched by device, mountpoint uuid, or label),

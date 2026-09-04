@@ -12,7 +12,7 @@ execute. Authority changes are operator gestures at the CLI.
 
 **Read-only against infrastructure (L1).** Query tools only read the harness
 DB. ``run_discovery`` reads live sources (UniFi, Cloudflare, Argo CD, Proxmox,
-K8s, OMV, Home Assistant — credentials from the same ``HOMELAB_HELPER_*`` env
+K8s, OMV, Home Assistant, MikroTik — credentials from the same ``HOMELAB_HELPER_*`` env
 vars the CLI uses) and persists into the harness DB — never a write to the lab
 itself. The Phase-5 planners (placement, rebalance, bottlenecks, surplus,
 network path) are exposed as deterministic reports; the client's own model
@@ -41,12 +41,13 @@ from homelab_helper.adapters.argocd import ArgoCDAdapter
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
+from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
-from homelab_helper.db.enums import FindingStatus, ProposalOutcome, ResolutionScope
+from homelab_helper.db.enums import DiscoverySource, FindingStatus, ProposalOutcome, ResolutionScope
 from homelab_helper.db.models import (
     CellTrust,
     Cluster,
@@ -467,6 +468,11 @@ def _load_hass_adapter() -> HomeAssistantAdapter:
     return HomeAssistantAdapter.from_env()
 
 
+def _load_mikrotik_adapter() -> MikroTikAdapter:
+    """Factory (monkeypatched in tests)."""
+    return MikroTikAdapter.from_env()
+
+
 async def _discover_one_unifi(session: AsyncSession, adapter: UniFiAdapter) -> dict[str, Any]:
     cfg = adapter.config
     try:
@@ -623,6 +629,41 @@ async def _discover_hass(session: AsyncSession) -> dict[str, Any]:
     return result.as_dict()
 
 
+async def _discover_mikrotik(session: AsyncSession) -> dict[str, Any]:
+    adapter = _load_mikrotik_adapter()
+    cfg = adapter.config
+    try:
+        identity = await adapter.identity()
+        resource = await adapter.resource()
+        addresses = await adapter.list_addresses()
+        leases = await adapter.list_leases()
+        dns = await adapter.list_dns_records()
+    finally:
+        await adapter.aclose()
+    now = datetime.now(UTC)
+    eps = await reconcile_internal_endpoints(
+        session, dns, resolver=cfg.resolver, source=DiscoverySource.MIKROTIK, when=now
+    )
+    stray = await reconcile_stray_config(session, addresses, leases, when=now)
+    return {
+        "router": identity or cfg.name,
+        "resolver": cfg.resolver,
+        "version": resource.get("version"),
+        "board": resource.get("board"),
+        "addresses": len(addresses),
+        "leases": len(leases),
+        "dns_records": len(dns),
+        "endpoints": {
+            "created": len(eps.created),
+            "updated": len(eps.updated),
+            "removed": len(eps.removed),
+            "moved": len(eps.moved),
+        },
+        "superseded_resolvers": list(eps.superseded_resolvers),
+        "stray_config": {"opened": len(stray.opened), "resolved": len(stray.resolved)},
+    }
+
+
 _DISCOVERERS = {
     "unifi": _discover_unifi,
     "cloudflare": _discover_cloudflare,
@@ -631,13 +672,14 @@ _DISCOVERERS = {
     "k8s": _discover_k8s,
     "omv": _discover_omv,
     "hass": _discover_hass,
+    "mikrotik": _discover_mikrotik,
 }
 
 
 @server.tool()
 async def run_discovery(source: str) -> dict[str, Any]:
     """Run a management-plane discovery and persist into the harness DB.
-    Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass.
+    Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass, mikrotik.
     Reads the live source (credentials from HOMELAB_HELPER_* env vars); never
     writes to the infrastructure itself."""
     discoverer = _DISCOVERERS.get(source)

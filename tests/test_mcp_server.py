@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 import homelab_helper.mcp_server as mcp_srv
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
+from homelab_helper.adapters.mikrotik import MikroTikAdapter, MikroTikConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter, OpenMediaVaultConfig
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli.main import app
@@ -742,3 +743,37 @@ async def test_run_discovery_omv_persists_stray_exports(
     assert out["stray_export_findings"]["opened"] == 1
     listed = await list_findings()
     assert any(f["title"].startswith("Stray export: SMB Ghost") for f in listed)
+
+
+# ---------------------------------------------------------------------------
+# run_discovery("mikrotik")
+# ---------------------------------------------------------------------------
+
+
+async def test_run_discovery_mikrotik_persists(
+    seeded_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_mikrotik_adapter import ROUTES
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = ROUTES.get(request.url.path)
+        return httpx.Response(200, json=body) if body is not None else httpx.Response(404)
+
+    client = httpx.AsyncClient(
+        base_url="https://r.lan/rest", transport=httpx.MockTransport(handler)
+    )
+    adapter = MikroTikAdapter(
+        MikroTikConfig(url="https://r.lan", username="ro", password="pw", name="wyola"),
+        client=client,
+    )
+    monkeypatch.setattr(mcp_srv, "_load_mikrotik_adapter", lambda: adapter)
+    monkeypatch.delenv("HOMELAB_HELPER_SERVICE_ALIASES", raising=False)
+    try:
+        out = await run_discovery("mikrotik")
+    finally:
+        await client.aclose()
+    assert out["source"] == "mikrotik"
+    assert out["router"] == "core-router"
+    assert out["resolver"] == "mikrotik:wyola"
+    assert out["endpoints"]["created"] == 2
+    assert out["stray_config"]["opened"] == 1

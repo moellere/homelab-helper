@@ -196,6 +196,17 @@ SOURCES: tuple[SourceConfig, ...] = (
         secret=frozenset({"HOMELAB_HELPER_OMV_PASSWORD"}),
     ),
     SourceConfig(
+        name="mikrotik",
+        required=(
+            "HOMELAB_HELPER_MIKROTIK_URL",
+            "HOMELAB_HELPER_MIKROTIK_USERNAME",
+            "HOMELAB_HELPER_MIKROTIK_PASSWORD",
+        ),
+        optional=("HOMELAB_HELPER_MIKROTIK_VERIFY_SSL", "HOMELAB_HELPER_MIKROTIK_NAME"),
+        secret=frozenset({"HOMELAB_HELPER_MIKROTIK_PASSWORD"}),
+        note="RouterOS 7 REST API; a read-only user",
+    ),
+    SourceConfig(
         name="hass",
         required=("HOMELAB_HELPER_HASS_URL", "HOMELAB_HELPER_HASS_TOKEN"),
         optional=("HOMELAB_HELPER_HASS_VERIFY_SSL",),

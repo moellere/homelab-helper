@@ -349,7 +349,7 @@ helper-server stays at the primary site (Covington). Agents at Wyola post observ
 | helper-server | Fully trusted; holds keys |
 | helper-agent | Trusted within its host's scope |
 | NetBox | Trusted as far as its API token allows |
-| Proxmox / K8s / UniFi / Cloudflare / Argo CD / OMV / Home Assistant | Trusted as far as their API tokens allow |
+| Proxmox / K8s / UniFi / MikroTik / Cloudflare / Argo CD / OMV / Home Assistant | Trusted as far as their API tokens allow |
 | MCP client (Claude Code / Desktop, Cursor) | Trusted as the operator: stdio only, runs in the operator's shell with the operator's `.env`. No network transport at L1; remote MCP is gated on the HTTP API + token auth + a secrets store |
 | Local LLM (Ollama) | Untrusted; never gets raw credentials |
 | Cloud LLM (Anthropic/OpenAI) | Untrusted; never gets credentials or PII the user hasn't authorized |

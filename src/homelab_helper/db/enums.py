@@ -82,6 +82,7 @@ class DiscoverySource(StrEnum):
     CLOUDFLARE = "cloudflare"
     NETBOX = "netbox"
     HOME_ASSISTANT = "home-assistant"
+    MIKROTIK = "mikrotik"
 
 
 class Confidence(StrEnum):

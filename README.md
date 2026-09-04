@@ -15,7 +15,7 @@ migrations that `helper db init` applies.
 `homelab-helper` is for people who run their own infrastructure at home. It
 discovers what you have, maintains one coherent inventory across the many
 sources of truth a real homelab spans (kernel probes, NetBox, Proxmox,
-Kubernetes, Talos, UniFi, Cloudflare, Argo CD, OpenMediaVault, Home
+Kubernetes, Talos, UniFi, MikroTik, Cloudflare, Argo CD, OpenMediaVault, Home
 Assistant), surfaces drift and gaps as auditable findings, and proposes
 changes. Everything is "propose, never apply" (L1) unless you opt in — and
 that read-only product is complete on its own. Execution (L2) sits behind the
@@ -33,7 +33,7 @@ See [`architecture.md`](./docs/architecture.md) for the design,
 - Scan a network and fingerprint live hosts
 - Deep-probe Linux hosts over SSH (CPU, memory, storage, network, PCI, GPU, services) and Talos nodes over the machine API
 - Maintain part-level identity that survives moves (DIMMs, SSDs, NICs)
-- Read the management planes — Proxmox, Kubernetes, UniFi, Cloudflare, Argo CD, OpenMediaVault, Home Assistant — and reconcile them against kernel ground truth (DNS split-brain, git-vs-cluster drift, stray config)
+- Read the management planes — Proxmox, Kubernetes, UniFi, MikroTik, Cloudflare, Argo CD, OpenMediaVault, Home Assistant — and reconcile them against kernel ground truth (DNS split-brain, git-vs-cluster drift, stray config)
 - Push inventory into NetBox via its API
 - Run configuration assertions and produce reconciliation findings
 - Produce a day-one audit against a real homelab
@@ -106,6 +106,7 @@ verb (all are prefixed `HOMELAB_HELPER_`):
 | Kubernetes | `KUBECONFIG`, `KUBE_CONTEXT` |
 | OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
 | Home Assistant | `HASS_URL`, `HASS_TOKEN` (a long-lived access token; a non-admin user is enough), `HASS_VERIFY_SSL` |
+| MikroTik | `MIKROTIK_URL`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD` (a read-only user with the `rest-api` policy), `MIKROTIK_VERIFY_SSL`, `MIKROTIK_NAME` |
 | Service identity | `SERVICE_ALIASES` — YAML mapping hostnames to service names when the leftmost-label default is wrong (see `fixtures/service-aliases.example.yaml`) |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
 | LLM (chat) | `LLM_PRIVACY` (`strict-local`/`prefer-local`/`open`), `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIER`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_BASE_URL` |
@@ -132,6 +133,7 @@ helper --help
 
 helper discover host <name> --ssh-user <u> --ssh-key <path>
 helper discover unifi --persist
+helper discover mikrotik --persist   # RouterOS 7: static DNS → endpoints, subnets + leases → stray config
 helper discover cloudflare --persist
 helper discover argocd
 helper discover proxmox --persist
@@ -253,7 +255,7 @@ queries (`list_hosts`, `get_host`, `list_findings`, `get_finding`,
 `list_services`, `get_service`, `audit_summary`, `config_status`), the
 findings lifecycle (`ack_finding`, `resolve_finding`, `suppress_finding` —
 harness-DB writes only), `run_discovery` over the management-plane sources
-(UniFi, Cloudflare, Argo CD, Proxmox, K8s, OMV, Home Assistant), `probe_host`
+(UniFi, MikroTik, Cloudflare, Argo CD, Proxmox, K8s, OMV, Home Assistant), `probe_host`
 (SSH deep discovery; key path or env reference only — no secrets through tool
 arguments) and `probe_talos` (the Talos machine API), and the Phase-5 planners
 as deterministic reports (`list_workloads`, `recommend_placement`,
@@ -318,7 +320,7 @@ validation signs Phase 6 off.
 ├── docs/releasing.md               # Tag-driven releases to PyPI
 ├── fixtures/                       # Operator-editable examples: assertion library, topology, example lab
 ├── src/homelab_helper/
-│   ├── adapters/                   # NetBox, Kernel-SSH, Talos, Proxmox, K8s, UniFi, Cloudflare, Argo CD, OMV, Home Assistant
+│   ├── adapters/                   # NetBox, Kernel-SSH, Talos, Proxmox, K8s, UniFi, MikroTik, Cloudflare, Argo CD, OMV, Home Assistant
 │   ├── probes/                     # Probe plugin SDK + first-party host/network/talos probes
 │   ├── engine/                     # Reconciler, assertions, planners, trust gate, executor, rollback
 │   ├── llm/                        # LLM router + backends, chat context, narrator/planner/discovery agents

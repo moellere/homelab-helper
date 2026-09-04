@@ -8,6 +8,7 @@ they're auto-included unless ``--probe`` filters them.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import sys
 from datetime import UTC, datetime
@@ -27,12 +28,14 @@ from homelab_helper.adapters.homeassistant import (
     summarize_states,
 )
 from homelab_helper.adapters.kubernetes import K8sAdapter
+from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.config import database_url as _database_url
+from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Host, Observation
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.dns_reconcile import (
@@ -144,6 +147,11 @@ def _load_omv_adapter() -> OpenMediaVaultAdapter:
 def _load_hass_adapter() -> HomeAssistantAdapter:
     """Factory (monkeypatched in tests) — builds a Home Assistant adapter from env."""
     return HomeAssistantAdapter.from_env()
+
+
+def _load_mikrotik_adapter() -> MikroTikAdapter:
+    """Factory (monkeypatched in tests) — builds a MikroTik adapter from env."""
+    return MikroTikAdapter.from_env()
 
 
 def _warn_superseded(resolvers: list[str]) -> None:
@@ -806,6 +814,102 @@ def discover_unifi(
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="mikrotik")
+def discover_mikrotik(
+    persist: bool = typer.Option(
+        False,
+        "--persist",
+        help="Reconcile internal ServiceEndpoints from static DNS + stray-config from addresses/leases.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --persist, preview + roll back."),
+) -> None:
+    """Read a MikroTik RouterOS 7 router (read-only): identity, interfaces, subnets, leases, static DNS."""
+
+    async def _go() -> int:
+        adapter = _load_mikrotik_adapter()
+        cfg = adapter.config
+        try:
+            ok, err = await adapter.health_check()
+            if not ok:
+                console.print(f"[red]mikrotik[/red] [bold]{cfg.name}[/bold] unreachable: {err}")
+                return 1
+            identity = await adapter.identity()
+            resource = await adapter.resource()
+            interfaces = await adapter.list_interfaces()
+            addresses = await adapter.list_addresses()
+            leases = await adapter.list_leases()
+            dns = await adapter.list_dns_records()
+        finally:
+            await adapter.aclose()
+
+        console.print(
+            f"[cyan]mikrotik[/cyan] [bold]{identity or cfg.name}[/bold] "
+            f"({resource.get('board') or '?'}, RouterOS {resource.get('version') or '?'}): "
+            f"{len(interfaces)} interface(s), {len(addresses)} address(es), "
+            f"{len(leases)} lease(s), {len(dns)} static DNS record(s)"
+        )
+        table = Table(title=f"subnets - {identity or cfg.name}")
+        for col in ("interface", "subnet", "enabled", "leases"):
+            table.add_column(col, no_wrap=True)
+        for net in sorted(addresses, key=lambda n: str(n.get("name"))):
+            subnet = str(net.get("subnet") or "?")
+            count = sum(1 for c in leases if _in_subnet(c.get("ip"), subnet))
+            table.add_row(str(net.get("name")), subnet, str(net.get("enabled")), str(count))
+        console.print(table)
+        dns_table = Table(title="static DNS")
+        for col in ("hostname", "value", "type", "enabled"):
+            dns_table.add_column(col)
+        for r in sorted(dns, key=lambda d: str(d.get("hostname"))):
+            dns_table.add_row(
+                str(r.get("hostname")),
+                str(r.get("value")),
+                str(r.get("record_type")),
+                str(r.get("enabled")),
+            )
+        console.print(dns_table)
+
+        if not persist:
+            return 0
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                now = datetime.now(UTC)
+                result = await reconcile_internal_endpoints(
+                    session, dns, resolver=cfg.resolver, source=DiscoverySource.MIKROTIK, when=now
+                )
+                stray = await reconcile_stray_config(session, addresses, leases, when=now)
+                console.print(
+                    f"[green]endpoints[/green] ({cfg.resolver}/internal): "
+                    f"{len(result.created)} created, {len(result.updated)} updated, "
+                    f"{len(result.unchanged)} unchanged, {len(result.removed)} removed"
+                    + (f", {len(result.moved)} re-aliased" if result.moved else "")
+                )
+                _warn_superseded(result.superseded_resolvers)
+                console.print(
+                    f"[green]stray-config[/green] ({cfg.name}): {len(stray.opened)} opened, "
+                    f"{len(stray.reopened)} reopened, {len(stray.updated)} re-seen, "
+                    f"{len(stray.resolved)} resolved"
+                )
+                if dry_run:
+                    await session.rollback()
+                    console.print("[dim](dry-run, rolled back)[/dim]")
+        finally:
+            await engine.dispose()
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+def _in_subnet(ip: str | None, subnet: str) -> bool:
+    if not ip:
+        return False
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(subnet, strict=False)
+    except ValueError:
+        return False
 
 
 @discover_app.command(name="cloudflare")

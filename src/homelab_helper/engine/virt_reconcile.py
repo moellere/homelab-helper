@@ -1,7 +1,8 @@
 """Virtualization reconcile — Proxmox discovery → Cluster + VirtualMachine rows.
 
 Upserts the harness-side projection of a hypervisor's cluster + guests. Idempotent:
-the cluster is keyed by name, each VM by ``(cluster, vmid)``. A guest's node is
+the cluster is keyed by name (a standalone node by its node name, since each
+standalone node is its own VMID namespace), each VM by ``(cluster, vmid)``. A guest's node is
 resolved to a ``Host`` row when that node is already known, so VM placement can
 be reasoned about against hardware. Discovery is read-only at the source (L1):
 this only writes harness rows from what the adapter already read.
@@ -58,6 +59,16 @@ def _vm_fields_from_discovery(vm: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def standalone_cluster_name(cluster_status: dict[str, Any], vms: list[dict[str, Any]]) -> str:
+    """Name for a node with no cluster row. Each standalone node is its own VMID
+    namespace, so the node name must be part of the key or two nodes collide."""
+    nodes = {n.get("name") for n in cluster_status.get("nodes") or [] if n.get("name")}
+    nodes |= {v.get("node") for v in vms if v.get("node")}
+    if len(nodes) == 1:
+        return f"(standalone) {nodes.pop()}"
+    return "(standalone)"
+
+
 async def reconcile_proxmox_cluster(
     session: AsyncSession,
     cluster_status: dict[str, Any],
@@ -67,7 +78,7 @@ async def reconcile_proxmox_cluster(
     kind: str = "proxmox",
 ) -> VirtReconcileResult:
     """Upsert a Cluster + its VirtualMachine rows from Proxmox discovery."""
-    cluster_name = cluster_status.get("name") or "(standalone)"
+    cluster_name = cluster_status.get("name") or standalone_cluster_name(cluster_status, vms)
     result = VirtReconcileResult(cluster_name=cluster_name)
 
     cluster = (
@@ -135,4 +146,4 @@ async def reconcile_proxmox_cluster(
     return result
 
 
-__all__ = ["VirtReconcileResult", "reconcile_proxmox_cluster"]
+__all__ = ["VirtReconcileResult", "reconcile_proxmox_cluster", "standalone_cluster_name"]

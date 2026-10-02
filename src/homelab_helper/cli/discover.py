@@ -67,7 +67,10 @@ from homelab_helper.engine.stray_export import (
     reconcile_stray_exports,
 )
 from homelab_helper.engine.talos_probe import TalosProbeRequest, probe_talos, select_talos_probes
-from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
+from homelab_helper.engine.virt_reconcile import (
+    reconcile_proxmox_cluster,
+    standalone_cluster_name,
+)
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
 from homelab_helper.probes.network.fingerprint import NetworkFingerprintProbe
 from homelab_helper.probes.network.subnet_scan import NetworkSubnetScanProbe
@@ -466,7 +469,7 @@ def discover_proxmox(
             status = await adapter.cluster_status()
             vms = await adapter.list_vms()
 
-            cluster_label = status["name"] or "(standalone)"
+            cluster_label = status["name"] or standalone_cluster_name(status, vms)
             console.print(
                 f"[cyan]cluster[/cyan] {cluster_label}: {status['node_count']} node(s), "
                 f"quorate={status['quorate']}"

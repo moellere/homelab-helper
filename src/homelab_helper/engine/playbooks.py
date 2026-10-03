@@ -68,9 +68,17 @@ def _target(finding: ReconciliationFinding, target_type: str) -> str | None:
     return None
 
 
+def _argocd_status(finding: ReconciliationFinding) -> dict[str, Any] | None:
+    for ref in finding.evidence_refs or []:
+        if ref.get("type") == "argocd_status":
+            return ref
+    return None
+
+
 def _argocd_resync(finding: ReconciliationFinding) -> Draft | None:
     app = _target(finding, "argocd-app")
-    if not app:
+    status = _argocd_status(finding)
+    if not app or status is None or status.get("sync") != "OutOfSync":
         return None
     try:
         artifact = build_argocd_artifact(application=app)

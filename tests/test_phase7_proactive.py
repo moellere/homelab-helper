@@ -189,6 +189,20 @@ async def test_playbooks_respect_the_cooldown_after_a_decision(sessionmaker) -> 
         assert len(later.drafted) == 1
 
 
+async def test_degraded_but_synced_app_gets_no_resync(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await reconcile_argocd_drift(s, [_app("app-gate", health="Degraded")])
+        row = (await s.execute(select(ReconciliationFinding))).scalar_one()
+        assert {
+            "type": "argocd_status",
+            "sync": "Synced",
+            "health": "Degraded",
+        } in row.evidence_refs
+        r = await run_playbooks(s)
+        assert r.drafted == []
+        assert r.no_playbook == 1
+
+
 async def test_findings_without_a_playbook_are_left_alone(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         s.add(

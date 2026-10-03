@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from homelab_helper.db.base import Base
+from homelab_helper.db.enums import DiscoverySource
 from homelab_helper.db.models import Cluster, Host, VirtualMachine
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.virt_reconcile import (
@@ -145,3 +146,54 @@ async def test_standalone_nodes_do_not_collide_on_vmid(sessionmaker) -> None:
 def test_standalone_cluster_name_falls_back_without_a_single_node() -> None:
     assert standalone_cluster_name({"nodes": []}, []) == "(standalone)"
     assert standalone_cluster_name({"nodes": []}, [_vm(100, "x", "pve-a")]) == "(standalone) pve-a"
+
+
+async def test_legacy_standalone_guests_are_adopted_per_node(sessionmaker) -> None:
+    """A database written before per-node keys has one shared ``(standalone)`` row.
+    Each node's next discovery must take its own guests out of it (updating them in
+    place, not duplicating), leave the other node's guests alone, and drop the legacy
+    row once it is empty."""
+    async with session_scope(sessionmaker) as s:
+        legacy = Cluster(
+            name="(standalone)", kind="proxmox", discovery_source=DiscoverySource.PROXMOX
+        )
+        s.add(legacy)
+        await s.flush()
+        for vmid, name, node in ((101, "nas", "pve-a"), (103, "docker-a", "pve-b")):
+            s.add(
+                VirtualMachine(
+                    cluster_id=legacy.id,
+                    vmid=vmid,
+                    name=name,
+                    kind="qemu",
+                    status="stopped",
+                    node_name=node,
+                    discovery_source=DiscoverySource.PROXMOX,
+                )
+            )
+
+    async with session_scope(sessionmaker) as s:
+        first = await reconcile_proxmox_cluster(
+            s, _standalone("pve-a"), [_vm(101, "nas", "pve-a")], when=_WHEN
+        )
+    assert first.cluster_created is True
+    assert first.vms_adopted == ["nas"]
+    assert first.vms_updated == ["nas"]  # status flips from the seeded "stopped"
+    assert first.vms_created == []
+    assert first.legacy_cluster_removed is False  # pve-b's guest is still there
+
+    async with session_scope(sessionmaker) as s:
+        second = await reconcile_proxmox_cluster(
+            s, _standalone("pve-b"), [_vm(103, "docker-a", "pve-b")], when=_WHEN
+        )
+    assert second.vms_adopted == ["docker-a"]
+    assert second.legacy_cluster_removed is True
+
+    async with sessionmaker() as s:
+        clusters = sorted(c.name for c in (await s.execute(select(Cluster))).scalars())
+        vms = sorted(
+            (v.node_name, v.vmid, v.name)
+            for v in (await s.execute(select(VirtualMachine))).scalars()
+        )
+    assert clusters == ["(standalone) pve-a", "(standalone) pve-b"]
+    assert vms == [("pve-a", 101, "nas"), ("pve-b", 103, "docker-a")]

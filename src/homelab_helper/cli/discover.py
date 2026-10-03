@@ -500,6 +500,12 @@ def discover_proxmox(
                         f"({'new' if vr.cluster_created else 'updated'}), "
                         f"VMs {len(vr.vms_created)} created / {len(vr.vms_updated)} updated / "
                         f"{len(vr.vms_unchanged)} unchanged"
+                        + (
+                            f" / {len(vr.vms_adopted)} adopted from the legacy (standalone) row"
+                            if vr.vms_adopted
+                            else ""
+                        )
+                        + (" (legacy row removed)" if vr.legacy_cluster_removed else "")
                     )
                 finally:
                     await engine.dispose()

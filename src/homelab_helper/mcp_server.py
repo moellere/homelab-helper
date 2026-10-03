@@ -566,7 +566,9 @@ async def _discover_proxmox(session: AsyncSession) -> dict[str, Any]:
             "created": len(vr.vms_created),
             "updated": len(vr.vms_updated),
             "unchanged": len(vr.vms_unchanged),
+            "adopted_from_legacy_standalone": len(vr.vms_adopted),
         },
+        "legacy_standalone_row_removed": vr.legacy_cluster_removed,
     }
 
 

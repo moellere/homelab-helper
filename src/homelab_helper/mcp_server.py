@@ -1815,8 +1815,10 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
 async def draft_remediations() -> dict[str, Any]:
     """Run the remediation playbooks once: every OPEN finding a playbook covers
     (Argo CD drift → argocd-sync, unhealthy workload → workload-restart) gets a
-    PENDING proposal, unless one is already pending or was decided within the
-    cooldown. Deterministic — the finding's own fields pick the action. Nothing
+    PENDING proposal, unless it is younger than 15 minutes (platform self-heal
+    gets first go), one is already pending, or one was decided within the
+    cooldown; a pending draft whose finding resolved is withdrawn.
+    Deterministic — the finding's own fields pick the action. Nothing
     executes; follow with `execute_proposal` or `helper daemon run --ask`."""
     engine = make_engine(database_url())
     try:
@@ -1827,6 +1829,8 @@ async def draft_remediations() -> dict[str, Any]:
                 "drafted": result.drafted,
                 "skipped_pending": len(result.skipped_live),
                 "skipped_cooldown": len(result.skipped_cooldown),
+                "skipped_young": len(result.skipped_young),
+                "withdrawn": result.withdrawn,
                 "findings_without_playbook": result.no_playbook,
                 "playbooks": [f"{pb.name}: {pb.description}" for pb in PLAYBOOKS],
             }

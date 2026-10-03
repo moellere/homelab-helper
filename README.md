@@ -279,8 +279,10 @@ would allow to your phone and executes on a tap. Two playbooks ship:
 | `workload-unhealthy` (a settled Deployment / StatefulSet / DaemonSet has fewer ready replicas than desired) | `workload-restart` | `workload-restart` of that workload |
 
 Playbooks are a deterministic table, not a model: a finding's own fields pick
-the action, one live proposal per finding, and a six-hour cooldown after any
-decision so a fix that did not clear the finding is not retried every pass.
+the action; a finding must have persisted 15 minutes first (the platform's
+own self-heal gets first go); one live proposal per finding; a six-hour
+cooldown after any decision so a fix that did not clear the finding is not
+retried every pass; and a draft whose finding resolves is withdrawn.
 The listener never re-asks a proposal you denied or let time out, never asks
 about cells still at PROPOSE, and leaves hand-authored proposals alone. With
 every cell at its default, the daemon only ever writes rows.

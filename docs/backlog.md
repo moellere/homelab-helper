@@ -18,7 +18,7 @@ doesn't block. Acceptance-criterion references (AC1–AC5, P6-AC1–6) point at
 **Phases 1 (core), 3, 4, 5 and 6 are build-complete, and Phase 7 slice 1
 (agent-triggered execution behind a phone-tap approval, guest migrate,
 Kubernetes workload actions) has landed; Phase 2 (continuous agent /
-time-series) is deferred into Phase 7 slice 3.** Full suite: 950+ tests green.
+time-series) landed as Phase 7 slice 3's daemon.** Full suite: 965+ tests green.
 Packaging is release-ready (`uv tool install`, per-user dirs, tag-driven PyPI
 release — see `releasing.md`).
 Live-fleet validation of the Phase 4–5 ACs is the outstanding sign-off gate
@@ -752,14 +752,30 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 - [ ] LXC lifecycle beyond power; NetBox / OMV writes — each behind the
   executor with a verified inverse, when a use case asks for them
 
-### Slice 3 — proactive (queued)
+### Slice 3 — proactive (landed)
 
-- [ ] Remediation playbooks: deterministic finding-kind → manifest template map;
-  the Triage agent drafts, policy decides. Needs findings that carry a
-  workload / guest identity (today only `DRIFT_CANDIDATE` names an Argo CD app;
-  `argocd-sync` is the first playbook). _P7-AC6 first half._
-- [ ] Scheduler — the deferred Phase-2 loop (discovery + reconcile + assertions
-  on a cadence) so proposals appear unasked. _P7-AC6 second half._
+- [x] `WORKLOAD_UNHEALTHY` findings (`engine/k8s_workloads.py`): the K8s adapter
+  lists every Deployment / StatefulSet / DaemonSet; a settled workload with
+  fewer ready than desired opens a finding (HIGH at zero ready); healthy again
+  resolves it; absent is untouched. Wired into `discover k8s` and `run_discovery("k8s")`.
+- [x] Playbooks (`engine/playbooks.py`): deterministic registry —
+  `argocd-resync` (DRIFT_CANDIDATE → argocd-sync), `workload-restart`
+  (WORKLOAD_UNHEALTHY → workload-restart). One live proposal per finding, 6 h
+  cooldown after a decision, `finding.proposed_actions` records the draft.
+  MCP `draft_remediations`. _P7-AC6 first half._
+- [x] Listener (`engine/listener.py`): asks about pending `playbook:*` / `agent:*`
+  proposals that policy would allow, through the executor with the approval
+  channel; never re-asks an answered one; skips PROPOSE/BLOCK cells and
+  hand-authored proposals. This is the `helper exec listen` the slice-2 notes
+  deferred, with the marker question answered by "an approval event exists".
+- [x] `helper daemon run` (`cli/daemon.py`): discovery → playbooks → listener on
+  APScheduler cadences; `--once` for cron; `--no-ask` / `--no-playbooks` /
+  `--sources ''` to disable jobs. _P7-AC6 second half._
+- [ ] Live validation of the loop (runbook Part 3 step 7).
+- [ ] More playbooks as findings grow identities: guest expected-on but stopped
+  (needs an expected-state model for VMs), stray DNS → `dns-record`.
+- [ ] Probe-level schedules and assertion cadences inside the daemon (the rest
+  of the Phase-2 spec).
 
 ### Test hygiene (found during slice 1)
 

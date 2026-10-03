@@ -110,6 +110,8 @@ EXPECTED_TOOLS = {
     "get_proposal",
     # Phase 7: a *trigger*, not an authority — see test_execute_proposal_* below.
     "execute_proposal",
+    # Phase 7 slice 3: deterministic playbooks draft proposals (harness-DB write).
+    "draft_remediations",
 }
 
 # Anything that grants, elevates, overrides, rolls back, or opens a window

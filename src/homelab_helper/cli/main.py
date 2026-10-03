@@ -27,6 +27,7 @@ from homelab_helper.cli.audit import audit_app
 from homelab_helper.cli.bottlenecks import bottlenecks_app
 from homelab_helper.cli.chat import chat_app, onboard_app
 from homelab_helper.cli.config import config_app
+from homelab_helper.cli.daemon import daemon_app
 from homelab_helper.cli.db import db_app
 from homelab_helper.cli.diff import diff_app
 from homelab_helper.cli.discover import discover_app
@@ -66,6 +67,7 @@ app.add_typer(bottlenecks_app)
 app.add_typer(trust_app)
 app.add_typer(exec_app)
 app.add_typer(approvals_app)
+app.add_typer(daemon_app)
 app.add_typer(window_app)
 app.add_typer(part_app)
 app.add_typer(service_app)

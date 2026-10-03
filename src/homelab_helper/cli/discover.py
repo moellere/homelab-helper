@@ -51,6 +51,7 @@ from homelab_helper.engine.host_probe import (
     select_host_probes,
 )
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
+from homelab_helper.engine.k8s_workloads import reconcile_workload_health
 from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
 from homelab_helper.engine.reconciler import Reconciler, ReconcileResult
 from homelab_helper.engine.runner import ProbeRunner
@@ -548,11 +549,20 @@ def discover_k8s() -> None:
         try:
             sm = make_sessionmaker(engine)
             async with session_scope(sm) as session:
-                result = await discover_k8s_nodes(session, adapter, when=datetime.now(UTC))
+                now = datetime.now(UTC)
+                result = await discover_k8s_nodes(session, adapter, when=now)
+                health = await reconcile_workload_health(
+                    session, await adapter.list_workloads(), when=now
+                )
             console.print(
                 f"[green]k8s[/green]: {result.nodes_seen} node(s) — "
                 f"{len(result.hosts_matched)} matched, {len(result.hosts_created)} new host(s); "
                 "facts recorded INFERRED (kernel-verified data unchanged)."
+            )
+            console.print(
+                f"[green]workloads[/green]: {health.seen} seen — "
+                f"{len(health.unhealthy)} unhealthy ({len(health.opened)} new, "
+                f"{len(health.reopened)} reopened), {len(health.resolved)} resolved"
             )
             return 0
         finally:

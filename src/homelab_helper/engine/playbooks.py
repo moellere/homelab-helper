@@ -10,12 +10,17 @@ adversarial finding description says can pick a different action. An LLM may
 Drafting writes a PENDING ``ProposalLog`` (``proposed_by="playbook:<name>"``,
 ``finding_id`` set) and records the proposal on the finding's
 ``proposed_actions``. Policy and the operator decide from there, as for any
-other proposal. Two guards keep this from looping:
+other proposal. Four guards keep this from looping or asking about noise:
 
+- a finding must have persisted for ``min_age`` (default 15 min) before it is
+  drafted for — a transient blip that the platform heals itself (an Argo CD app
+  briefly OutOfSync under automated sync) never reaches a phone;
 - one live proposal per finding — an existing PENDING proposal for the finding
   means nothing new is drafted;
 - a cooldown after any decided proposal (accepted, rejected, deferred), so a
-  fix that did not clear the finding is not retried every pass.
+  fix that did not clear the finding is not retried every pass;
+- a pending playbook proposal whose finding has RESOLVED is withdrawn
+  (``EXPIRED``) so the listener never asks about a problem that is gone.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 DEFAULT_COOLDOWN = timedelta(hours=6)
+DEFAULT_MIN_AGE = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -144,6 +150,10 @@ class PlaybookResult:
     """Findings that already have a pending proposal."""
     skipped_cooldown: list[str] = field(default_factory=list)
     """Findings whose last proposal was decided within the cooldown."""
+    skipped_young: list[str] = field(default_factory=list)
+    """Findings not yet open for ``min_age``."""
+    withdrawn: list[str] = field(default_factory=list)
+    """Pending playbook proposals expired because their finding resolved."""
     no_playbook: int = 0
 
 
@@ -178,15 +188,46 @@ async def _blocking_proposal(
     return None
 
 
+async def _withdraw_stale(session: AsyncSession, now: datetime) -> list[str]:
+    rows = (
+        (
+            await session.execute(
+                select(ProposalLog)
+                .join(ReconciliationFinding, ReconciliationFinding.id == ProposalLog.finding_id)
+                .where(
+                    ProposalLog.outcome == ProposalOutcome.PENDING,
+                    ProposalLog.proposed_by.like("playbook:%"),
+                    ReconciliationFinding.status == FindingStatus.RESOLVED,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for p in rows:
+        p.outcome = ProposalOutcome.EXPIRED
+        p.outcome_at = now
+    return [str(p.id) for p in rows]
+
+
+def _age(finding: ReconciliationFinding, now: datetime) -> timedelta:
+    seen = finding.first_seen
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    return now - seen
+
+
 async def run_playbooks(
     session: AsyncSession,
     *,
     when: datetime | None = None,
     cooldown: timedelta = DEFAULT_COOLDOWN,
+    min_age: timedelta = DEFAULT_MIN_AGE,
 ) -> PlaybookResult:
-    """Draft a proposal for every OPEN finding a playbook covers, with the two guards above."""
+    """Draft a proposal for every OPEN finding a playbook covers, with the guards above."""
     now = when or datetime.now(UTC)
     result = PlaybookResult()
+    result.withdrawn = await _withdraw_stale(session, now)
     findings = (
         (
             await session.execute(
@@ -206,6 +247,9 @@ async def run_playbooks(
         draft = pb.build(finding)
         if draft is None:
             result.no_playbook += 1
+            continue
+        if _age(finding, now) < min_age:
+            result.skipped_young.append(finding.fingerprint)
             continue
         blocker = await _blocking_proposal(session, finding, cooldown, now)
         if blocker == "live":
@@ -236,6 +280,7 @@ async def run_playbooks(
 
 __all__ = [
     "DEFAULT_COOLDOWN",
+    "DEFAULT_MIN_AGE",
     "PLAYBOOKS",
     "Playbook",
     "PlaybookResult",

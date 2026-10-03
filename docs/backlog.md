@@ -771,7 +771,12 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 - [x] `helper daemon run` (`cli/daemon.py`): discovery → playbooks → listener on
   APScheduler cadences; `--once` for cron; `--no-ask` / `--no-playbooks` /
   `--sources ''` to disable jobs. _P7-AC6 second half._
-- [ ] Live validation of the loop (runbook Part 3 step 7).
+- [x] Live validation of the loop (runbook Part 3 step 7, 10/03/2026): app-wirestudio
+  resync asked → approved → executed via the listener. Two refinements fell out of it:
+  `argocd-resync` only for OutOfSync apps (Synced/Degraded = a failed job, a sync cannot
+  help); a 15-min `min_age` debounce + withdrawal of pending drafts whose finding resolved
+  (app-of-apps blipped OutOfSync and Argo's own automated sync fixed it inside 3 min —
+  the phone should never have been asked).
 - [ ] More playbooks as findings grow identities: guest expected-on but stopped
   (needs an expected-state model for VMs), stray DNS → `dns-record`.
 - [ ] Probe-level schedules and assertion cadences inside the daemon (the rest

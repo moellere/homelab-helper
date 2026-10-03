@@ -35,6 +35,8 @@ from homelab_helper.engine.listener import ask_pending
 from homelab_helper.engine.playbooks import PLAYBOOKS, playbook_for, run_playbooks
 from homelab_helper.engine.trust import grant_cell, seed_domains
 
+NOW = timedelta(0)  # drafts immediately: the debounce is tested on its own
+
 _PVE = ProxmoxConfig(url="https://pve.test:8006", token_id="t@pam!x", token_secret="s")
 
 
@@ -142,7 +144,7 @@ async def test_playbooks_draft_one_proposal_per_covered_finding(sessionmaker) ->
     async with session_scope(sessionmaker) as s:
         await reconcile_argocd_drift(s, [_app("app-loki", sync="OutOfSync")])
         await reconcile_workload_health(s, [_workload("web", ready=0)])
-        r = await run_playbooks(s)
+        r = await run_playbooks(s, min_age=NOW)
         assert len(r.drafted) == 2
         proposals = (
             (await s.execute(select(ProposalLog).order_by(ProposalLog.title))).scalars().all()
@@ -168,7 +170,7 @@ async def test_playbooks_draft_one_proposal_per_covered_finding(sessionmaker) ->
         assert finding.proposed_actions[0]["playbook"] == "workload-restart"
         assert finding.proposed_actions[0]["proposal_id"] == str(restart.id)
 
-        again = await run_playbooks(s)  # a pending proposal blocks a second draft
+        again = await run_playbooks(s, min_age=NOW)  # a pending proposal blocks a second draft
         assert again.drafted == []
         assert len(again.skipped_live) == 2
 
@@ -176,17 +178,41 @@ async def test_playbooks_draft_one_proposal_per_covered_finding(sessionmaker) ->
 async def test_playbooks_respect_the_cooldown_after_a_decision(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         await reconcile_argocd_drift(s, [_app("app-loki", sync="OutOfSync")])
-        first = await run_playbooks(s)
+        first = await run_playbooks(s, min_age=NOW)
         assert len(first.drafted) == 1
         p = (await s.execute(select(ProposalLog))).scalar_one()
         p.outcome = ProposalOutcome.USER_REJECTED
         p.outcome_at = datetime.now(UTC)
         await s.flush()
-        blocked = await run_playbooks(s)
+        blocked = await run_playbooks(s, min_age=NOW)
         assert blocked.drafted == []
         assert len(blocked.skipped_cooldown) == 1
-        later = await run_playbooks(s, when=datetime.now(UTC) + timedelta(hours=7))
+        later = await run_playbooks(s, when=datetime.now(UTC) + timedelta(hours=7), min_age=NOW)
         assert len(later.drafted) == 1
+
+
+async def test_young_findings_wait_for_the_platform_to_self_heal(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        t0 = datetime.now(UTC)
+        await reconcile_argocd_drift(s, [_app("app-blip", sync="OutOfSync")], when=t0)
+        fresh = await run_playbooks(s, when=t0 + timedelta(minutes=1))
+        assert fresh.drafted == []
+        assert len(fresh.skipped_young) == 1
+        aged = await run_playbooks(s, when=t0 + timedelta(minutes=16))
+        assert len(aged.drafted) == 1
+
+
+async def test_pending_draft_is_withdrawn_when_its_finding_resolves(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await reconcile_argocd_drift(s, [_app("app-blip", sync="OutOfSync")])
+        drafted = await run_playbooks(s, min_age=NOW)
+        assert len(drafted.drafted) == 1
+        await reconcile_argocd_drift(s, [_app("app-blip")])  # Argo healed it
+        r = await run_playbooks(s, min_age=NOW)
+        p = (await s.execute(select(ProposalLog))).scalar_one()
+        assert p.outcome is ProposalOutcome.EXPIRED
+        assert r.withdrawn == [str(p.id)]
+        assert r.drafted == []
 
 
 async def test_degraded_but_synced_app_gets_no_resync(sessionmaker) -> None:
@@ -198,7 +224,7 @@ async def test_degraded_but_synced_app_gets_no_resync(sessionmaker) -> None:
             "sync": "Synced",
             "health": "Degraded",
         } in row.evidence_refs
-        r = await run_playbooks(s)
+        r = await run_playbooks(s, min_age=NOW)
         assert r.drafted == []
         assert r.no_playbook == 1
 
@@ -221,7 +247,7 @@ async def test_findings_without_a_playbook_are_left_alone(sessionmaker) -> None:
         await s.flush()
         row = (await s.execute(select(ReconciliationFinding))).scalar_one()
         assert playbook_for(row) is None
-        r = await run_playbooks(s)
+        r = await run_playbooks(s, min_age=NOW)
         assert r.drafted == []
         assert r.no_playbook == 1
     assert {pb.name for pb in PLAYBOOKS} == {"argocd-resync", "workload-restart"}
@@ -285,7 +311,7 @@ async def test_listener_asks_once_and_executes_on_approve(sessionmaker) -> None:
             actor="op",
         )
         await reconcile_workload_health(s, [_workload("web", ready=0)])
-        await run_playbooks(s)
+        await run_playbooks(s, min_age=NOW)
         r = await ask_pending(s, channel=channel, adapters_for=adapters_for)
         assert len(r.asked) == 1
         assert len(r.executed) == 1
@@ -318,7 +344,7 @@ async def test_listener_never_reasks_a_denied_proposal(sessionmaker) -> None:
             actor="op",
         )
         await reconcile_workload_health(s, [_workload("web", ready=0)])
-        await run_playbooks(s)
+        await run_playbooks(s, min_age=NOW)
         first = await ask_pending(s, channel=channel, adapters_for=adapters_for)
         assert len(first.asked) == 1
         assert len(first.declined) == 1
@@ -345,7 +371,7 @@ async def test_listener_skips_cells_at_propose_without_asking(sessionmaker) -> N
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)  # every cell at PROPOSE
         await reconcile_workload_health(s, [_workload("web", ready=0)])
-        await run_playbooks(s)
+        await run_playbooks(s, min_age=NOW)
         r = await ask_pending(s, channel=channel, adapters_for=adapters_for)
         assert r.asked == []
         assert len(r.refused) == 1
@@ -370,7 +396,7 @@ async def test_listener_ignores_operator_authored_proposals(sessionmaker) -> Non
             actor="op",
         )
         await reconcile_workload_health(s, [_workload("web", ready=0)])
-        await run_playbooks(s)
+        await run_playbooks(s, min_age=NOW)
         p = (await s.execute(select(ProposalLog))).scalar_one()
         p.proposed_by = "moellere"  # hand-authored at the CLI: the listener leaves it alone
         await s.flush()

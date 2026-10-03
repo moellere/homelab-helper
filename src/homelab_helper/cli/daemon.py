@@ -40,7 +40,7 @@ daemon_app = typer.Typer(
     help="Run discovery, playbooks and the approval listener on a cadence.",
     no_args_is_help=True,
 )
-console = Console()
+console = Console(soft_wrap=True)
 
 DEFAULT_SOURCES = "argocd,k8s,proxmox"
 
@@ -77,6 +77,8 @@ async def run_playbook_pass() -> dict[str, Any]:
                 "drafted": r.drafted,
                 "skipped_pending": len(r.skipped_live),
                 "skipped_cooldown": len(r.skipped_cooldown),
+                "skipped_young": len(r.skipped_young),
+                "withdrawn": r.withdrawn,
                 "no_playbook": r.no_playbook,
             }
     finally:

@@ -730,9 +730,11 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 - [x] Guest `cpu-type` (QEMU; `set_vm_config`, applied at next stop/start;
   rollback `prior-config` restores the previous type or removes the key)
 - [x] Argo CD `argocd-sync` (optional pinned revision, prune) — adapter gains
-  `get_application` (deployed revision + sync history), `sync_application`,
-  `rollback_application`; rollback `argocd-history` returns to the current
-  history entry
+  `get_application` (deployed revision + sync history + `auto_sync`),
+  `sync_application`, `rollback_application`; rollback `argocd-history` returns
+  to the current history entry **unless the app has automated sync**, where
+  Argo CD refuses the rollback API and the verifier reports unverifiable (found
+  live 10/03/2026)
 - [x] UniFi `dns-record` (upsert one name + type on a named controller) —
   adapter gains `find_dns_record`, `create/update/delete_dns_record`, keeps
   `_id`; rollback `prior-dns-record` restores the prior value or deletes the

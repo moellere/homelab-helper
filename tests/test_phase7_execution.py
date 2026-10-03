@@ -661,19 +661,24 @@ _ARGO = ArgoCDConfig(url="https://argo.test", api_token="t")
 _UNIFI = UniFiConfig(url="https://unifi.test", api_key="k", name="covington")
 
 
-def make_argocd(requests: list[httpx.Request], *, history=(41, 42)) -> ArgoCDAdapter:
+def make_argocd(
+    requests: list[httpx.Request], *, history=(41, 42), auto_sync: bool = False
+) -> ArgoCDAdapter:
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         path = request.url.path
         if path.endswith("/applications/app-homepage") and request.method == "GET":
+            spec: dict[str, Any] = {
+                "source": {"targetRevision": "HEAD"},
+                "destination": {"namespace": "homepage"},
+            }
+            if auto_sync:
+                spec["syncPolicy"] = {"automated": {"prune": True, "selfHeal": True}}
             return httpx.Response(
                 200,
                 json={
                     "metadata": {"name": "app-homepage"},
-                    "spec": {
-                        "source": {"targetRevision": "HEAD"},
-                        "destination": {"namespace": "homepage"},
-                    },
+                    "spec": spec,
                     "status": {
                         "sync": {"status": "OutOfSync", "revision": "abc123def456"},
                         "health": {"status": "Healthy"},
@@ -766,6 +771,29 @@ async def test_argocd_sync_dispatches_and_rolls_back_to_history(sessionmaker) ->
     assert posts[1][0].endswith("/applications/app-homepage/rollback")
     assert posts[1][1] == {"id": 42}
     assert "history id 42" in undo.detail
+
+
+async def test_argocd_sync_on_an_auto_synced_app_is_unverifiable(sessionmaker) -> None:
+    """Argo CD refuses the rollback API while automated sync is on (found live, 10/03/2026),
+    so the verifier must not call that path reversible: AUTONOMOUS degrades to CONFIRM."""
+    adapter, argocd = make_proxmox([]), make_argocd([], auto_sync=True)
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "argocd-sync",
+            "single-service",
+            AutonomyLevel.AUTONOMOUS,
+            actor="op",
+        )
+        p = await make_proposal(
+            s, build_argocd_artifact(application="app-homepage"), "single-service"
+        )
+        with pytest.raises(ExecutionRefused, match="confirmation"):
+            await execute_proposal(s, p, adapter, actor="op", argocd_adapter=argocd)
+    await adapter.aclose()
+    await argocd.aclose()
 
 
 async def test_argocd_sync_without_history_is_unverifiable(sessionmaker) -> None:

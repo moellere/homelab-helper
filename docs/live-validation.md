@@ -342,6 +342,15 @@ receipt, `helper exec rollback` — on a target you can afford to touch:
 `helper approvals show` lists what each pending proposal would get and the
 answers so far.
 
+Run 10/03/2026 (Covington lab): all three approved from the phone within a few
+seconds; cpu-type showed as *pending* on guest 102 and rolled back; the DNS
+record appeared on the Wyola controller and rolled back by deletion; the Argo
+CD sync ran as a no-op on `app-guacamole-reconciler`. Finding: that app has
+**automated sync**, and Argo CD refuses its rollback API while it is on — so the
+verifier now reports such apps as unverifiable (AUTONOMOUS degrades to CONFIRM)
+and the undo of a sync there is a git revert, which stays human. A timed-out
+request (no tap within 300 s) was recorded as declined and changed nothing.
+
 ### Step 7 — clean up
 
 Revoke the grants unless you want to keep them (`helper trust show`),

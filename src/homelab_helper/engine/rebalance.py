@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from homelab_helper.db.enums import PartKind
-from homelab_helper.db.models import Host, PhysicalPart, Placement, VirtualMachine
+from homelab_helper.db.models import Cluster, Host, PhysicalPart, Placement, VirtualMachine
 from homelab_helper.engine.network_path import Topology, load_topology
 from homelab_helper.engine.retire import retired_host_ids
 
@@ -67,6 +67,8 @@ class HostLoad:
     committed: int = 0
     vms: list[VMLoad] = field(default_factory=list)
     dimms: list[tuple[str, int]] = field(default_factory=list)  # (label, bytes)
+    clusters: set[Any] = field(default_factory=set)
+    """Clusters this host is a node of — the only places its guests may be sent."""
 
     @property
     def capacity(self) -> int | None:
@@ -157,7 +159,18 @@ async def _load_fleet(session: AsyncSession) -> tuple[list[HostLoad], list[str]]
             unknown.append(h.hostname)
         by_id[h.id] = load
 
+    # Membership comes from the cluster's own node list when discovery recorded
+    # one, and otherwise from the guests a host is already running. A host that
+    # runs nothing and is on no node list is not a hypervisor the planner may
+    # fill — a NAS or a Pi with free RAM is not a migration target.
+    by_name = {load.hostname: load for load in by_id.values()}
+    for cluster in (await session.execute(select(Cluster))).scalars().all():
+        for node in (cluster.attributes or {}).get("nodes") or []:
+            if node in by_name:
+                by_name[node].clusters.add(cluster.id)
     for vm in (await session.execute(select(VirtualMachine))).scalars().all():
+        if vm.node_host_id in by_id:
+            by_id[vm.node_host_id].clusters.add(vm.cluster_id)
         if vm.status != "running" or vm.node_host_id not in by_id or not vm.memory_bytes:
             continue
         load = by_id[vm.node_host_id]
@@ -186,10 +199,8 @@ async def _load_fleet(session: AsyncSession) -> tuple[list[HostLoad], list[str]]
 
 
 def _movable(vm: VMLoad, src: HostLoad, dst: HostLoad, topology: Topology | None) -> bool:
-    """A migration the plan may propose: same cluster, LAN-grade path, fits."""
-    if any(v.cluster_id == vm.cluster_id for v in dst.vms) or not dst.vms:
-        pass  # same cluster present on dst, or dst is empty (joinable)
-    else:
+    """A migration the plan may propose: a node of the same cluster, LAN-grade path, fits."""
+    if vm.cluster_id not in dst.clusters:
         return False
     if topology is not None:
         path = topology.path(src.hostname, dst.hostname)
@@ -206,36 +217,49 @@ def _greedy_moves(
     committed = {h.hostname: h.committed for h in hosts}
     placed_vms = {h.hostname: list(h.vms) for h in hosts}
     steps: list[PlanStep] = []
+    moved: set[int] = set()  # a VM moves at most once per plan — no ping-pong
 
     def ratio(h: HostLoad) -> float:
         return committed[h.hostname] / h.capacity if h.capacity else 0.0
 
     for _ in range(_MAX_MOVES):
         ranked = sorted(hosts, key=ratio, reverse=True)
-        src, dst = ranked[0], ranked[-1]
-        if ratio(src) - ratio(dst) <= _TARGET_SPREAD and ratio(src) <= _TARGET_MAX_RATIO:
+        src = ranked[0]
+        if ratio(src) - ratio(ranked[-1]) <= _TARGET_SPREAD and ratio(src) <= _TARGET_MAX_RATIO:
             break
-        # A move must strictly improve the pairwise max ratio, or the loop
-        # oscillates: overshooting swaps src/dst and ping-pongs the same VM.
-        pair_max = max(ratio(src), ratio(dst))
-        move = None
-        for vm in sorted(placed_vms[src.hostname], key=lambda v: -v.memory_bytes):
+        # Destinations are tried emptiest-first, but the emptiest host is often
+        # not a legal target (other cluster, off the LAN-grade map), so the
+        # search continues up the ranking instead of giving up — a 90% host
+        # next to a 14% cluster-mate must find it. A move must strictly improve
+        # the pair's max ratio, or the loop oscillates: overshooting swaps
+        # src/dst and ping-pongs the same VM.
+        move: VMLoad | None = None
+        dst: HostLoad | None = None
+        for candidate in reversed(ranked[1:]):
+            pair_max = max(ratio(src), ratio(candidate))
             probe_dst = HostLoad(
-                hostname=dst.hostname,
-                host_id=dst.host_id,
-                mem_total=dst.mem_total,
-                committed=committed[dst.hostname],
-                vms=placed_vms[dst.hostname],
+                hostname=candidate.hostname,
+                host_id=candidate.host_id,
+                mem_total=candidate.mem_total,
+                committed=committed[candidate.hostname],
+                vms=placed_vms[candidate.hostname],
+                clusters=candidate.clusters,
             )
-            if not _movable(vm, src, probe_dst, topology):
-                continue
-            new_src = (committed[src.hostname] - vm.memory_bytes) / (src.capacity or 1)
-            new_dst = (committed[dst.hostname] + vm.memory_bytes) / (dst.capacity or 1)
-            if max(new_src, new_dst) < pair_max:
-                move = vm
+            for vm in sorted(placed_vms[src.hostname], key=lambda v: -v.memory_bytes):
+                if id(vm) in moved or not _movable(vm, src, probe_dst, topology):
+                    continue
+                new_src = (committed[src.hostname] - vm.memory_bytes) / (src.capacity or 1)
+                new_dst = (committed[candidate.hostname] + vm.memory_bytes) / (
+                    candidate.capacity or 1
+                )
+                if max(new_src, new_dst) < pair_max:
+                    move, dst = vm, candidate
+                    break
+            if move is not None:
                 break
-        if move is None:
+        if move is None or dst is None:
             break
+        moved.add(id(move))
         committed[src.hostname] -= move.memory_bytes
         committed[dst.hostname] += move.memory_bytes
         placed_vms[src.hostname].remove(move)
@@ -291,6 +315,7 @@ def _shifted(
                 committed=h.committed,
                 vms=list(h.vms),
                 dimms=list(h.dimms),
+                clusters=set(h.clusters),
             )
         )
     return out

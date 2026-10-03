@@ -499,6 +499,16 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Known gaps (found during validation)
 
+- [x] **P5-AC3 on the live fleet (10/03/2026)** produced no migrations-only plan, then
+  — after the first fix — plans that migrated Proxmox guests onto a NAS, arm64 Pis and
+  Talos workers, with one VM ping-ponging. Three defects in `engine/rebalance.py`:
+  the greedy mover tried only the single emptiest host as destination; an empty
+  host counted as "joinable" to any cluster; nothing stopped a VM moving twice.
+  Fixed: destinations are searched emptiest-first past illegal ones, a target
+  must be a node of the guest's cluster (from the cluster's persisted `nodes`
+  list, else the guests it already runs), and a VM moves at most once per plan.
+  `virt_reconcile` now records `Cluster.attributes["nodes"]`.
+
 - [x] **NIC virtual-interface filter** — added Proxmox firewall prefixes
   (`fwbr`/`fwln`/`fwpr`) to the host.network reconciler heuristic so they no
   longer leak through as spurious NIC parts. (A positive PCI-backing test is

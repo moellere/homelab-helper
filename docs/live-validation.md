@@ -378,8 +378,8 @@ unset the approval service if you do not want agents able to ask.
 | P4-AC1 … P4-AC6 | | |
 | P5-AC1 … P5-AC6 | | |
 | P6 steps 0–7 | | |
-| P7 steps 0–6 | ✅ 10/03/2026 |
-| P7 step 7 (proactive loop) | | | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
+| P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
+| P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
 
 Until this table is filled in, `backlog.md` should keep listing live-fleet
 validation as outstanding, and no Phase-6 or Phase-7 execution path should run

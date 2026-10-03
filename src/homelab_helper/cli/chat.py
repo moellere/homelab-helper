@@ -118,6 +118,8 @@ def chat(
                 console.print(result.text)
                 footer = _footer(result.backend, result.model, result.tier.name, result.local)
                 console.print(f"[dim]{escape(footer)}[/dim]")
+                if not result.local and result.skipped:
+                    console.print(f"[dim]skipped: {escape('; '.join(result.skipped))}[/dim]")
                 return 0
 
             if question is not None:

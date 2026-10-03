@@ -537,6 +537,8 @@ async def test_home_assistant_channel_round_trip(answer, approved) -> None:
         {"action": "HELPER_DENY_abc123", "title": "Deny"},
     ]
     assert "hypervisor/migrate/single-host" in sent[0]["message"]
+    assert "Expand this notification" in sent[0]["message"]
+    assert sent[0]["data"]["clickAction"] == "noAction"  # a plain tap is not an answer
     if answer is None:
         assert "no answer within 1s" in result.detail["reason"]
     else:

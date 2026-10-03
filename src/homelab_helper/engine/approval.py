@@ -148,7 +148,8 @@ class HomeAssistantApprovalChannel:
         approve_id, deny_id = self.action_ids(proposal_id)
         message = (
             f"{manifest.action_kind} {manifest.target_label} — cell {manifest.cell_key}; "
-            f"policy says CONFIRM: {'; '.join(decision.reasons)[:180]}"
+            f"policy says CONFIRM: {'; '.join(decision.reasons)[:160]}. "
+            "Expand this notification for Approve / Deny."
         )
         await self._sender(
             {
@@ -158,6 +159,9 @@ class HomeAssistantApprovalChannel:
                     "tag": f"homelab_helper_{proposal_id}",
                     "channel": "homelab-helper",
                     "importance": "high",
+                    # A plain tap would open the dashboard, which is not an answer;
+                    # the buttons are the only way to respond.
+                    "clickAction": "noAction",
                     "actions": [
                         {"action": approve_id, "title": "Approve"},
                         {"action": deny_id, "title": "Deny"},

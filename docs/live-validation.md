@@ -339,7 +339,7 @@ unset the approval service if you do not want agents able to ask.
 | P4-AC1 … P4-AC6 | | |
 | P5-AC1 … P5-AC6 | | |
 | P6 steps 0–7 | | |
-| P7 steps 0–6 | | |
+| P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 
 Until this table is filled in, `backlog.md` should keep listing live-fleet
 validation as outstanding, and no Phase-6 or Phase-7 execution path should run

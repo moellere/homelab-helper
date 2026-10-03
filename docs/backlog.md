@@ -721,9 +721,9 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
   `propose_action(target_node=, online=)` for migrate.
 - [x] `REVERSIBLE_ACTION_KINDS` grew by the three new kinds; `LOW_BLAST_RADII`
   by `single-service`.
-- [ ] **Live validation** (`live-validation.md`, Part 3): one migrate and one
-  workload restart through `execute_proposal` with a phone tap. _P7-AC2, AC3._
-  Required before raising any Phase-7 cell on infrastructure you care about.
+- [x] **Live validation** (`live-validation.md`, Part 3) — 10/03/2026 on the
+  Covington lab: migrate + rollback, workload restart + undo, Approve and Deny,
+  all through `execute_proposal` with a phone tap. _P7-AC2, AC3._
 
 ### Slice 2 — queued
 

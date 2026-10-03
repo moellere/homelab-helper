@@ -1299,7 +1299,11 @@ async def list_receipts(limit: int = 20) -> list[dict[str, Any]]:
                     "error": r.error,
                     "duration_ms": r.duration_ms,
                     "window_id": str(r.window_id) if r.window_id else None,
+                    "rollback_state": r.rollback_state,
                     "rolled_back_at": _iso(r.rolled_back_at),
+                    "rollback_receipt_id": (
+                        str(r.rollback_receipt_id) if r.rollback_receipt_id else None
+                    ),
                 }
                 for r in rows
             ]

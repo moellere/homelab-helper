@@ -42,6 +42,7 @@ from homelab_helper.engine.executor import (
     parse_manifest,
     rollback_receipt,
 )
+from homelab_helper.engine.notify import notifier_from_env
 from homelab_helper.engine.rollback import RollbackError
 from homelab_helper.engine.trust import operator_identity
 
@@ -193,6 +194,8 @@ def _report_run(result: ExecutionResult, *, used_override: bool) -> int:
         )
     if result.escalation is not None:
         _report_escalation(result.escalation)
+    if result.notification is not None:
+        console.print(f"[dim]notification: {escape(result.notification)}[/dim]")
     return 0 if result.outcome == "succeeded" else 4
 
 
@@ -293,6 +296,7 @@ def exec_run(
                         k8s_adapter=_build_k8s_adapter(),
                         argocd_adapter=_build_argocd_adapter(),
                         unifi_adapter=_build_unifi_adapter(manifest.controller),
+                        notifier=notifier_from_env(),
                     )
                 except ManifestError as exc:
                     console.print(f"[red]invalid manifest:[/red] {escape(str(exc))}")

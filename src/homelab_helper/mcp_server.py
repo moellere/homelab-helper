@@ -104,6 +104,7 @@ from homelab_helper.engine.manifest import (
     build_workload_artifact,
 )
 from homelab_helper.engine.network_path import TOPOLOGY_ENV_VAR, TopologyError, load_topology
+from homelab_helper.engine.notify import notifier_from_env
 from homelab_helper.engine.placement import network_verdict
 from homelab_helper.engine.placement import recommend_placement as _recommend_placement
 from homelab_helper.engine.playbooks import PLAYBOOKS, run_playbooks
@@ -1770,6 +1771,7 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
                     k8s_adapter=k8s,
                     argocd_adapter=argocd,
                     unifi_adapter=unifi,
+                    notifier=notifier_from_env(),
                 )
             except ExecutionRefused as exc:
                 return {
@@ -1797,6 +1799,7 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
                 "error": result.error,
                 "receipt_id": str(result.receipt_id),
                 "duration_ms": result.duration_ms,
+                "notification": result.notification,
                 "escalation": (
                     None
                     if result.escalation is None

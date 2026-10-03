@@ -782,6 +782,20 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 - [ ] Probe-level schedules and assertion cadences inside the daemon (the rest
   of the Phase-2 spec).
 
+### Slice 4 — tell me afterwards (landed)
+
+- [x] `engine/notify.py`: `should_notify` (AUTONOMOUS, any failure, auto-promote /
+  demote), `render`, `HomeAssistantNotifier` on the approval channel's config,
+  `notifier_from_env`, best-effort `notify_after_run`. Executor calls it after
+  the receipt + escalation flush; `ExecutionResult.notification` says what
+  happened; wired from `helper exec run`, MCP `execute_proposal`, the listener
+  and the daemon. _P7-AC4 "with a receipt and a notification"._
+- [ ] Live validation: let `containers/argocd-sync` or `workload-restart` earn
+  AUTONOMOUS through the streak, watch the phone announce the run, then break
+  one deliberately and watch the demotion notice (runbook step 8).
+- [ ] Daily digest (one notification summarising the day's receipts) — only if
+  the per-run notices turn out noisy.
+
 ### Test hygiene (found during slice 1)
 
 - [ ] `tests/test_mcp_server.py` flakes (one random failure or error per run)

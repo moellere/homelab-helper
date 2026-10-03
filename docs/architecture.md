@@ -86,13 +86,13 @@ Concrete adapters:
 |---|---|---|---|
 | **NetBoxAdapter** | P1 | Devices, IPs, VLANs, Cables, Custom Fields | Devices, Custom Fields, InventoryItems, Services |
 | **KernelSSHAdapter** | P1 | Anything `lshw`/`dmidecode`/`smartctl`/etc. produces over SSH | (read-only; never writes) |
-| **ProxmoxAdapter** | P3 | Cluster state, VMs, Ceph health, replication | Guest power, snapshots (P6), migrate (P7) — executor-only |
+| **ProxmoxAdapter** | P3 | Cluster state, VMs, Ceph health, replication, guest config | Guest power, snapshots (P6), migrate, config (P7) — executor-only |
 | **K8sAdapter** | P3 | Nodes, pods, services, labels, events | Workload rollout restart / scale / undo (P7) — executor-only |
-| **UniFiAdapter** | P3 | DNS records, DHCP leases, switch port config, network definitions | (read-only at L1) |
+| **UniFiAdapter** | P3 | DNS records, DHCP leases, switch port config, network definitions | Static DNS create / update / delete (P7) — executor-only |
 | **CloudflareAdapter** | P3 | DNS records, ACME certs, zone state | (read-only at L1) |
-| **GitArgoCDAdapter** | P3 | Declared app state from Git, ArgoCD sync status | (read-only) |
+| **GitArgoCDAdapter** | P3 | Declared app state from Git, ArgoCD sync status, sync history | Application sync / rollback (P7) — executor-only |
 
-L1 means every trust cell sits at PROPOSE. The infrastructure write surfaces are Proxmox guest power, snapshots and migrate, and Kubernetes workload restart/scale/undo; all are callable only from `engine/executor.py` (and the rollback orchestrator it drives), which consults `decide()` first; a test fails if any other module names those methods. NetBox custom-field/InventoryItem/VM sync keeps its own diff/confirm path.
+L1 means every trust cell sits at PROPOSE. The infrastructure write surfaces are Proxmox guest power, snapshots, migrate and config, Kubernetes workload restart/scale/undo, Argo CD application sync/rollback, and UniFi static DNS; all are callable only from `engine/executor.py` (and the rollback orchestrator it drives), which consults `decide()` first; a test fails if any other module names those methods. NetBox custom-field/InventoryItem/VM sync keeps its own diff/confirm path.
 
 Adapter discovery is dynamic: the framework scans configured adapters on startup, runs each one's `health_check`, and produces a finding if any required adapter is unreachable.
 
@@ -363,7 +363,7 @@ The LLM never sees raw secrets, raw SSH output, or anything that hasn't been thr
 - The only writes the engine performs are:
   - Harness DB tables (inventory, findings, proposals — harness's own state)
   - NetBox custom fields and InventoryItems (per the NetBox sync invariants in the schema doc)
-- Two adapters have write methods — Proxmox (guest power, snapshots, migrate) and Kubernetes (workload rollout restart, scale, undo); they are reachable only through `engine/executor.py` and `engine/rollback.py`, the gate's enforcement point (`tests/test_write_isolation.py`). Every other adapter is read-only.
+- Four adapters have write methods — Proxmox (guest power, snapshots, migrate, config), Kubernetes (workload rollout restart, scale, undo), Argo CD (sync, rollback) and UniFi (static DNS); they are reachable only through `engine/executor.py` and `engine/rollback.py`, the gate's enforcement point (`tests/test_write_isolation.py`). Every other adapter is read-only.
 - Future L2 lift is the trust gradient (below) plus an Executor that consumes pending proposals — not a re-architecture. At L1, the gradient is present but every cell is pinned to `PROPOSE`.
 
 ### Trust gradient (L2 authorization model)

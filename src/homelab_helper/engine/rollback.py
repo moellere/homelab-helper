@@ -32,12 +32,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from homelab_helper.adapters.argocd import ArgoCDAPIError
 from homelab_helper.adapters.kubernetes import KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAPIError
+from homelab_helper.adapters.unifi import UniFiAPIError
 
 if TYPE_CHECKING:
+    from homelab_helper.adapters.argocd import ArgoCDAdapter
     from homelab_helper.adapters.kubernetes import K8sAdapter
     from homelab_helper.adapters.proxmox import ProxmoxAdapter
+    from homelab_helper.adapters.unifi import UniFiAdapter
     from homelab_helper.engine.executor import ActionManifest
 
 PRIOR_POWER_STATE = "prior-power-state"
@@ -45,19 +49,45 @@ SNAPSHOT = "snapshot"
 PRIOR_NODE = "prior-node"
 PRIOR_REPLICAS = "prior-replicas"
 ROLLOUT_UNDO = "rollout-undo"
+PRIOR_CONFIG = "prior-config"
+ARGOCD_HISTORY = "argocd-history"
+PRIOR_DNS_RECORD = "prior-dns-record"
 STRATEGIES: frozenset[str] = frozenset(
-    {PRIOR_POWER_STATE, SNAPSHOT, PRIOR_NODE, PRIOR_REPLICAS, ROLLOUT_UNDO}
+    {
+        PRIOR_POWER_STATE,
+        SNAPSHOT,
+        PRIOR_NODE,
+        PRIOR_REPLICAS,
+        ROLLOUT_UNDO,
+        PRIOR_CONFIG,
+        ARGOCD_HISTORY,
+        PRIOR_DNS_RECORD,
+    }
 )
 
 _RESTORABLE_STATUSES = {"running", "stopped"}
 _POWER_ACTION_KINDS = {"start", "stop", "shutdown", "restart"}
 _DEFAULT_STRATEGY = {
     "migrate": PRIOR_NODE,
+    "cpu-type": PRIOR_CONFIG,
+    "argocd-sync": ARGOCD_HISTORY,
+    "dns-record": PRIOR_DNS_RECORD,
     "workload-scale": PRIOR_REPLICAS,
     "workload-restart": ROLLOUT_UNDO,
 }
 _SNAPSHOT_PREFIX = "helper"
-_TARGET_KEYS = ("node", "vmid", "vm_kind", "namespace", "workload_kind", "workload_name")
+_TARGET_KEYS = (
+    "node",
+    "vmid",
+    "vm_kind",
+    "namespace",
+    "workload_kind",
+    "workload_name",
+    "application",
+    "dns_hostname",
+    "record_type",
+    "controller",
+)
 
 
 class RollbackError(RuntimeError):
@@ -100,6 +130,10 @@ class RollbackPlan:
     namespace: str | None = None
     workload_kind: str | None = None
     workload_name: str | None = None
+    application: str | None = None
+    dns_hostname: str | None = None
+    record_type: str | None = None
+    controller: str | None = None
     capture_error: str | None = None
 
     @property
@@ -128,7 +162,11 @@ class RollbackPlan:
         known = {"strategy", "verified", "evidence", "captured_at", "capture_error", *_TARGET_KEYS}
         strategy = str(state.get("strategy") or PRIOR_POWER_STATE)
         if strategy in (PRIOR_REPLICAS, ROLLOUT_UNDO):
-            required = ("namespace", "workload_kind", "workload_name")
+            required: tuple[str, ...] = ("namespace", "workload_kind", "workload_name")
+        elif strategy == ARGOCD_HISTORY:
+            required = ("application",)
+        elif strategy == PRIOR_DNS_RECORD:
+            required = ("dns_hostname", "record_type")
         else:
             required = ("node", "vmid", "vm_kind")
         missing = [k for k in required if state.get(k) is None]
@@ -149,6 +187,10 @@ class RollbackPlan:
             namespace=state.get("namespace"),
             workload_kind=state.get("workload_kind"),
             workload_name=state.get("workload_name"),
+            application=state.get("application"),
+            dns_hostname=state.get("dns_hostname"),
+            record_type=state.get("record_type"),
+            controller=state.get("controller"),
             capture_error=state.get("capture_error"),
         )
 
@@ -255,6 +297,23 @@ async def _verify_prior_node(
     )
 
 
+async def _verify_prior_config(
+    adapter: ProxmoxAdapter, manifest: ActionManifest
+) -> tuple[bool, str, dict[str, Any]]:
+    if manifest.action_kind != "cpu-type":
+        return False, "prior-config only undoes a cpu-type action", {}
+    try:
+        config = await adapter.vm_config(*_guest(manifest))
+    except (ProxmoxAPIError, OSError, RollbackError) as exc:
+        return False, f"could not read the guest's configuration: {exc}", {}
+    current = config.get("cpu")
+    return (
+        True,
+        f"guest cpu type is {current!r}; setting it back restores the config",
+        {"cpu": current},
+    )
+
+
 async def _verify_prior_replicas(
     k8s: K8sAdapter | None, manifest: ActionManifest
 ) -> tuple[bool, str, dict[str, Any]]:
@@ -291,11 +350,64 @@ async def _verify_rollout_undo(
     )
 
 
+async def _verify_argocd_history(
+    argocd: ArgoCDAdapter | None, manifest: ActionManifest
+) -> tuple[bool, str, dict[str, Any]]:
+    if argocd is None:
+        return False, "no Argo CD adapter is configured", {}
+    if manifest.action_kind != "argocd-sync" or not manifest.application:
+        return False, "argocd-history only undoes an argocd-sync action", {}
+    try:
+        app = await argocd.get_application(manifest.application)
+    except (ArgoCDAPIError, OSError) as exc:
+        return False, f"could not read the application: {exc}", {}
+    history = app.get("history") or []
+    if not history:
+        return False, "application has no sync history to roll back to", {}
+    last = history[-1]
+    return (
+        True,
+        f"application is at history id {last['id']} ({str(last.get('revision'))[:12]}); "
+        "a rollback returns to it",
+        {
+            "history_id": last["id"],
+            "revision": last.get("revision"),
+            "sync_status": app.get("sync_status"),
+        },
+    )
+
+
+async def _verify_prior_dns_record(
+    unifi: UniFiAdapter | None, manifest: ActionManifest
+) -> tuple[bool, str, dict[str, Any]]:
+    if unifi is None:
+        return False, "no UniFi adapter is configured", {}
+    if manifest.action_kind != "dns-record" or not manifest.dns_hostname:
+        return False, "prior-dns-record only undoes a dns-record action", {}
+    try:
+        existing = await unifi.find_dns_record(manifest.dns_hostname, manifest.record_type or "A")
+    except (UniFiAPIError, OSError) as exc:
+        return False, f"could not read the controller's static DNS: {exc}", {}
+    if existing is None:
+        return (
+            True,
+            "no record exists yet; undo deletes the one this action creates",
+            {"existing": None},
+        )
+    return (
+        True,
+        f"record exists ({existing.get('value')}); undo puts that value back",
+        {"existing": existing},
+    )
+
+
 async def verify_rollback(
     adapter: ProxmoxAdapter,
     manifest: ActionManifest,
     *,
     k8s: K8sAdapter | None = None,
+    argocd: ArgoCDAdapter | None = None,
+    unifi: UniFiAdapter | None = None,
 ) -> RollbackVerification:
     """Read-only: can this action be undone? Runs *before* ``decide()``."""
     strategy = select_strategy(manifest)
@@ -307,10 +419,16 @@ async def verify_rollback(
         verified, evidence, probe = await _verify_snapshot(adapter, manifest)
     elif strategy == PRIOR_NODE:
         verified, evidence, probe = await _verify_prior_node(adapter, manifest)
+    elif strategy == PRIOR_CONFIG:
+        verified, evidence, probe = await _verify_prior_config(adapter, manifest)
     elif strategy == PRIOR_REPLICAS:
         verified, evidence, probe = await _verify_prior_replicas(k8s, manifest)
     elif strategy == ROLLOUT_UNDO:
         verified, evidence, probe = await _verify_rollout_undo(k8s, manifest)
+    elif strategy == ARGOCD_HISTORY:
+        verified, evidence, probe = await _verify_argocd_history(argocd, manifest)
+    elif strategy == PRIOR_DNS_RECORD:
+        verified, evidence, probe = await _verify_prior_dns_record(unifi, manifest)
     else:
         verified, evidence, probe = (
             False,
@@ -387,6 +505,10 @@ async def capture_rollback(
         namespace=manifest.namespace,
         workload_kind=manifest.workload_kind,
         workload_name=manifest.workload_name,
+        application=manifest.application,
+        dns_hostname=manifest.dns_hostname,
+        record_type=manifest.record_type,
+        controller=manifest.controller,
         capture_error=capture_error,
     )
 
@@ -437,6 +559,19 @@ async def _restore_prior_node(adapter: ProxmoxAdapter, plan: RollbackPlan) -> st
     return f"issued migrate from {target} back to {prior}"
 
 
+async def _restore_prior_config(adapter: ProxmoxAdapter, plan: RollbackPlan) -> str:
+    prior = plan.state.get("prior") or {}
+    if "cpu" not in prior:
+        raise RollbackError("captured state names no prior cpu type")
+    node, vmid, vm_kind = _plan_guest(plan)
+    cpu = prior["cpu"]
+    if cpu is None:
+        await adapter.set_vm_config(node, vmid, vm_kind, delete="cpu")
+        return "removed the cpu type so the guest returns to the Proxmox default"
+    await adapter.set_vm_config(node, vmid, vm_kind, cpu=str(cpu))
+    return f"set cpu={cpu} back (applies at next stop/start)"
+
+
 async def _restore_prior_replicas(k8s: K8sAdapter | None, plan: RollbackPlan) -> str:
     if k8s is None:
         raise RollbackError("no Kubernetes adapter is configured")
@@ -457,24 +592,80 @@ async def _restore_rollout_undo(k8s: K8sAdapter | None, plan: RollbackPlan) -> s
     return "rolled the workload back to its pre-restart revision"
 
 
+async def _restore_argocd_history(argocd: ArgoCDAdapter | None, plan: RollbackPlan) -> str:
+    if argocd is None:
+        raise RollbackError("no Argo CD adapter is configured")
+    history_id = (plan.state.get("prior") or {}).get("history_id")
+    if not isinstance(history_id, int) or plan.application is None:
+        raise RollbackError("captured state names no sync-history entry")
+    await argocd.rollback_application(plan.application, history_id)
+    return f"rolled the application back to history id {history_id}"
+
+
+async def _restore_prior_dns_record(unifi: UniFiAdapter | None, plan: RollbackPlan) -> str:
+    if unifi is None:
+        raise RollbackError("no UniFi adapter is configured")
+    if plan.dns_hostname is None:
+        raise RollbackError("captured state names no DNS record")
+    rtype = plan.record_type or "A"
+    prior = (plan.state.get("prior") or {}).get("existing")
+    current = await unifi.find_dns_record(plan.dns_hostname, rtype)
+    if prior is None:
+        if current and current.get("id"):
+            await unifi.delete_dns_record(str(current["id"]))
+            return f"deleted the {rtype} record for {plan.dns_hostname} that the action created"
+        return f"no {rtype} record for {plan.dns_hostname} exists; nothing to undo"
+    if not current or not current.get("id"):
+        restored = await unifi.create_dns_record(
+            plan.dns_hostname,
+            str(prior.get("value")),
+            record_type=rtype,
+            ttl=int(prior.get("ttl") or 0),
+        )
+        return f"re-created the prior {rtype} record ({restored.get('value')})"
+    await unifi.update_dns_record(
+        str(current["id"]),
+        plan.dns_hostname,
+        str(prior.get("value")),
+        record_type=rtype,
+        ttl=int(prior.get("ttl") or 0),
+        enabled=bool(prior.get("enabled", True)),
+    )
+    return f"restored the prior {rtype} value {prior.get('value')} for {plan.dns_hostname}"
+
+
 async def restore(
-    adapter: ProxmoxAdapter, plan: RollbackPlan, *, k8s: K8sAdapter | None = None
+    adapter: ProxmoxAdapter,
+    plan: RollbackPlan,
+    *,
+    k8s: K8sAdapter | None = None,
+    argocd: ArgoCDAdapter | None = None,
+    unifi: UniFiAdapter | None = None,
 ) -> str:
     """Drive the target back to the captured state; returns what was done."""
-    if plan.strategy == PRIOR_POWER_STATE:
-        return await _restore_power_state(adapter, plan)
-    if plan.strategy == SNAPSHOT:
-        return await _restore_snapshot(adapter, plan)
-    if plan.strategy == PRIOR_NODE:
-        return await _restore_prior_node(adapter, plan)
+    guest = {
+        PRIOR_POWER_STATE: _restore_power_state,
+        SNAPSHOT: _restore_snapshot,
+        PRIOR_NODE: _restore_prior_node,
+        PRIOR_CONFIG: _restore_prior_config,
+    }
+    if plan.strategy in guest:
+        return await guest[plan.strategy](adapter, plan)
     if plan.strategy == PRIOR_REPLICAS:
         return await _restore_prior_replicas(k8s, plan)
     if plan.strategy == ROLLOUT_UNDO:
         return await _restore_rollout_undo(k8s, plan)
+    if plan.strategy == ARGOCD_HISTORY:
+        return await _restore_argocd_history(argocd, plan)
+    if plan.strategy == PRIOR_DNS_RECORD:
+        return await _restore_prior_dns_record(unifi, plan)
     raise RollbackError(f"no restore path for strategy {plan.strategy!r}")
 
 
 __all__ = [
+    "ARGOCD_HISTORY",
+    "PRIOR_CONFIG",
+    "PRIOR_DNS_RECORD",
     "PRIOR_NODE",
     "PRIOR_POWER_STATE",
     "PRIOR_REPLICAS",

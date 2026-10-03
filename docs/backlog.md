@@ -18,7 +18,7 @@ doesn't block. Acceptance-criterion references (AC1–AC5, P6-AC1–6) point at
 **Phases 1 (core), 3, 4, 5 and 6 are build-complete, and Phase 7 slice 1
 (agent-triggered execution behind a phone-tap approval, guest migrate,
 Kubernetes workload actions) has landed; Phase 2 (continuous agent /
-time-series) is deferred into Phase 7 slice 2.** Full suite: 945 tests green.
+time-series) is deferred into Phase 7 slice 3.** Full suite: 950+ tests green.
 Packaging is release-ready (`uv tool install`, per-user dirs, tag-driven PyPI
 release — see `releasing.md`).
 Live-fleet validation of the Phase 4–5 ACs is the outstanding sign-off gate
@@ -725,21 +725,39 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
   Covington lab: migrate + rollback, workload restart + undo, Approve and Deny,
   all through `execute_proposal` with a phone tap. _P7-AC2, AC3._
 
-### Slice 2 — queued
+### Slice 2 — surfaces (landed)
 
-- [ ] Guest CPU-type change (`vm_cpu_type`, applied at next stop/start; rollback = previous type)
-- [ ] LXC lifecycle beyond power (create from template? destroy stays human-only)
-- [ ] Argo CD `sync` (rollback = previous revision), UniFi DNS records
-  (rollback = previous record), then NetBox / OMV — each behind the executor
-  with a verified inverse
-- [ ] `helper approvals` (pending channel questions) and `helper exec listen`
-  (long-lived approval listener for operators who do not use the MCP path)
+- [x] Guest `cpu-type` (QEMU; `set_vm_config`, applied at next stop/start;
+  rollback `prior-config` restores the previous type or removes the key)
+- [x] Argo CD `argocd-sync` (optional pinned revision, prune) — adapter gains
+  `get_application` (deployed revision + sync history), `sync_application`,
+  `rollback_application`; rollback `argocd-history` returns to the current
+  history entry
+- [x] UniFi `dns-record` (upsert one name + type on a named controller) —
+  adapter gains `find_dns_record`, `create/update/delete_dns_record`, keeps
+  `_id`; rollback `prior-dns-record` restores the prior value or deletes the
+  created record
+- [x] `ExecutionReceipt.approval` (migration `b4e7c2a9d1f3`): channel, responder,
+  approved — the same facts as the `TrustHistory` event, denormalized for
+  `list_receipts`
+- [x] `helper approvals show` — channel config, what each pending proposal
+  would get if triggered now, recent answers
+- [x] MCP `propose_argocd_sync`, `propose_dns_record`; `propose_action(cpu_type=)`;
+  `execute_proposal` resolves the Argo CD / UniFi adapter a manifest needs
+- [ ] `helper exec listen` — deferred: it needs a marker for *which* pending
+  proposals an operator-side daemon should ask about (a denied proposal must
+  not be re-asked every loop). Design it with the playbooks in slice 3.
+- [ ] LXC lifecycle beyond power; NetBox / OMV writes — each behind the
+  executor with a verified inverse, when a use case asks for them
+
+### Slice 3 — proactive (queued)
+
 - [ ] Remediation playbooks: deterministic finding-kind → manifest template map;
-  the Triage agent drafts, policy decides. _P7-AC6 first half._
+  the Triage agent drafts, policy decides. Needs findings that carry a
+  workload / guest identity (today only `DRIFT_CANDIDATE` names an Argo CD app;
+  `argocd-sync` is the first playbook). _P7-AC6 first half._
 - [ ] Scheduler — the deferred Phase-2 loop (discovery + reconcile + assertions
   on a cadence) so proposals appear unasked. _P7-AC6 second half._
-- [ ] Receipt column for the approver (today it lives on `TrustHistory`;
-  denormalize once `list_receipts` needs it)
 
 ### Test hygiene (found during slice 1)
 

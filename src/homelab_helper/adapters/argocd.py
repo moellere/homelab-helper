@@ -8,8 +8,9 @@ the cluster matches: ``sync.status`` (``Synced`` / ``OutOfSync``) and
 gives the harness the git-vs-cluster drift signal without re-implementing a
 manifest differ — Argo CD already did the diff.
 
-**Read-only at L1.** Argo CD can sync/rollback; the harness only reads its view
-until the Phase-6 trust gradient gates writes. Nothing here triggers a sync.
+**Read-only at L1,** with the Phase-7 exception below: ``sync_application`` and
+``rollback_application`` exist solely for ``engine/executor.py`` /
+``engine/rollback.py`` behind the trust gradient. Nothing else triggers a sync.
 
 Auth is a bearer token (an Argo CD API/account token). Argo CD ships a
 self-signed cert by default, so ``verify_ssl`` defaults to ``False``. The API
@@ -98,6 +99,16 @@ def parse_application(raw: dict[str, Any]) -> dict[str, Any]:
         for r in resources
         if r.get("status") and r.get("status") != _SYNCED
     ]
+    history = [
+        {
+            "id": h.get("id"),
+            "revision": h.get("revision"),
+            "deployed_at": h.get("deployedAt"),
+        }
+        for h in (status.get("history") or [])
+        if isinstance(h, dict) and h.get("id") is not None
+    ]
+    operation = status.get("operationState") or {}
     return {
         "name": metadata.get("name"),
         "namespace": destination.get("namespace"),
@@ -108,6 +119,9 @@ def parse_application(raw: dict[str, Any]) -> dict[str, Any]:
         "sync_status": sync.get("status"),
         "health_status": health.get("status"),
         "out_of_sync_resources": out_of_sync,
+        "revision": sync.get("revision"),
+        "history": history,
+        "operation_phase": operation.get("phase"),
     }
 
 
@@ -175,8 +189,8 @@ class ArgoCDAdapter:
     async def __aexit__(self, *exc: object) -> None:
         await self.aclose()
 
-    async def _request(self, method: str, path: str) -> Any:
-        response = await self.client.request(method, path)
+    async def _request(self, method: str, path: str, *, json: Any | None = None) -> Any:
+        response = await self.client.request(method, path, json=json)
         if response.status_code >= _HTTP_ERROR_THRESHOLD:
             detail = response.text.strip()[:300] or response.reason_phrase
             raise ArgoCDAPIError(response.status_code, detail, method=method, path=path)
@@ -190,6 +204,35 @@ class ArgoCDAdapter:
         payload = await self._request("GET", "/applications")
         items = payload.get("items") if isinstance(payload, dict) else payload
         return [parse_application(a) for a in (items or [])]
+
+    async def get_application(self, name: str) -> dict[str, Any]:
+        """One application with its deployed revision and sync history. Read-only —
+        the rollback orchestrator's probe for ``argocd-history``."""
+        payload = await self._request("GET", f"/applications/{name}")
+        if not isinstance(payload, dict):
+            raise ArgoCDAPIError(404, f"application {name!r} not found", method="GET", path=name)
+        return parse_application(payload)
+
+    # ----------------------------------------------------------------- writes
+    #
+    # The Phase-7 write surface, and it exists solely for the executor: every
+    # call site must have routed through engine.trust.decide() first. Nothing
+    # else in the codebase may call these (tests/test_write_isolation.py).
+
+    async def sync_application(
+        self, name: str, *, revision: str | None = None, prune: bool = False, dry_run: bool = False
+    ) -> Any:
+        """Ask Argo CD to sync one application to git. Executor-only."""
+        body: dict[str, Any] = {"prune": prune, "dryRun": dry_run}
+        if revision:
+            body["revision"] = revision
+        return await self._request("POST", f"/applications/{name}/sync", json=body)
+
+    async def rollback_application(self, name: str, history_id: int) -> Any:
+        """Roll one application back to a sync-history entry. Rollback use only."""
+        return await self._request(
+            "POST", f"/applications/{name}/rollback", json={"id": int(history_id)}
+        )
 
     async def health_check(self) -> tuple[bool, str | None]:
         """Quick reachability/auth probe against the session userinfo endpoint."""

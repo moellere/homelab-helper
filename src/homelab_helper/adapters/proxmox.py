@@ -218,6 +218,31 @@ class ProxmoxAdapter:
         """Restore a guest to a named snapshot. Executor-only."""
         return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/snapshot/{name}/rollback")
 
+    async def vm_config(
+        self, node: str, vmid: int, kind: str, *, pending: bool = False
+    ) -> dict[str, Any]:
+        """A guest's configuration. Read-only — the rollback orchestrator's probe for
+        ``prior-config``. ``pending=True`` returns the QEMU pending view (current vs
+        pending per key) so a change waiting on the next stop/start is visible."""
+        if kind not in {"qemu", "lxc"}:
+            raise ValueError(f"kind must be qemu or lxc, not {kind!r}")
+        if pending and kind == "qemu":
+            rows = await self._request("GET", f"/nodes/{node}/qemu/{vmid}/pending") or []
+            return {str(r.get("key")): r for r in rows if isinstance(r, dict)}
+        return await self._request("GET", f"/nodes/{node}/{kind}/{vmid}/config") or {}
+
+    async def set_vm_config(self, node: str, vmid: int, kind: str, **options: Any) -> Any:
+        """Change guest configuration keys (e.g. ``cpu="x86-64-v3"``). Executor-only.
+
+        Uses the synchronous PUT; QEMU applies most keys at the next full
+        stop/start and reports them under ``pending`` until then.
+        """
+        if kind not in {"qemu", "lxc"}:
+            raise ValueError(f"kind must be qemu or lxc, not {kind!r}")
+        if not options:
+            raise ValueError("no configuration keys to set")
+        return await self._request("PUT", f"/nodes/{node}/{kind}/{vmid}/config", params=options)
+
     async def migrate_guest(
         self, node: str, vmid: int, kind: str, target_node: str, *, online: bool = True
     ) -> Any:

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
@@ -42,14 +43,14 @@ from typing import TYPE_CHECKING, Any
 from mcp.server.mcpserver import MCPServer
 from sqlalchemy import func, or_, select
 
-from homelab_helper.adapters.argocd import ArgoCDAdapter
+from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfigError
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
-from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
+from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig, UniFiConfigError
 from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
 from homelab_helper.db.enums import DiscoverySource, FindingStatus, ProposalOutcome, ResolutionScope
@@ -94,8 +95,11 @@ from homelab_helper.engine.host_probe import probe_host as _probe_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.manifest import (
     BLAST_RADII,
+    DNS_RECORD_TYPES,
     WORKLOAD_KINDS,
+    build_argocd_artifact,
     build_artifact,
+    build_dns_artifact,
     build_workload_artifact,
 )
 from homelab_helper.engine.network_path import TOPOLOGY_ENV_VAR, TopologyError, load_topology
@@ -115,6 +119,8 @@ from homelab_helper.engine.workloads import WorkloadLibraryError, load_workload_
 from homelab_helper.secrets import redact
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 server = MCPServer(
@@ -1300,6 +1306,7 @@ async def list_receipts(limit: int = 20) -> list[dict[str, Any]]:
                     "duration_ms": r.duration_ms,
                     "window_id": str(r.window_id) if r.window_id else None,
                     "rollback_state": r.rollback_state,
+                    "approval": r.approval,
                     "rolled_back_at": _iso(r.rolled_back_at),
                     "rollback_receipt_id": (
                         str(r.rollback_receipt_id) if r.rollback_receipt_id else None
@@ -1432,10 +1439,12 @@ async def propose_action(
     hostnames: list[str] | None = None,
     target_node: str | None = None,
     online: bool = True,
+    cpu_type: str | None = None,
 ) -> dict[str, Any]:
-    """Draft a Proxmox guest action — start/stop/shutdown/restart, or migrate
-    (give `target_node`; `online=False` for an offline move) of a VM or
-    container — as a PENDING proposal. Validates the manifest, writes only to
+    """Draft a Proxmox guest action — start/stop/shutdown/restart, migrate
+    (give `target_node`; `online=False` for an offline move), or cpu-type
+    (give `cpu_type`, e.g. "x86-64-v3"; QEMU only, applied at the guest's
+    next stop/start) of a VM or container — as a PENDING proposal. Validates the manifest, writes only to
     the harness DB, and returns what policy would decide right now. Never
     executes on its own: follow with `execute_proposal` (policy + the
     operator's tap decide) or leave it for `helper exec`. An agent cannot
@@ -1451,6 +1460,7 @@ async def propose_action(
             hostnames=tuple(hostnames) if hostnames else None,
             target_node=target_node,
             online=online,
+            cpu_type=cpu_type,
         )
     except ManifestError as exc:
         return {"error": str(exc)}
@@ -1536,6 +1546,152 @@ async def propose_workload_action(
         await engine.dispose()
 
 
+async def _persist_proposal(
+    artifact: dict[str, Any],
+    *,
+    title: str,
+    description: str | None,
+    blast_radius: str,
+    affected: list[dict[str, str]],
+) -> dict[str, Any]:
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            proposal = ProposalLog(
+                title=title.strip()[:512],
+                description=description,
+                artifact=artifact,
+                affected=affected,
+                blast_radius=blast_radius,
+                proposed_by="agent:mcp",
+            )
+            session.add(proposal)
+            await session.flush()
+            preview = await _pessimistic_preview(session, proposal)
+            return {
+                **_proposal_dict(proposal),
+                **preview,
+                "next": f"`execute_proposal({proposal.id})`, or an operator runs "
+                f"`helper exec run {proposal.id}` / `helper exec reject {proposal.id}`",
+            }
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def propose_argocd_sync(
+    application: str,
+    title: str,
+    revision: str | None = None,
+    prune: bool = False,
+    description: str | None = None,
+    blast_radius: str = "single-service",
+) -> dict[str, Any]:
+    """Draft an Argo CD sync of one application (optionally pinned to a git
+    `revision`, optionally pruning) as a PENDING proposal in the `containers`
+    domain. Rollback is Argo CD's own history (the current deployed entry).
+    Same contract as `propose_action`: validates, writes only to the harness
+    DB, never executes on its own."""
+    if blast_radius not in BLAST_RADII:
+        return {"error": f"blast_radius must be one of {', '.join(BLAST_RADII)}"}
+    try:
+        artifact = build_argocd_artifact(application=application, revision=revision, prune=prune)
+    except ManifestError as exc:
+        return {"error": str(exc)}
+    return await _persist_proposal(
+        artifact,
+        title=title,
+        description=description,
+        blast_radius=blast_radius,
+        affected=[{"target_type": "argocd-app", "target_id": application}],
+    )
+
+
+@server.tool()
+async def propose_dns_record(
+    hostname: str,
+    value: str,
+    title: str,
+    record_type: str = "A",
+    ttl: int = 0,
+    controller: str | None = None,
+    description: str | None = None,
+    blast_radius: str = "single-service",
+) -> dict[str, Any]:
+    """Draft a static DNS upsert (create or update one `hostname` -> `value`
+    record of `record_type` on a UniFi controller; `controller` names one of
+    HOMELAB_HELPER_UNIFI_CONTROLLERS, default the single configured one) as a
+    PENDING proposal in the `dns` domain. Rollback restores the prior record
+    or deletes the created one. Never executes on its own."""
+    if blast_radius not in BLAST_RADII:
+        return {"error": f"blast_radius must be one of {', '.join(BLAST_RADII)}"}
+    if record_type not in DNS_RECORD_TYPES:
+        return {"error": f"record_type must be one of {', '.join(DNS_RECORD_TYPES)}"}
+    try:
+        artifact = build_dns_artifact(
+            hostname=hostname, value=value, record_type=record_type, ttl=ttl, controller=controller
+        )
+    except ManifestError as exc:
+        return {"error": str(exc)}
+    return await _persist_proposal(
+        artifact,
+        title=title,
+        description=description,
+        blast_radius=blast_radius,
+        affected=[{"target_type": "dns-record", "target_id": f"{record_type} {hostname}"}],
+    )
+
+
+def _unifi_adapter_for(controller: str | None) -> UniFiAdapter | None:
+    """The UniFi adapter a DNS manifest names (or the only one), ``None`` if unconfigured."""
+    try:
+        adapters = _load_unifi_adapters()
+    except UniFiConfigError:
+        return None
+    if controller is None:
+        return adapters[0] if len(adapters) == 1 else None
+    for a in adapters:
+        if a.config.name == controller:
+            return a
+    return None
+
+
+@dataclass(frozen=True)
+class _Adapters:
+    proxmox: ProxmoxAdapter
+    k8s: K8sAdapter | None
+    argocd: ArgoCDAdapter | None
+    unifi: UniFiAdapter | None
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter((self.proxmox, self.k8s, self.argocd, self.unifi))
+
+
+def _execution_adapters(manifest: Any) -> tuple[_Adapters | None, str | None]:
+    """The adapters one manifest needs, or a message naming what is not configured."""
+    try:
+        proxmox = _load_proxmox_adapter()
+    except ProxmoxConfigError as exc:
+        return None, f"Proxmox adapter: {exc}"
+    k8s = _load_k8s_adapter() if shutil.which("kubectl") else None
+    argocd = None
+    unifi = None
+    if manifest.is_argocd:
+        try:
+            argocd = _load_argocd_adapter()
+        except ArgoCDConfigError as exc:
+            return None, f"Argo CD adapter: {exc}"
+    if manifest.is_dns:
+        unifi = _unifi_adapter_for(manifest.controller)
+        if unifi is None:
+            return None, (
+                f"UniFi adapter: no controller matches {manifest.controller!r} "
+                "(set HOMELAB_HELPER_UNIFI_CONTROLLERS)"
+            )
+    return _Adapters(proxmox, k8s, argocd, unifi), None
+
+
 @server.tool()
 async def execute_proposal(proposal_id: str) -> dict[str, Any]:
     """Ask the executor to run one PENDING action proposal. This is a trigger,
@@ -1591,11 +1747,11 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
                     )
                 return await channel.request(m, decision, proposal_id=str(proposal.id))
 
-            try:
-                adapter = _load_proxmox_adapter()
-            except ProxmoxConfigError as exc:
-                return {"error": f"Proxmox adapter: {exc}"}
-            k8s = _load_k8s_adapter() if shutil.which("kubectl") else None
+            adapters, problem = _execution_adapters(manifest)
+            if problem is not None:
+                return {"error": problem}
+            assert adapters is not None
+            adapter, k8s, argocd, unifi = adapters
             try:
                 result = await _run_proposal(
                     session,
@@ -1605,6 +1761,8 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
                     confirm_cb=_confirm,
                     override=None,
                     k8s_adapter=k8s,
+                    argocd_adapter=argocd,
+                    unifi_adapter=unifi,
                 )
             except ExecutionRefused as exc:
                 return {
@@ -1618,6 +1776,10 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
                 return {"refused": f"approval channel failed: {exc}", "cell": manifest.cell_key}
             finally:
                 await adapter.aclose()
+                if argocd is not None:
+                    await argocd.aclose()
+                if unifi is not None:
+                    await unifi.aclose()
             return {
                 "proposal_id": str(proposal.id),
                 "cell": manifest.cell_key,

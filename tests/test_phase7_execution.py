@@ -35,6 +35,7 @@ from homelab_helper.engine.manifest import (
     ManifestError,
     build_artifact,
     build_workload_artifact,
+    validate_artifact,
 )
 from homelab_helper.engine.rollback import (
     PRIOR_NODE,
@@ -582,3 +583,306 @@ async def test_k8s_adapter_refuses_to_scale_a_daemonset() -> None:
     k8s = make_k8s([])
     with pytest.raises(KubeError):
         await k8s.scale_workload("kube-system", "daemonset", "fluentd", 0)
+
+
+# ------------------------------------------------------------ cpu-type (slice 2)
+
+
+def make_proxmox_with_config(requests: list[httpx.Request], *, cpu: str | None = "x86-64-v2-AES"):
+    """A guest whose config can be read and set; records every request."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        path = request.url.path
+        if path.endswith("/config") and request.method == "GET":
+            body = {"cores": 2, "memory": 4096}
+            if cpu is not None:
+                body["cpu"] = cpu
+            return httpx.Response(200, json={"data": body})
+        if path.endswith("/config"):
+            return httpx.Response(200, json={"data": None})
+        if path.endswith("/status/current"):
+            return httpx.Response(200, json={"data": {"status": "running", "name": "web01"}})
+        return httpx.Response(200, json={"data": "UPID:x"})
+
+    client = httpx.AsyncClient(
+        base_url=_PVE.url.rstrip("/") + "/api2/json", transport=httpx.MockTransport(handler)
+    )
+    return ProxmoxAdapter(_PVE, client=client)
+
+
+async def test_cpu_type_sets_config_and_rolls_back_to_the_prior_type(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    adapter = make_proxmox_with_config(requests)
+
+    async def confirm(manifest, decision) -> bool:
+        return True
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s, TrustDomain.HYPERVISOR, "cpu-type", "single-host", AutonomyLevel.CONFIRM, actor="op"
+        )
+        artifact = build_artifact(
+            action_kind="cpu-type", node="pve1", vmid=105, vm_kind="qemu", cpu_type="x86-64-v3"
+        )
+        p = await make_proposal(s, artifact, "single-host")
+        m = parse_manifest(p)
+        assert m.target_label == "qemu/105 on pve1 cpu=x86-64-v3"
+        result = await execute_proposal(s, p, adapter, actor="op", confirm_cb=confirm)
+        assert result.outcome == "succeeded"
+        receipt = (await s.execute(select(ExecutionReceipt))).scalar_one()
+        assert receipt.rollback_state["strategy"] == "prior-config"
+        assert receipt.rollback_state["prior"]["cpu"] == "x86-64-v2-AES"
+        assert "next stop/start" in receipt.action["dispatched"]
+        undo = await rollback_receipt(s, receipt, adapter, actor="op")
+    await adapter.aclose()
+
+    puts = [r for r in requests if r.method == "PUT"]
+    assert [r.url.params.get("cpu") for r in puts] == ["x86-64-v3", "x86-64-v2-AES"]
+    assert "x86-64-v2-AES" in undo.detail
+
+
+def test_cpu_type_is_qemu_only() -> None:
+    with pytest.raises(ManifestError, match="QEMU"):
+        build_artifact(action_kind="cpu-type", node="pve1", vmid=1, vm_kind="lxc", cpu_type="host")
+    with pytest.raises(ManifestError, match="cpu_type"):
+        build_artifact(action_kind="cpu-type", node="pve1", vmid=1, vm_kind="qemu")
+    assert is_promotable("cpu-type", "single-host")
+
+
+# --------------------------------------------- argocd-sync + dns-record (slice 2)
+
+from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfig  # noqa: E402
+from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig  # noqa: E402
+from homelab_helper.engine.manifest import build_argocd_artifact, build_dns_artifact  # noqa: E402
+
+_ARGO = ArgoCDConfig(url="https://argo.test", api_token="t")
+_UNIFI = UniFiConfig(url="https://unifi.test", api_key="k", name="covington")
+
+
+def make_argocd(requests: list[httpx.Request], *, history=(41, 42)) -> ArgoCDAdapter:
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        path = request.url.path
+        if path.endswith("/applications/app-homepage") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "metadata": {"name": "app-homepage"},
+                    "spec": {
+                        "source": {"targetRevision": "HEAD"},
+                        "destination": {"namespace": "homepage"},
+                    },
+                    "status": {
+                        "sync": {"status": "OutOfSync", "revision": "abc123def456"},
+                        "health": {"status": "Healthy"},
+                        "history": [
+                            {"id": h, "revision": f"rev{h}", "deployedAt": "2026-10-01T00:00:00Z"}
+                            for h in history
+                        ],
+                    },
+                },
+            )
+        return httpx.Response(200, json={"metadata": {"name": "app-homepage"}})
+
+    client = httpx.AsyncClient(
+        base_url=_ARGO.url + "/api/v1", transport=httpx.MockTransport(handler)
+    )
+    return ArgoCDAdapter(_ARGO, client=client)
+
+
+def make_unifi(requests: list[httpx.Request], records: list[dict[str, Any]]) -> UniFiAdapter:
+    """A controller whose static-DNS table is the mutable ``records`` list."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        path = request.url.path
+        if path.endswith("/static-dns") and request.method == "GET":
+            return httpx.Response(200, json=records)
+        if path.endswith("/static-dns") and request.method == "POST":
+            body = json.loads(request.content)
+            body["_id"] = f"id{len(records) + 1}"
+            records.append(body)
+            return httpx.Response(200, json=body)
+        if "/static-dns/" in path and request.method == "PUT":
+            rid = path.rsplit("/", 1)[-1]
+            body = json.loads(request.content)
+            for r in records:
+                if r["_id"] == rid:
+                    r.update(body)
+                    return httpx.Response(200, json=r)
+            return httpx.Response(404, json={"error": "no such record"})
+        if "/static-dns/" in path and request.method == "DELETE":
+            rid = path.rsplit("/", 1)[-1]
+            records[:] = [r for r in records if r["_id"] != rid]
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={"data": []})
+
+    client = httpx.AsyncClient(
+        base_url=_UNIFI.url + "/proxy/network", transport=httpx.MockTransport(handler)
+    )
+    return UniFiAdapter(_UNIFI, client=client)
+
+
+async def test_argocd_sync_dispatches_and_rolls_back_to_history(sessionmaker) -> None:
+    argo_requests: list[httpx.Request] = []
+    adapter, argocd = make_proxmox([]), make_argocd(argo_requests)
+
+    async def confirm(manifest, decision) -> bool:
+        return True
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "argocd-sync",
+            "single-service",
+            AutonomyLevel.CONFIRM,
+            actor="op",
+        )
+        p = await make_proposal(
+            s, build_argocd_artifact(application="app-homepage"), "single-service"
+        )
+        m = parse_manifest(p)
+        assert m.cell_key == "containers/argocd-sync/single-service"
+        assert m.target_label == "argocd app app-homepage"
+        result = await execute_proposal(
+            s, p, adapter, actor="op", confirm_cb=confirm, argocd_adapter=argocd
+        )
+        assert result.outcome == "succeeded"
+        receipt = (await s.execute(select(ExecutionReceipt))).scalar_one()
+        assert receipt.rollback_state["strategy"] == "argocd-history"
+        assert receipt.rollback_state["prior"]["history_id"] == 42
+        assert receipt.rollback_state["application"] == "app-homepage"
+        undo = await rollback_receipt(s, receipt, adapter, actor="op", argocd_adapter=argocd)
+    await adapter.aclose()
+    await argocd.aclose()
+
+    posts = [(r.url.path, json.loads(r.content)) for r in argo_requests if r.method == "POST"]
+    assert posts[0][0].endswith("/applications/app-homepage/sync")
+    assert posts[0][1] == {"prune": False, "dryRun": False}
+    assert posts[1][0].endswith("/applications/app-homepage/rollback")
+    assert posts[1][1] == {"id": 42}
+    assert "history id 42" in undo.detail
+
+
+async def test_argocd_sync_without_history_is_unverifiable(sessionmaker) -> None:
+    adapter, argocd = make_proxmox([]), make_argocd([], history=())
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "argocd-sync",
+            "single-service",
+            AutonomyLevel.AUTONOMOUS,
+            actor="op",
+        )
+        p = await make_proposal(
+            s, build_argocd_artifact(application="app-homepage"), "single-service"
+        )
+        with pytest.raises(ExecutionRefused, match="confirmation"):
+            await execute_proposal(s, p, adapter, actor="op", argocd_adapter=argocd)
+    await adapter.aclose()
+    await argocd.aclose()
+
+
+async def test_dns_record_create_then_rollback_deletes_it(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    records: list[dict[str, Any]] = []
+    adapter, unifi = make_proxmox([]), make_unifi(requests, records)
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s, TrustDomain.DNS, "dns-record", "single-service", AutonomyLevel.AUTONOMOUS, actor="op"
+        )
+        artifact = build_dns_artifact(hostname="new.lan", value="10.0.0.9", controller="covington")
+        p = await make_proposal(s, artifact, "single-service")
+        m = parse_manifest(p)
+        assert m.target_label == "dns A new.lan -> 10.0.0.9 on covington"
+        result = await execute_proposal(s, p, adapter, actor="op", unifi_adapter=unifi)
+        assert result.outcome == "succeeded"
+        assert records[0]["key"] == "new.lan"
+        receipt = (await s.execute(select(ExecutionReceipt))).scalar_one()
+        assert receipt.rollback_state["strategy"] == "prior-dns-record"
+        assert receipt.rollback_state["prior"]["existing"] is None
+        assert receipt.action["dispatched"] == "create A record"
+        undo = await rollback_receipt(s, receipt, adapter, actor="op", unifi_adapter=unifi)
+    await adapter.aclose()
+    await unifi.aclose()
+    assert records == []
+    assert "deleted" in undo.detail
+
+
+async def test_dns_record_update_then_rollback_restores_prior_value(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    records = [
+        {
+            "_id": "id1",
+            "key": "svc.lan",
+            "value": "10.0.0.5",
+            "record_type": "A",
+            "ttl": 0,
+            "enabled": True,
+        }
+    ]
+    adapter, unifi = make_proxmox([]), make_unifi(requests, records)
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s, TrustDomain.DNS, "dns-record", "single-service", AutonomyLevel.AUTONOMOUS, actor="op"
+        )
+        p = await make_proposal(
+            s, build_dns_artifact(hostname="svc.lan", value="10.0.0.6"), "single-service"
+        )
+        result = await execute_proposal(s, p, adapter, actor="op", unifi_adapter=unifi)
+        assert result.outcome == "succeeded"
+        assert records[0]["value"] == "10.0.0.6"
+        receipt = (await s.execute(select(ExecutionReceipt))).scalar_one()
+        assert receipt.action["dispatched"] == "update A record"
+        assert receipt.rollback_state["prior"]["existing"]["value"] == "10.0.0.5"
+        undo = await rollback_receipt(s, receipt, adapter, actor="op", unifi_adapter=unifi)
+    await adapter.aclose()
+    await unifi.aclose()
+    assert records[0]["value"] == "10.0.0.5"
+    assert "10.0.0.5" in undo.detail
+
+
+def test_slice2_kinds_reject_the_wrong_domain() -> None:
+    with pytest.raises(ManifestError, match="domain"):
+        validate_artifact(
+            {
+                "kind": "action",
+                "action": {
+                    "domain": "dns",
+                    "action_kind": "argocd-sync",
+                    "target": {"application": "x"},
+                },
+            }
+        )
+    with pytest.raises(ManifestError, match="record_type"):
+        build_dns_artifact(hostname="a.lan", value="1.2.3.4", record_type="MX")
+    assert is_promotable("argocd-sync", "single-service")
+    assert is_promotable("dns-record", "metadata-only")
+
+
+async def test_receipt_records_the_channel_approval(sessionmaker) -> None:
+    adapter = make_proxmox([])
+
+    async def confirm(manifest, decision) -> ApprovalResult:
+        return ApprovalResult(approved=True, channel="home-assistant", responder="pixel")
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s, TrustDomain.HYPERVISOR, "migrate", "single-host", AutonomyLevel.CONFIRM, actor="op"
+        )
+        p = await make_proposal(s, migrate_artifact(), "single-host")
+        await execute_proposal(s, p, adapter, actor="agent:mcp", confirm_cb=confirm)
+        receipt = (await s.execute(select(ExecutionReceipt))).scalar_one()
+    await adapter.aclose()
+    assert receipt.approval == {"channel": "home-assistant", "responder": "pixel", "approved": True}

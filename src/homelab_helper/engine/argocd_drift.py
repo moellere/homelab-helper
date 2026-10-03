@@ -79,6 +79,17 @@ def _drift_description(app: dict[str, Any]) -> str:
     return lead
 
 
+def _drift_evidence(app: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"type": "argocd_application", "id": app.get("name")},
+        {
+            "type": "argocd_status",
+            "sync": app.get("sync_status"),
+            "health": app.get("health_status"),
+        },
+    ]
+
+
 def _drift_affected(app: dict[str, Any]) -> list[dict[str, str]]:
     affected = [{"target_type": _TARGET_TYPE, "target_id": str(app.get("name"))}]
     namespace = app.get("namespace")
@@ -128,7 +139,7 @@ async def reconcile_argocd_drift(
                         title=title,
                         description=description,
                         affected=affected,
-                        evidence_refs=[{"type": "argocd_application", "id": name}],
+                        evidence_refs=_drift_evidence(app),
                         status=FindingStatus.OPEN,
                         first_seen=now_ts,
                         last_seen=now_ts,
@@ -148,7 +159,7 @@ async def reconcile_argocd_drift(
                 existing.title = title
                 existing.description = description
                 existing.affected = affected
-                existing.evidence_refs = [{"type": "argocd_application", "id": name}]
+                existing.evidence_refs = _drift_evidence(app)
         elif existing is not None and existing.status in {
             FindingStatus.OPEN,
             FindingStatus.ACKNOWLEDGED,

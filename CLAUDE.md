@@ -27,12 +27,15 @@ src/homelab_helper/
 │                   Argo CD, OpenMediaVault — read-only at L1, except the
 │                   Proxmox guest, K8s workload, Argo CD sync and UniFi DNS
 │                   writes reserved for the executor
-├── cli/            Typer apps; entry point in main.py (20 verbs)
+├── cli/            Typer apps; entry point in main.py (24 verbs incl.
+│                   approvals, daemon)
 ├── db/             Models, enums, async session
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
 │                   placement/rebalance/bottlenecks/network_path planners,
 │                   trust (decide) + executor + escalation + rollback (Phase 6),
 │                   approval (Phase 7: HA phone-tap channel for CONFIRM),
+│                   playbooks (finding → proposal, deterministic), listener
+│                   (asks about agent/playbook proposals), k8s_workloads,
 │                   manifest (authoring schema for ProposalLog.artifact)
 ├── llm/            LLMRouter + backends, chat context, Narrator/Planner/
 │                   Discovery agents (LLM never in any authorization path)
@@ -160,6 +163,10 @@ not an authority: it calls the executor with `override=None` (pinned by
 executor consults `engine/approval.py` — a human's tap on another device —
 whose answer lands on `TrustHistory` as an `approval` event. A cell at PROPOSE
 executes nothing through it (`test_execute_proposal_executes_nothing_at_propose`).
+The playbook registry (`engine/playbooks.py`) is the "Triage agent" and it is
+deliberately deterministic: a finding's fields pick the manifest, an LLM may
+narrate a finding but never drafts a remediation. The listener and the daemon
+(`cli/daemon.py`) are triggers like the MCP tool — never authorities.
 When adding an action kind: manifest schema (`engine/manifest.py`) **and**
 `parse_manifest`, a rollback strategy with a read-only verifier in
 `engine/rollback.py`, `REVERSIBLE_ACTION_KINDS` in `engine/escalation.py` only

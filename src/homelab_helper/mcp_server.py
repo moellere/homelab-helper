@@ -93,6 +93,7 @@ from homelab_helper.engine.hass_import import import_home_assistant
 from homelab_helper.engine.host_probe import HostProbeRequest, UnknownProbeError
 from homelab_helper.engine.host_probe import probe_host as _probe_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
+from homelab_helper.engine.k8s_workloads import reconcile_workload_health
 from homelab_helper.engine.manifest import (
     BLAST_RADII,
     DNS_RECORD_TYPES,
@@ -105,6 +106,7 @@ from homelab_helper.engine.manifest import (
 from homelab_helper.engine.network_path import TOPOLOGY_ENV_VAR, TopologyError, load_topology
 from homelab_helper.engine.placement import network_verdict
 from homelab_helper.engine.placement import recommend_placement as _recommend_placement
+from homelab_helper.engine.playbooks import PLAYBOOKS, run_playbooks
 from homelab_helper.engine.rebalance import plan_rebalance as _plan_rebalance
 from homelab_helper.engine.reconfigure import analyze_surplus as _analyze_surplus
 from homelab_helper.engine.retire import is_retired, retired_host_ids
@@ -602,11 +604,16 @@ async def _discover_proxmox(session: AsyncSession) -> dict[str, Any]:
 
 async def _discover_k8s(session: AsyncSession) -> dict[str, Any]:
     adapter = _load_k8s_adapter()
-    result = await discover_k8s_nodes(session, adapter, when=datetime.now(UTC))
+    now = datetime.now(UTC)
+    result = await discover_k8s_nodes(session, adapter, when=now)
+    health = await reconcile_workload_health(session, await adapter.list_workloads(), when=now)
     return {
         "nodes_seen": result.nodes_seen,
         "hosts_matched": len(result.hosts_matched),
         "hosts_created": len(result.hosts_created),
+        "workloads_seen": health.seen,
+        "workloads_unhealthy": health.unhealthy,
+        "workload_findings_resolved": health.resolved,
     }
 
 
@@ -1799,6 +1806,29 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
                         "clean_streak": result.escalation.clean_streak,
                     }
                 ),
+            }
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def draft_remediations() -> dict[str, Any]:
+    """Run the remediation playbooks once: every OPEN finding a playbook covers
+    (Argo CD drift → argocd-sync, unhealthy workload → workload-restart) gets a
+    PENDING proposal, unless one is already pending or was decided within the
+    cooldown. Deterministic — the finding's own fields pick the action. Nothing
+    executes; follow with `execute_proposal` or `helper daemon run --ask`."""
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            result = await run_playbooks(session)
+            return {
+                "drafted": result.drafted,
+                "skipped_pending": len(result.skipped_live),
+                "skipped_cooldown": len(result.skipped_cooldown),
+                "findings_without_playbook": result.no_playbook,
+                "playbooks": [f"{pb.name}: {pb.description}" for pb in PLAYBOOKS],
             }
     finally:
         await engine.dispose()

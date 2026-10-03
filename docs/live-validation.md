@@ -351,7 +351,20 @@ verifier now reports such apps as unverifiable (AUTONOMOUS degrades to CONFIRM)
 and the undo of a sync there is a git revert, which stays human. A timed-out
 request (no tap within 300 s) was recorded as declined and changed nothing.
 
-### Step 7 — clean up
+### Step 7 — the proactive loop (slice 3)
+
+```bash
+uv run helper discover k8s                      # now also opens workload-unhealthy findings
+uv run helper daemon run --once --no-ask        # discovery + playbooks: see what gets drafted
+uv run helper approvals show                    # which drafts would ask you
+uv run helper daemon run --once                 # the listener asks about them; tap on the phone
+```
+
+Expected: a drifted Argo CD app or an unhealthy workload produces exactly one
+pending proposal (`proposed_by` = `playbook:…`), a second pass drafts nothing
+new, the listener asks once and never re-asks a denied one.
+
+### Step 8 — clean up
 
 Revoke the grants unless you want to keep them (`helper trust show`),
 unset the approval service if you do not want agents able to ask.
@@ -365,7 +378,8 @@ unset the approval service if you do not want agents able to ask.
 | P4-AC1 … P4-AC6 | | |
 | P5-AC1 … P5-AC6 | | |
 | P6 steps 0–7 | | |
-| P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
+| P7 steps 0–6 | ✅ 10/03/2026 |
+| P7 step 7 (proactive loop) | | | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 
 Until this table is filled in, `backlog.md` should keep listing live-fleet
 validation as outstanding, and no Phase-6 or Phase-7 execution path should run

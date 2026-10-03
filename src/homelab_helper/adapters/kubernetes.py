@@ -226,6 +226,13 @@ class K8sAdapter:
             "observed_generation": status.get("observedGeneration"),
         }
 
+    async def list_workloads(self) -> list[dict[str, Any]]:
+        """Every Deployment / StatefulSet / DaemonSet in the cluster, shaped by :func:`parse_workload`."""
+        out = await self._run("get", "deployments,statefulsets,daemonsets", "-A", "-o", "json")
+        payload = json.loads(out) if out.strip() else {}
+        items = payload.get("items") if isinstance(payload, dict) else None
+        return [parse_workload(i) for i in (items or []) if isinstance(i, dict)]
+
     async def rollout_history(self, namespace: str, kind: str, name: str) -> list[int]:
         """Revision numbers ``kubectl rollout history`` knows, oldest first. Read-only."""
         _check_workload_kind(kind)
@@ -273,6 +280,56 @@ class K8sAdapter:
 WORKLOAD_KINDS: tuple[str, ...] = ("deployment", "statefulset", "daemonset")
 
 
+def parse_workload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Shape one workload into ``{namespace, kind, name, desired, ready, settled, ...}``.
+
+    ``desired``/``ready`` come from ``spec.replicas``/``status.readyReplicas`` for a
+    Deployment or StatefulSet and from ``desiredNumberScheduled``/``numberReady``
+    for a DaemonSet. ``settled`` is true once the controller has observed the
+    current generation and every replica is on the current template, so a
+    rollout in progress is not mistaken for ill health.
+    """
+    meta = raw.get("metadata") or {}
+    spec = raw.get("spec") or {}
+    status = raw.get("status") or {}
+    kind = str(raw.get("kind") or "").lower()
+    if kind == "daemonset":
+        desired = status.get("desiredNumberScheduled")
+        ready = status.get("numberReady")
+        updated = status.get("updatedNumberScheduled")
+    else:
+        desired = spec.get("replicas")
+        ready = status.get("readyReplicas")
+        updated = status.get("updatedReplicas")
+    desired = int(desired or 0)
+    ready = int(ready or 0)
+    generation = meta.get("generation")
+    observed = status.get("observedGeneration")
+    settled = (generation is None or observed is None or int(observed) >= int(generation)) and (
+        updated is None or int(updated or 0) >= desired
+    )
+    conditions = {
+        str(c.get("type")): str(c.get("status"))
+        for c in (status.get("conditions") or [])
+        if isinstance(c, dict)
+    }
+    return {
+        "namespace": meta.get("namespace"),
+        "kind": kind,
+        "name": meta.get("name"),
+        "desired": desired,
+        "ready": ready,
+        "settled": settled,
+        "available": conditions.get("Available"),
+        "progressing": conditions.get("Progressing"),
+    }
+
+
+def workload_is_unhealthy(w: dict[str, Any]) -> bool:
+    """Fewer ready than desired with the rollout settled — the restart playbook's trigger."""
+    return w["desired"] > 0 and w["ready"] < w["desired"] and bool(w["settled"])
+
+
 def _check_workload_kind(kind: str) -> None:
     if kind not in WORKLOAD_KINDS:
         raise ValueError(f"kind must be one of {', '.join(WORKLOAD_KINDS)}, not {kind!r}")
@@ -287,4 +344,6 @@ __all__ = [
     "KubeError",
     "parse_node",
     "parse_quantity",
+    "parse_workload",
+    "workload_is_unhealthy",
 ]

@@ -251,6 +251,8 @@ helper trust grant containers workload-restart single-service confirm
 helper trust grant containers argocd-sync single-service confirm
 helper trust grant dns dns-record single-service confirm
 helper approvals show                               # channel status, what would ask you, who answered
+helper daemon run --once                            # discovery → playbooks → listener, one pass (cron-friendly)
+helper daemon run                                   # the same on cadences, until Ctrl-C
 helper exec list                                    # pending action proposals
 helper exec run <proposal-id>                       # asks at CONFIRM; runs unattended only at AUTONOMOUS
 helper exec receipts                                # what ran, at which level, with its rollback state
@@ -263,6 +265,25 @@ helper trust history                                # the append-only audit spin
 Clean confirmed runs promote a reversible, low-blast cell one rung; one bad
 outcome demotes it and puts it on probation. See `docs/architecture.md`
 ("Trust gradient") for the model.
+
+### Proactive mode (Phase 7)
+
+`helper daemon run` closes the loop without anyone asking: discovery on a
+cadence (findings land in the harness DB), then **playbooks** turn the findings
+they cover into pending proposals, then the **listener** sends the ones policy
+would allow to your phone and executes on a tap. Two playbooks ship:
+
+| Finding | Playbook | Proposal |
+|---|---|---|
+| `drift-candidate` (Argo CD reports an app out of sync or unhealthy) | `argocd-resync` | `argocd-sync` of that application |
+| `workload-unhealthy` (a settled Deployment / StatefulSet / DaemonSet has fewer ready replicas than desired) | `workload-restart` | `workload-restart` of that workload |
+
+Playbooks are a deterministic table, not a model: a finding's own fields pick
+the action, one live proposal per finding, and a six-hour cooldown after any
+decision so a fix that did not clear the finding is not retried every pass.
+The listener never re-asks a proposal you denied or let time out, never asks
+about cells still at PROPOSE, and leaves hand-authored proposals alone. With
+every cell at its default, the daemon only ever writes rows.
 
 ### Using with Claude / MCP
 
@@ -313,7 +334,8 @@ one (rollout restart or scale), `propose_argocd_sync` an Argo CD sync, and
 validated against the manifest schema and returned with the policy preview. `list_proposals` and `get_proposal` read
 them back.
 
-`execute_proposal` (Phase 7) is the one trigger: it hands a pending proposal
+`draft_remediations` runs the playbooks once (harness-DB write, nothing
+executes). `execute_proposal` (Phase 7) is the one trigger: it hands a pending proposal
 to the same executor `helper exec run` uses, with no override, so the outcome
 is still `decide()`'s. AUTONOMOUS runs; CONFIRM sends you a Home Assistant
 actionable notification with **Approve** / **Deny** (set

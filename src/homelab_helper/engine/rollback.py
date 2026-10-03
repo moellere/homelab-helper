@@ -362,6 +362,13 @@ async def _verify_argocd_history(
     except (ArgoCDAPIError, OSError) as exc:
         return False, f"could not read the application: {exc}", {}
     history = app.get("history") or []
+    if app.get("auto_sync"):
+        return (
+            False,
+            "application has automated sync, and Argo CD refuses rollbacks while it is on; "
+            "undoing a sync there is a git revert",
+            {"auto_sync": True, "history_id": history[-1]["id"] if history else None},
+        )
     if not history:
         return False, "application has no sync history to roll back to", {}
     last = history[-1]

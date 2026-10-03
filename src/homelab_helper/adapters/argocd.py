@@ -109,6 +109,7 @@ def parse_application(raw: dict[str, Any]) -> dict[str, Any]:
         if isinstance(h, dict) and h.get("id") is not None
     ]
     operation = status.get("operationState") or {}
+    automated = (spec.get("syncPolicy") or {}).get("automated")
     return {
         "name": metadata.get("name"),
         "namespace": destination.get("namespace"),
@@ -122,6 +123,7 @@ def parse_application(raw: dict[str, Any]) -> dict[str, Any]:
         "revision": sync.get("revision"),
         "history": history,
         "operation_phase": operation.get("phase"),
+        "auto_sync": automated is not None,
     }
 
 

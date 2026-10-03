@@ -15,8 +15,10 @@ doesn't block. Acceptance-criterion references (AC1–AC5, P6-AC1–6) point at
 
 ## Current status snapshot
 
-**Phases 1 (core), 3, 4, 5 and 6 are build-complete; Phase 2 (continuous
-agent / time-series) is deliberately deferred.** Full suite: 870+ tests green.
+**Phases 1 (core), 3, 4, 5 and 6 are build-complete, and Phase 7 slice 1
+(agent-triggered execution behind a phone-tap approval, guest migrate,
+Kubernetes workload actions) has landed; Phase 2 (continuous agent /
+time-series) is deferred into Phase 7 slice 2.** Full suite: 945 tests green.
 Packaging is release-ready (`uv tool install`, per-user dirs, tag-driven PyPI
 release — see `releasing.md`).
 Live-fleet validation of the Phase 4–5 ACs is the outstanding sign-off gate
@@ -688,8 +690,68 @@ from the same review are done:
 
 ---
 
+## Phase 7 — Agentic Operations
+
+Specified in `roadmap.md` ("Phase 7") and `architecture.md` ("Agent-triggered
+execution"). The invariant does not move: an LLM never authorizes. What changes
+is who may *trigger*, and how much of the lab has an executor-gated write path.
+
+### Slice 1 — trigger + approval channel + two surfaces (landed)
+
+- [x] `engine/approval.py` — `ApprovalChannel` protocol, `ApprovalResult`, and the
+  Home Assistant channel (actionable notification with Approve/Deny; the tap
+  read back over HA's websocket event bus; timeout = no). Config:
+  `HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE`, `HOMELAB_HELPER_APPROVAL_TIMEOUT_S`.
+- [x] Executor: a channel's answer is written to `TrustHistory` as an `approval`
+  event (channel, responder, approved); `confirm_cb` may return a bool (CLI) or
+  an `ApprovalResult` (channel).
+- [x] MCP `execute_proposal` — runs the executor with `override=None`; AUTONOMOUS
+  runs, CONFIRM waits on the channel, PROPOSE/BLOCK refused with the reason and
+  the `helper exec run` command. Mechanical tests: the tool can never carry an
+  override; every cell at PROPOSE executes nothing through it. _P7-AC1, AC5._
+- [x] Proxmox `migrate` (live/offline, named target node) with the `prior-node`
+  rollback strategy (verified: both nodes online; restore: migrate back).
+- [x] Kubernetes `workload-restart` / `workload-scale` on deployment, statefulset,
+  daemonset; new `single-service` blast radius; K8s adapter writes
+  `rollout_restart`, `scale_workload`, `rollout_undo` (executor-only);
+  strategies `rollout-undo` (verified by rollout history; undo to the
+  pre-restart revision) and `prior-replicas`.
+- [x] Manifest: two target shapes (`ActionTarget`, `WorkloadTarget`), the
+  authoring helper `build_workload_artifact`, MCP `propose_workload_action`,
+  `propose_action(target_node=, online=)` for migrate.
+- [x] `REVERSIBLE_ACTION_KINDS` grew by the three new kinds; `LOW_BLAST_RADII`
+  by `single-service`.
+- [x] **Live validation** (`live-validation.md`, Part 3) — 10/03/2026 on the
+  Covington lab: migrate + rollback, workload restart + undo, Approve and Deny,
+  all through `execute_proposal` with a phone tap. _P7-AC2, AC3._
+
+### Slice 2 — queued
+
+- [ ] Guest CPU-type change (`vm_cpu_type`, applied at next stop/start; rollback = previous type)
+- [ ] LXC lifecycle beyond power (create from template? destroy stays human-only)
+- [ ] Argo CD `sync` (rollback = previous revision), UniFi DNS records
+  (rollback = previous record), then NetBox / OMV — each behind the executor
+  with a verified inverse
+- [ ] `helper approvals` (pending channel questions) and `helper exec listen`
+  (long-lived approval listener for operators who do not use the MCP path)
+- [ ] Remediation playbooks: deterministic finding-kind → manifest template map;
+  the Triage agent drafts, policy decides. _P7-AC6 first half._
+- [ ] Scheduler — the deferred Phase-2 loop (discovery + reconcile + assertions
+  on a cadence) so proposals appear unasked. _P7-AC6 second half._
+- [ ] Receipt column for the approver (today it lives on `TrustHistory`;
+  denormalize once `list_receipts` needs it)
+
+### Test hygiene (found during slice 1)
+
+- [ ] `tests/test_mcp_server.py` flakes (one random failure or error per run)
+  on `main` too — an unclosed event loop from the CLI runner inside async
+  tests; and the UniFi/OMV discovery tests read real credentials from the
+  developer's environment. Both need fixtures that isolate the environment.
+
+---
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but
-deliberately deferred — several planners note the temporal signals they gain
-when it lands. Post-roadmap (Phase 7+) items are deliberately not tracked.
+deliberately deferred — Phase 7 slice 2 picks it up as the scheduler. Post-roadmap
+(Phase 8+) items are deliberately not tracked.

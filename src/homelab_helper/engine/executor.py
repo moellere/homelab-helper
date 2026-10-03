@@ -31,9 +31,13 @@ Phase 6 PR B. The contract, per ``docs/architecture.md``:
   flags probation. The feedback is one-way — escalation writes levels that a
   *later* ``decide()`` reads; it never influences the decision in flight.
 
-The only write surface today is Proxmox guest power
-(start | stop | shutdown | restart), AC2's ``containers/restart/single-host``
-cell being the canonical first cell.
+Write surfaces (Phase 7 widened them): Proxmox guest power
+(start | stop | shutdown | restart) and migrate, and Kubernetes workloads
+(workload-restart | workload-scale). AC2's ``containers/restart/single-host``
+cell remains the canonical first cell. At CONFIRM the operator's "yes" may come
+from the CLI prompt or from an :mod:`engine.approval` channel (a phone tap);
+either way it is one human's answer to one action, and a channel's answer is
+written to ``TrustHistory`` as an ``approval`` event.
 """
 
 from __future__ import annotations
@@ -44,15 +48,25 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from homelab_helper.adapters.kubernetes import KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAPIError
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog, TrustHistory
+from homelab_helper.engine.approval import ApprovalResult
 from homelab_helper.engine.escalation import (
     EscalationResult,
     record_bad_outcome,
     record_clean_outcome,
 )
-from homelab_helper.engine.manifest import VM_KIND_DOMAIN, ManifestError
+from homelab_helper.engine.manifest import (
+    ACTION_KINDS,
+    GUEST_ACTION_KINDS,
+    VM_KIND_DOMAIN,
+    WORKLOAD_ACTION_KINDS,
+    WORKLOAD_DOMAIN,
+    WORKLOAD_KINDS,
+    ManifestError,
+)
 from homelab_helper.engine.rollback import (
     RollbackError,
     RollbackPlan,
@@ -74,9 +88,10 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from homelab_helper.adapters.kubernetes import K8sAdapter
     from homelab_helper.adapters.proxmox import ProxmoxAdapter
 
-    ConfirmCallback = Callable[["ActionManifest", Decision], Awaitable[bool]]
+    ConfirmCallback = Callable[["ActionManifest", Decision], Awaitable["bool | ApprovalResult"]]
 
 # Trust-vocabulary verbs → Proxmox API verbs.
 _POWER_DISPATCH = {"start": "start", "stop": "stop", "shutdown": "shutdown", "restart": "reboot"}
@@ -102,20 +117,33 @@ class ActionManifest:
     action_kind: str
     blast_radius: str
     hostnames: tuple[str, ...]
-    node: str
-    vmid: int
-    vm_kind: str
     rollback_verified: bool
     rollback_strategy: str | None
     action_raw: dict[str, Any]
+    node: str | None = None
+    vmid: int | None = None
+    vm_kind: str | None = None
+    target_node: str | None = None
+    online: bool | None = None
+    namespace: str | None = None
+    workload_kind: str | None = None
+    workload_name: str | None = None
+    replicas: int | None = None
 
     @property
     def cell_key(self) -> str:
         return f"{self.domain.value}/{self.action_kind}/{self.blast_radius}"
 
     @property
+    def is_workload(self) -> bool:
+        return self.workload_name is not None
+
+    @property
     def target_label(self) -> str:
-        return f"{self.vm_kind}/{self.vmid} on {self.node}"
+        if self.is_workload:
+            return f"{self.workload_kind}/{self.workload_name} in {self.namespace}"
+        label = f"{self.vm_kind}/{self.vmid} on {self.node}"
+        return f"{label} -> {self.target_node}" if self.target_node else label
 
 
 @dataclass(frozen=True)
@@ -163,13 +191,42 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
         raise ManifestError('manifest has no "action" object')
 
     action_kind = action.get("action_kind")
-    if action_kind not in _POWER_DISPATCH:
-        allowed = ", ".join(sorted(_POWER_DISPATCH))
+    if action_kind not in ACTION_KINDS:
+        allowed = ", ".join(sorted(ACTION_KINDS))
         raise ManifestError(f"action_kind {action_kind!r} is not supported (allowed: {allowed})")
 
     target = action.get("target")
     if not isinstance(target, dict):
         raise ManifestError('manifest action has no "target" object')
+    declared = str(action.get("domain"))
+    try:
+        domain = TrustDomain(declared)
+    except ValueError:
+        raise ManifestError(f"unknown trust domain {declared!r}") from None
+
+    rollback = artifact.get("rollback") or {}
+    if not isinstance(rollback, dict):
+        raise ManifestError('"rollback" must be an object when present')
+    common: dict[str, Any] = {
+        "domain": domain,
+        "action_kind": action_kind,
+        "blast_radius": proposal.blast_radius,
+        "rollback_verified": bool(rollback.get("verified")),
+        "rollback_strategy": rollback.get("strategy"),
+        "action_raw": action,
+    }
+
+    if "vmid" in target or "node" in target:
+        return _parse_guest_target(action, target, domain, common)
+    return _parse_workload_target(action, target, domain, common)
+
+
+def _parse_guest_target(
+    action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
+) -> ActionManifest:
+    action_kind = common["action_kind"]
+    if action_kind not in GUEST_ACTION_KINDS:
+        raise ManifestError(f"{action_kind!r} is not a guest action")
     node = target.get("node")
     vmid = target.get("vmid")
     vm_kind = target.get("vm_kind")
@@ -179,36 +236,92 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
         raise ManifestError("target.vmid must be an integer")
     if vm_kind not in _VM_KIND_DOMAIN:
         raise ManifestError(f'target.vm_kind must be "qemu" or "lxc", not {vm_kind!r}')
-
     expected_domain = _VM_KIND_DOMAIN[vm_kind]
-    declared = str(action.get("domain"))
-    try:
-        domain = TrustDomain(declared)
-    except ValueError:
-        raise ManifestError(f"unknown trust domain {declared!r}") from None
     if domain is not expected_domain:
         raise ManifestError(
             f"declared domain {domain.value!r} does not match guest kind {vm_kind!r} "
             f"(which is {expected_domain.value!r}) — refusing"
         )
-
-    hostnames = tuple(action.get("hostnames") or (node,))
-    rollback = artifact.get("rollback") or {}
-    if not isinstance(rollback, dict):
-        raise ManifestError('"rollback" must be an object when present')
-
+    target_node = target.get("target_node")
+    if action_kind == "migrate":
+        if not target_node or not isinstance(target_node, str):
+            raise ManifestError("target.target_node is required for migrate")
+        if target_node == node:
+            raise ManifestError("target.target_node must differ from target.node")
+    online = target.get("online")
     return ActionManifest(
-        domain=domain,
-        action_kind=action_kind,
-        blast_radius=proposal.blast_radius,
-        hostnames=hostnames,
+        **common,
+        hostnames=tuple(action.get("hostnames") or (node,)),
         node=node,
         vmid=vmid,
         vm_kind=vm_kind,
-        rollback_verified=bool(rollback.get("verified")),
-        rollback_strategy=rollback.get("strategy"),
-        action_raw=action,
+        target_node=target_node if action_kind == "migrate" else None,
+        online=bool(online) if online is not None else None,
     )
+
+
+def _parse_workload_target(
+    action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
+) -> ActionManifest:
+    action_kind = common["action_kind"]
+    if action_kind not in WORKLOAD_ACTION_KINDS:
+        raise ManifestError(f"{action_kind!r} needs a guest target (node, vmid, vm_kind)")
+    namespace = target.get("namespace")
+    kind = target.get("kind")
+    name = target.get("name")
+    if not namespace or not isinstance(namespace, str):
+        raise ManifestError("target.namespace is required")
+    if kind not in WORKLOAD_KINDS:
+        raise ManifestError(f"target.kind must be one of {', '.join(WORKLOAD_KINDS)}, not {kind!r}")
+    if not name or not isinstance(name, str):
+        raise ManifestError("target.name is required")
+    if domain is not WORKLOAD_DOMAIN:
+        raise ManifestError(
+            f"declared domain {domain.value!r} does not match a Kubernetes workload "
+            f"(which is {WORKLOAD_DOMAIN.value!r}) — refusing"
+        )
+    replicas = target.get("replicas")
+    if action_kind == "workload-scale" and (not isinstance(replicas, int) or replicas < 0):
+        raise ManifestError("target.replicas must be a non-negative integer for workload-scale")
+    return ActionManifest(
+        **common,
+        hostnames=tuple(action.get("hostnames") or ()),
+        namespace=namespace,
+        workload_kind=kind,
+        workload_name=name,
+        replicas=replicas if action_kind == "workload-scale" else None,
+    )
+
+
+async def _dispatch(
+    manifest: ActionManifest, adapter: ProxmoxAdapter, k8s: K8sAdapter | None
+) -> tuple[str, Any]:
+    """Run the one adapter write the manifest names; returns ``(verb, task-ish detail)``."""
+    if manifest.is_workload:
+        if k8s is None:
+            raise KubeError("no Kubernetes adapter is configured")
+        ns, kind, name = manifest.namespace, manifest.workload_kind, manifest.workload_name
+        if ns is None or kind is None or name is None:
+            raise ManifestError("workload target is incomplete")
+        if manifest.action_kind == "workload-restart":
+            return "rollout restart", await k8s.rollout_restart(ns, kind, name)
+        if manifest.replicas is None:
+            raise ManifestError("workload-scale has no replica count")
+        return f"scale --replicas={manifest.replicas}", await k8s.scale_workload(
+            ns, kind, name, manifest.replicas
+        )
+    node, vmid, vm_kind = manifest.node, manifest.vmid, manifest.vm_kind
+    if node is None or vmid is None or vm_kind is None:
+        raise ManifestError("guest target is incomplete")
+    if manifest.action_kind == "migrate":
+        if manifest.target_node is None:
+            raise ManifestError("migrate has no target node")
+        online = manifest.online if manifest.online is not None else True
+        return f"migrate -> {manifest.target_node}", await adapter.migrate_guest(
+            node, vmid, vm_kind, manifest.target_node, online=online
+        )
+    verb = _POWER_DISPATCH[manifest.action_kind]
+    return verb, await adapter.vm_power(node, vmid, vm_kind, verb)
 
 
 async def _log_override(
@@ -250,6 +363,49 @@ async def _log_override(
     return True
 
 
+async def _confirm(
+    session: AsyncSession,
+    confirm_cb: ConfirmCallback | None,
+    manifest: ActionManifest,
+    decision: Decision,
+    *,
+    proposal: ProposalLog,
+    actor: str,
+) -> None:
+    """One human's "yes" for this one action, from the CLI prompt or an approval channel.
+
+    A channel's answer (an :class:`ApprovalResult`) is written to ``TrustHistory``
+    as an ``approval`` event either way, so the audit spine shows who said yes or
+    no and over which path. Anything but a yes raises :class:`ExecutionRefused`.
+    """
+    if confirm_cb is None:
+        raise ExecutionRefused(
+            "decision requires operator confirmation and no confirmer is available", decision
+        )
+    answer = await confirm_cb(manifest, decision)
+    if isinstance(answer, ApprovalResult):
+        session.add(
+            TrustHistory(
+                actor=actor,
+                event="approval",
+                domain=manifest.domain,
+                proposal_id=proposal.id,
+                detail={
+                    "cell": manifest.cell_key,
+                    "approved": answer.approved,
+                    "channel": answer.channel,
+                    "responder": answer.responder,
+                    **answer.detail,
+                },
+            )
+        )
+        await session.flush()
+        if not answer.approved:
+            raise ExecutionRefused(f"{answer.summary} — proposal left pending", decision)
+    elif not answer:
+        raise ExecutionRefused("operator declined — proposal left pending", decision)
+
+
 async def execute_proposal(
     session: AsyncSession,
     proposal: ProposalLog,
@@ -258,6 +414,7 @@ async def execute_proposal(
     actor: str,
     confirm_cb: ConfirmCallback | None = None,
     override: OverrideGrant | None = None,
+    k8s_adapter: K8sAdapter | None = None,
 ) -> ExecutionResult:
     """Gate, (maybe) confirm, dispatch, and receipt one pending action proposal.
 
@@ -300,7 +457,7 @@ async def execute_proposal(
     # Authorized in some form, so it is worth asking the target whether this is
     # undoable. Read-only, and deliberately not the manifest's to assert: a
     # proposal may *request* a rollback strategy but may not certify one.
-    verification = await verify_rollback(adapter, manifest)
+    verification = await verify_rollback(adapter, manifest, k8s=k8s_adapter)
     action = _request(verification.verified)
     decision = decide(action, context)
 
@@ -318,13 +475,7 @@ async def execute_proposal(
         actor=actor,
     )
     if decision.level is AutonomyLevel.CONFIRM:
-        if confirm_cb is None:
-            raise ExecutionRefused(
-                "decision requires operator confirmation and no confirmer is available",
-                decision,
-            )
-        if not await confirm_cb(manifest, decision):
-            raise ExecutionRefused("operator declined — proposal left pending", decision)
+        await _confirm(session, confirm_cb, manifest, decision, proposal=proposal, actor=actor)
 
     # The kill switch's checkpoint. A window can be revoked between the
     # decision and the dispatch — including by an operator watching this run
@@ -350,11 +501,10 @@ async def execute_proposal(
 
     started = time.monotonic()
     outcome, error, upid = "succeeded", None, None
+    verb = manifest.action_kind
     try:
-        upid = await adapter.vm_power(
-            manifest.node, manifest.vmid, manifest.vm_kind, _POWER_DISPATCH[manifest.action_kind]
-        )
-    except (ProxmoxAPIError, OSError) as exc:
+        verb, upid = await _dispatch(manifest, adapter, k8s_adapter)
+    except (ProxmoxAPIError, KubeError, OSError, ValueError) as exc:
         outcome, error = "failed", str(exc)
     duration_ms = int((time.monotonic() - started) * 1000)
 
@@ -364,7 +514,7 @@ async def execute_proposal(
         decision_level=decision.level,
         decision_reasons=list(decision.reasons),
         window_id=uuid.UUID(decision.window_id) if decision.window_id else None,
-        action={**manifest.action_raw, "dispatched": _POWER_DISPATCH[manifest.action_kind]},
+        action={**manifest.action_raw, "dispatched": verb},
         rollback_state=rollback_state,
         outcome=outcome,
         error=error,
@@ -425,6 +575,7 @@ async def rollback_receipt(
     adapter: ProxmoxAdapter,
     *,
     actor: str,
+    k8s_adapter: K8sAdapter | None = None,
 ) -> RollbackResult:
     """Undo one executed action, using the state captured before it ran.
 
@@ -448,7 +599,7 @@ async def rollback_receipt(
     plan = RollbackPlan.from_receipt_state(receipt.rollback_state or {})
 
     started = time.monotonic()
-    detail = await restore(adapter, plan)
+    detail = await restore(adapter, plan, k8s=k8s_adapter)
     duration_ms = int((time.monotonic() - started) * 1000)
 
     undo = ExecutionReceipt(

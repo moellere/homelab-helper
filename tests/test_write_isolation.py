@@ -14,9 +14,18 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "homelab_helper"
 
-WRITE_METHODS = ("vm_power", "create_snapshot", "rollback_snapshot")
+WRITE_METHODS = (
+    "vm_power",
+    "create_snapshot",
+    "rollback_snapshot",
+    "migrate_guest",
+    "rollout_restart",
+    "scale_workload",
+    "rollout_undo",
+)
 ALLOWED = {
     SRC / "adapters" / "proxmox.py",  # the definitions
+    SRC / "adapters" / "kubernetes.py",  # the Phase-7 workload writes
     SRC / "engine" / "executor.py",  # the gate's enforcement point
     SRC / "engine" / "rollback.py",  # driven by the executor
 }

@@ -52,12 +52,16 @@ if TYPE_CHECKING:
 PROMOTION_STREAK = 5
 """Clean approvals that buy one rung. Owner-locked; not runtime-tunable."""
 
-LOW_BLAST_RADII = frozenset({"metadata-only", "single-host"})
-"""The only blast radii auto-escalation will touch."""
+LOW_BLAST_RADII = frozenset({"metadata-only", "single-service", "single-host"})
+"""The only blast radii auto-escalation will touch (``single-service`` = one
+Kubernetes workload, Phase 7)."""
 
-REVERSIBLE_ACTION_KINDS = frozenset({"start", "stop", "shutdown", "restart"})
+REVERSIBLE_ACTION_KINDS = frozenset(
+    {"start", "stop", "shutdown", "restart", "migrate", "workload-restart", "workload-scale"}
+)
 """Deliberately narrow: an action kind earns a place here only once its
-inverse is a real, tested write path. Everything else needs a grant."""
+inverse is a real, tested write path (``engine/rollback.py``: prior power
+state, prior node, rollout undo, prior replicas). Everything else needs a grant."""
 
 _LADDER: tuple[AutonomyLevel, ...] = (
     AutonomyLevel.PROPOSE,

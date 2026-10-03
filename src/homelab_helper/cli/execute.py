@@ -10,6 +10,7 @@ is ever dispatched past the gate.
 from __future__ import annotations
 
 import asyncio
+import shutil
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,7 @@ from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
+from homelab_helper.adapters.kubernetes import K8sAdapter, KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxAPIError, ProxmoxConfigError
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
@@ -59,6 +61,13 @@ console = Console()
 def _build_adapter() -> ProxmoxAdapter:
     """Adapter factory — module-level so tests can inject a MockTransport."""
     return ProxmoxAdapter.from_env()
+
+
+def _build_k8s_adapter() -> K8sAdapter | None:
+    """Kubernetes adapter for workload actions; ``None`` when kubectl is not on this machine."""
+    if shutil.which("kubectl") is None:
+        return None
+    return K8sAdapter.from_env()
 
 
 async def _pending_action_proposals(session: AsyncSession) -> list[tuple[ProposalLog, str | None]]:
@@ -259,6 +268,7 @@ def exec_run(
                         actor=operator_identity(),
                         confirm_cb=_confirm,
                         override=grant,
+                        k8s_adapter=_build_k8s_adapter(),
                     )
                 except ManifestError as exc:
                     console.print(f"[red]invalid manifest:[/red] {escape(str(exc))}")
@@ -416,12 +426,16 @@ def exec_rollback(
                     return 2
                 try:
                     result = await rollback_receipt(
-                        session, receipt, adapter, actor=operator_identity()
+                        session,
+                        receipt,
+                        adapter,
+                        actor=operator_identity(),
+                        k8s_adapter=_build_k8s_adapter(),
                     )
                 except RollbackError as exc:
                     console.print(f"[red]cannot roll back:[/red] {escape(str(exc))}")
                     return 2
-                except ProxmoxAPIError as exc:
+                except (ProxmoxAPIError, KubeError) as exc:
                     console.print(f"[red]restore failed:[/red] {escape(str(exc))}")
                     return 4
                 finally:

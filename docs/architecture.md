@@ -86,13 +86,13 @@ Concrete adapters:
 |---|---|---|---|
 | **NetBoxAdapter** | P1 | Devices, IPs, VLANs, Cables, Custom Fields | Devices, Custom Fields, InventoryItems, Services |
 | **KernelSSHAdapter** | P1 | Anything `lshw`/`dmidecode`/`smartctl`/etc. produces over SSH | (read-only; never writes) |
-| **ProxmoxAdapter** | P3 | Cluster state, VMs, Ceph health, replication | (read-only at L1) |
-| **K8sAdapter** | P3 | Nodes, pods, services, labels, events | (read-only at L1) |
+| **ProxmoxAdapter** | P3 | Cluster state, VMs, Ceph health, replication | Guest power, snapshots (P6), migrate (P7) — executor-only |
+| **K8sAdapter** | P3 | Nodes, pods, services, labels, events | Workload rollout restart / scale / undo (P7) — executor-only |
 | **UniFiAdapter** | P3 | DNS records, DHCP leases, switch port config, network definitions | (read-only at L1) |
 | **CloudflareAdapter** | P3 | DNS records, ACME certs, zone state | (read-only at L1) |
 | **GitArgoCDAdapter** | P3 | Declared app state from Git, ArgoCD sync status | (read-only) |
 
-L1 means every trust cell sits at PROPOSE. The one infrastructure write surface today is Proxmox guest power (`vm_power`, snapshots) and it is callable only from `engine/executor.py`, which consults `decide()` first; a test fails if any other module names those methods. NetBox custom-field/InventoryItem/VM sync keeps its own diff/confirm path.
+L1 means every trust cell sits at PROPOSE. The infrastructure write surfaces are Proxmox guest power, snapshots and migrate, and Kubernetes workload restart/scale/undo; all are callable only from `engine/executor.py` (and the rollback orchestrator it drives), which consults `decide()` first; a test fails if any other module names those methods. NetBox custom-field/InventoryItem/VM sync keeps its own diff/confirm path.
 
 Adapter discovery is dynamic: the framework scans configured adapters on startup, runs each one's `health_check`, and produces a finding if any required adapter is unreachable.
 
@@ -363,7 +363,7 @@ The LLM never sees raw secrets, raw SSH output, or anything that hasn't been thr
 - The only writes the engine performs are:
   - Harness DB tables (inventory, findings, proposals — harness's own state)
   - NetBox custom fields and InventoryItems (per the NetBox sync invariants in the schema doc)
-- Proxmox is the only adapter with write methods (guest power, snapshots); they are reachable only through `engine/executor.py`, which is the gate's enforcement point (`tests/test_write_isolation.py`). Every other adapter is read-only.
+- Two adapters have write methods — Proxmox (guest power, snapshots, migrate) and Kubernetes (workload rollout restart, scale, undo); they are reachable only through `engine/executor.py` and `engine/rollback.py`, the gate's enforcement point (`tests/test_write_isolation.py`). Every other adapter is read-only.
 - Future L2 lift is the trust gradient (below) plus an Executor that consumes pending proposals — not a re-architecture. At L1, the gradient is present but every cell is pinned to `PROPOSE`.
 
 ### Trust gradient (L2 authorization model)
@@ -416,6 +416,18 @@ This is the spine of the safety model:
 | **Absolute floors** | `secrets`, and any owner-marked window-proof host/domain | **only** by editing the policy config out-of-band — no runtime gesture, ever |
 
 Without the absolute tier, the only backstop is the reactive kill switch; with it, `secrets` and "my production NAS, never under any circumstances" are preventively unreachable by any window or override.
+
+#### Agent-triggered execution (Phase 7)
+
+Phase 7 changes *who may trigger* execution, not who authorizes it. An agent (via the MCP `execute_proposal` tool) may ask for a pending proposal to run. The executor then calls `decide()` exactly as it does for `helper exec run`, and:
+
+| `decide()` | Outcome |
+|---|---|
+| `AUTONOMOUS` | executes, receipt, notification |
+| `CONFIRM` | the executor consults the configured **approval channel** — first implementation: a Home Assistant actionable notification whose Approve/Deny tap arrives over HA's websocket event bus. Approve executes and is recorded as a `TrustHistory` event carrying the channel and responder; Deny or timeout executes nothing and leaves the proposal pending for the CLI path |
+| `PROPOSE` / `BLOCK` | refused, with the policy reason |
+
+The approval channel is a human gesture delivered over a different device, which is why it may stand in for the CLI prompt at `CONFIRM`. It is never consulted for anything above `CONFIRM`'s authority: it cannot grant, elevate, override, roll back, or open a window, and neither can the agent — the mechanical MCP-surface tests from Phase 6 keep enforcing that absence. The agent is still on the untrusted side; `decide()` and the human remain the only authorities.
 
 #### Override and elevation window
 

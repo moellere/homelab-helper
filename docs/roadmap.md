@@ -323,15 +323,56 @@ Phase 6 is **the full original vision**: a framework that plans, recommends, and
 
 ---
 
-## Post-roadmap (Phase 7+)
+## Phase 7 — Agentic Operations
+
+Phase 6 built the execution machinery and left it parked: every cell at `PROPOSE`, one write surface (Proxmox guest power), and an MCP surface that can draft but never trigger. Phase 7 puts the machinery to work without moving the one line that makes it safe. **An LLM still never authorizes.** What changes is *who may trigger*: an agent may ask for a proposal to execute, and the outcome is decided by `decide()` plus, where policy says `CONFIRM`, a human tap — never by the agent. Everything an agent cannot do today (grant, elevate, override, roll back) it still cannot do.
+
+### Goals
+
+- Let an agent close the loop on actions the operator has already chosen to trust, with the operator one tap away for the rest.
+- Grow the write surface beyond guest power, in blast-radius order, every surface behind the same executor and gate.
+- Make the framework proactive: findings become remediation proposals on their own, and later on a schedule.
+
+### Deliverables
+
+| Deliverable | Notes |
+|---|---|
+| Approval channel | A pluggable `ApprovalChannel` consulted by the executor when `decide()` returns `CONFIRM`. First implementation: a Home Assistant actionable notification (Approve / Deny) whose tap is read back over HA's websocket event bus. The approval is recorded as a `TrustHistory` event with the channel and the responder; a timeout leaves the proposal pending for the CLI path. |
+| `execute_proposal` MCP tool | Routes a pending proposal through the executor. `AUTONOMOUS` runs; `CONFIRM` waits on the approval channel; `PROPOSE` and `BLOCK` are refused with the policy reason and the `helper exec run` command. Two new mechanical tests pin that the MCP surface still has no grant / window / override / rollback tool. |
+| Proxmox guest lifecycle | `migrate` (live or offline, to a named node) alongside the existing power + snapshot actions; a guest CPU-type change follows. Reversibility: migrate back, verified by both nodes being online. |
+| Kubernetes workload actions | `workload-restart` (rollout restart of a Deployment / StatefulSet / DaemonSet, undone with `rollout undo`), `workload-scale` (replicas, with the previous count captured). A new `single-service` blast radius names one workload. The K8s adapter gains its first write methods, callable only from the executor. |
+| Remediation playbooks | Deterministic mapping from finding kinds to manifest templates (e.g. `SERVICE_DOWN` on a K8s workload → `workload_restart`); the Triage agent drafts the manifest, policy decides. |
+| Scheduler (the deferred Phase 2 loop) | Discovery + reconcile + assertions on a cadence, so findings and their proposals appear without a human asking. |
+| CLI: `helper approvals`, `helper exec listen` | See pending approvals; run the approval listener as a long-lived process for operators who do not use the MCP path. |
+
+### Acceptance criteria
+
+1. **With every cell still at `PROPOSE`, `execute_proposal` executes nothing** — it returns the policy reason and the CLI command. Phase 6 AC1 holds through the new tool.
+2. **Grant `CONFIRM` on `hypervisor/migrate/single-host`**: an agent-drafted migrate proposal produces a phone notification; **Approve** executes it, records a receipt and a `TrustHistory` approval event naming the channel; **Deny** or a timeout executes nothing and leaves the proposal pending.
+3. **Grant `CONFIRM` on `containers/workload-restart/single-service`**: the same flow restarts a Deployment, with the current rollout revision captured so `rollout undo` can return to it.
+4. **A cell at `AUTONOMOUS` runs from `execute_proposal` unattended**, with a receipt and a notification, and one bad outcome demotes it exactly as Phase 6 AC3 specifies.
+5. **The MCP surface still has no tool that grants, elevates, overrides, rolls back, or opens a window** — enforced mechanically.
+6. **A `SERVICE_DOWN` finding on a trusted cell produces a remediation proposal without a human prompt**, and the scheduler surfaces it within one cadence.
+
+### Effort
+
+**6–10 weeks.** The approval channel and MCP tool are small; the surfaces are each a contained adapter + manifest + executor + rollback slice; the scheduler is the deferred Phase 2 work and the largest single item.
+
+### Stop-here value
+
+A lab that fixes what it already knows how to fix, with the operator deciding how much of that happens unattended, per action class, and able to stop all of it with one switch.
+
+---
+
+## Post-roadmap (Phase 8+)
 
 These are real future phases, deliberately not committed in this roadmap:
 
-- **Operate & maintain**. Incident triage agent, update orchestration, predictive failure analysis using observation history, anomaly detection.
+- **Operate & maintain, beyond playbooks**. Update orchestration, predictive failure analysis using observation history, anomaly detection.
 - **Multi-tenant + hosted service**. The Nabu-Casa-style subscription tier — managed LLM access, off-site backup, remote access, mobile push, community template marketplace.
 - **Heterogeneous architecture support beyond Linux**. FreeBSD probes (TrueNAS Core, pfSense/OPNsense), macOS probes (Mac mini servers), Windows probes (Windows hosts in mixed labs).
 
-Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–6).
+Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–7).
 
 ---
 

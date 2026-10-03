@@ -1,7 +1,8 @@
 """Virtualization reconcile — Proxmox discovery → Cluster + VirtualMachine rows.
 
 Upserts the harness-side projection of a hypervisor's cluster + guests. Idempotent:
-the cluster is keyed by name, each VM by ``(cluster, vmid)``. A guest's node is
+the cluster is keyed by name (a standalone node by its node name, since each
+standalone node is its own VMID namespace), each VM by ``(cluster, vmid)``. A guest's node is
 resolved to a ``Host`` row when that node is already known, so VM placement can
 be reasoned about against hardware. Discovery is read-only at the source (L1):
 this only writes harness rows from what the adapter already read.
@@ -42,6 +43,11 @@ class VirtReconcileResult:
     vms_created: list[str] = field(default_factory=list)
     vms_updated: list[str] = field(default_factory=list)
     vms_unchanged: list[str] = field(default_factory=list)
+    vms_adopted: list[str] = field(default_factory=list)
+    legacy_cluster_removed: bool = False
+
+
+LEGACY_STANDALONE = "(standalone)"
 
 
 def _vm_fields_from_discovery(vm: dict[str, Any]) -> dict[str, Any]:
@@ -58,6 +64,54 @@ def _vm_fields_from_discovery(vm: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def standalone_cluster_name(cluster_status: dict[str, Any], vms: list[dict[str, Any]]) -> str:
+    """Name for a node with no cluster row. Each standalone node is its own VMID
+    namespace, so the node name must be part of the key or two nodes collide."""
+    nodes = {n.get("name") for n in cluster_status.get("nodes") or [] if n.get("name")}
+    nodes |= {v.get("node") for v in vms if v.get("node")}
+    if len(nodes) == 1:
+        return f"{LEGACY_STANDALONE} {nodes.pop()}"
+    return LEGACY_STANDALONE
+
+
+async def _adopt_legacy_standalone(
+    session: AsyncSession, cluster: Cluster, node: str, result: VirtReconcileResult
+) -> None:
+    """Move this node's guests out of the pre-fix shared ``(standalone)`` row.
+
+    Databases written before standalone nodes were keyed by node name hold every
+    standalone guest under one cluster. Guests whose ``node_name`` is this node are
+    re-parented so they update in place instead of reappearing as duplicates; guests
+    of other nodes stay for their own discovery to adopt. The legacy row goes away
+    once it is empty."""
+    legacy = (
+        await session.execute(select(Cluster).where(Cluster.name == LEGACY_STANDALONE))
+    ).scalar_one_or_none()
+    if legacy is None or legacy.id == cluster.id:
+        return
+    rows = (
+        (
+            await session.execute(
+                select(VirtualMachine).where(VirtualMachine.cluster_id == legacy.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    remaining = 0
+    for vm in rows:
+        if vm.node_name == node:
+            vm.cluster_id = cluster.id
+            result.vms_adopted.append(vm.name)
+        else:
+            remaining += 1
+    await session.flush()
+    if remaining == 0:
+        await session.delete(legacy)
+        result.legacy_cluster_removed = True
+        await session.flush()
+
+
 async def reconcile_proxmox_cluster(
     session: AsyncSession,
     cluster_status: dict[str, Any],
@@ -67,7 +121,7 @@ async def reconcile_proxmox_cluster(
     kind: str = "proxmox",
 ) -> VirtReconcileResult:
     """Upsert a Cluster + its VirtualMachine rows from Proxmox discovery."""
-    cluster_name = cluster_status.get("name") or "(standalone)"
+    cluster_name = cluster_status.get("name") or standalone_cluster_name(cluster_status, vms)
     result = VirtReconcileResult(cluster_name=cluster_name)
 
     cluster = (
@@ -81,6 +135,10 @@ async def reconcile_proxmox_cluster(
     cluster.node_count = cluster_status.get("node_count")
     cluster.discovery_last_run = when
     await session.flush()
+
+    if cluster_name.startswith(f"{LEGACY_STANDALONE} "):
+        node = cluster_name[len(LEGACY_STANDALONE) + 1 :]
+        await _adopt_legacy_standalone(session, cluster, node, result)
 
     # Node-name → Host resolution, one query for the whole batch.
     node_names = {v.get("node") for v in vms if v.get("node")}
@@ -135,4 +193,9 @@ async def reconcile_proxmox_cluster(
     return result
 
 
-__all__ = ["VirtReconcileResult", "reconcile_proxmox_cluster"]
+__all__ = [
+    "LEGACY_STANDALONE",
+    "VirtReconcileResult",
+    "reconcile_proxmox_cluster",
+    "standalone_cluster_name",
+]

@@ -7,8 +7,12 @@ natural language without shelling out.
 
 The Phase-6 trust surface (``trust_status``, ``list_receipts``,
 ``pending_actions``) is **read-only on purpose**: a model may see what policy
-allows and what has run, and has no tool to grant, elevate, override, or
-execute. Authority changes are operator gestures at the CLI.
+allows and what has run, and has no tool to grant, elevate, override, roll
+back, or open a window. Authority changes are operator gestures at the CLI.
+Phase 7 added one *trigger*: ``execute_proposal`` asks the executor to run a
+pending proposal, and the outcome is decided by ``decide()`` plus — at CONFIRM
+— a human's tap on an approval channel. The agent never passes an override and
+never authorizes anything; a cell at PROPOSE still executes nothing.
 
 **Read-only against infrastructure (L1).** Query tools only read the harness
 DB. ``run_discovery`` reads live sources (UniFi, Cloudflare, Argo CD, Proxmox,
@@ -30,6 +34,7 @@ Run it: ``helper mcp serve`` (stdio). Register in a client, e.g. Claude Code::
 from __future__ import annotations
 
 import os
+import shutil
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
@@ -43,7 +48,7 @@ from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
-from homelab_helper.adapters.proxmox import ProxmoxAdapter
+from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
@@ -62,6 +67,11 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.approval import (
+    ApprovalConfigError,
+    ApprovalError,
+    approval_channel_from_env,
+)
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
 from homelab_helper.engine.bottlenecks import analyze_bottlenecks as _analyze_bottlenecks
 from homelab_helper.engine.bottlenecks import persist_bottlenecks
@@ -70,12 +80,24 @@ from homelab_helper.engine.dns_reconcile import (
     reconcile_internal_endpoints,
 )
 from homelab_helper.engine.escalation import PROMOTION_STREAK, is_promotable
-from homelab_helper.engine.executor import ManifestError, parse_manifest
+from homelab_helper.engine.executor import (
+    ExecutionRefused,
+    ManifestError,
+    parse_manifest,
+)
+from homelab_helper.engine.executor import (
+    execute_proposal as _run_proposal,
+)
 from homelab_helper.engine.hass_import import import_home_assistant
 from homelab_helper.engine.host_probe import HostProbeRequest, UnknownProbeError
 from homelab_helper.engine.host_probe import probe_host as _probe_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
-from homelab_helper.engine.manifest import BLAST_RADII, build_artifact
+from homelab_helper.engine.manifest import (
+    BLAST_RADII,
+    WORKLOAD_KINDS,
+    build_artifact,
+    build_workload_artifact,
+)
 from homelab_helper.engine.network_path import TOPOLOGY_ENV_VAR, TopologyError, load_topology
 from homelab_helper.engine.placement import network_verdict
 from homelab_helper.engine.placement import recommend_placement as _recommend_placement
@@ -1163,12 +1185,15 @@ async def probe_talos(
 
 # --------------------------------------------------------- trust surface (L2)
 #
-# READ-ONLY, deliberately and permanently. The trust gradient's whole premise
-# is that an LLM is never in the path that authorizes execution, so this
-# surface lets a model *see* the policy — what is allowed, what ran, what is
-# pending — and gives it no way to change any of it. There is no MCP tool to
-# grant a cell, open a window, override, or execute a proposal; those are
-# operator gestures at the CLI. A mechanical test enforces the absence.
+# The trust gradient's whole premise is that an LLM is never in the path that
+# authorizes execution, so this surface lets a model *see* the policy — what
+# is allowed, what ran, what is pending — and gives it no way to change any
+# of it. There is no MCP tool to grant a cell, open a window, override, or
+# roll back; those are operator gestures at the CLI. A mechanical test
+# enforces the absence. Phase 7's `execute_proposal` is a *trigger*, not an
+# authority: it runs the same executor the CLI does, with no override, so
+# `decide()` and the approval channel (a human on another device) still
+# decide; a second mechanical test pins that it can never pass an override.
 
 
 @server.tool()
@@ -1401,12 +1426,16 @@ async def propose_action(
     description: str | None = None,
     blast_radius: str = "single-host",
     hostnames: list[str] | None = None,
+    target_node: str | None = None,
+    online: bool = True,
 ) -> dict[str, Any]:
-    """Draft a guest power action (start/stop/shutdown/restart of a Proxmox
-    VM or container) as a PENDING proposal for the operator to run or reject
-    with `helper exec`. Validates the manifest, writes only to the harness DB,
-    and returns what policy would decide right now. Never executes; an agent
-    cannot grant, override, or open a window."""
+    """Draft a Proxmox guest action — start/stop/shutdown/restart, or migrate
+    (give `target_node`; `online=False` for an offline move) of a VM or
+    container — as a PENDING proposal. Validates the manifest, writes only to
+    the harness DB, and returns what policy would decide right now. Never
+    executes on its own: follow with `execute_proposal` (policy + the
+    operator's tap decide) or leave it for `helper exec`. An agent cannot
+    grant, override, or open a window."""
     if blast_radius not in BLAST_RADII:
         return {"error": f"blast_radius must be one of {', '.join(BLAST_RADII)}"}
     try:
@@ -1416,6 +1445,8 @@ async def propose_action(
             vmid=vmid,
             vm_kind=vm_kind,
             hostnames=tuple(hostnames) if hostnames else None,
+            target_node=target_node,
+            online=online,
         )
     except ManifestError as exc:
         return {"error": str(exc)}
@@ -1439,7 +1470,169 @@ async def propose_action(
             return {
                 **_proposal_dict(proposal),
                 **preview,
-                "next": f"an operator runs `helper exec run {proposal.id}` or `helper exec reject {proposal.id}`",
+                "next": f"`execute_proposal({proposal.id})`, or an operator runs "
+                f"`helper exec run {proposal.id}` / `helper exec reject {proposal.id}`",
+            }
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def propose_workload_action(
+    action_kind: str,
+    namespace: str,
+    kind: str,
+    name: str,
+    title: str,
+    replicas: int | None = None,
+    description: str | None = None,
+    blast_radius: str = "single-service",
+) -> dict[str, Any]:
+    """Draft a Kubernetes workload action — `workload-restart` (rollout
+    restart) or `workload-scale` (give `replicas`) of a deployment,
+    statefulset or daemonset — as a PENDING proposal in the `containers`
+    domain. Same contract as `propose_action`: validates, writes only to the
+    harness DB, never executes on its own."""
+    if blast_radius not in BLAST_RADII:
+        return {"error": f"blast_radius must be one of {', '.join(BLAST_RADII)}"}
+    if kind not in WORKLOAD_KINDS:
+        return {"error": f"kind must be one of {', '.join(WORKLOAD_KINDS)}"}
+    try:
+        artifact = build_workload_artifact(
+            action_kind=action_kind,
+            namespace=namespace,
+            kind=kind,
+            name=name,
+            replicas=replicas,
+        )
+    except ManifestError as exc:
+        return {"error": str(exc)}
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            proposal = ProposalLog(
+                title=title.strip()[:512],
+                description=description,
+                artifact=artifact,
+                affected=[{"target_type": "workload", "target_id": f"{namespace}/{kind}/{name}"}],
+                blast_radius=blast_radius,
+                proposed_by="agent:mcp",
+            )
+            session.add(proposal)
+            await session.flush()
+            preview = await _pessimistic_preview(session, proposal)
+            return {
+                **_proposal_dict(proposal),
+                **preview,
+                "next": f"`execute_proposal({proposal.id})`, or an operator runs "
+                f"`helper exec run {proposal.id}` / `helper exec reject {proposal.id}`",
+            }
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def execute_proposal(proposal_id: str) -> dict[str, Any]:
+    """Ask the executor to run one PENDING action proposal. This is a trigger,
+    not an authority: the same deterministic `decide()` gate the CLI uses
+    runs first. AUTONOMOUS executes; CONFIRM sends the operator an approval
+    notification (Approve / Deny on their phone) and waits for the tap;
+    PROPOSE and BLOCK execute nothing and return the policy reason plus the
+    `helper exec run` command. No override is ever passed from here. Returns
+    the receipt id and outcome, or `{"refused": ...}`."""
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(ProposalLog)
+                        .where(ProposalLog.outcome == ProposalOutcome.PENDING)
+                        .order_by(ProposalLog.proposed_at.desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            matches = [p for p in rows if str(p.id).startswith(proposal_id.lower())]
+            if len(matches) != 1:
+                return {
+                    "error": (
+                        f"no pending proposal with id {proposal_id!r}"
+                        if not matches
+                        else f"id prefix {proposal_id!r} matches {len(matches)} pending proposals"
+                    )
+                }
+            proposal = matches[0]
+            try:
+                manifest = parse_manifest(proposal)
+            except ManifestError as exc:
+                return {"error": f"invalid manifest: {exc}"}
+
+            channel_note: str | None = None
+            try:
+                channel = approval_channel_from_env()
+            except ApprovalConfigError as exc:
+                channel = None
+                channel_note = str(exc)
+
+            async def _confirm(m: Any, decision: Any) -> Any:
+                if channel is None:
+                    raise ExecutionRefused(
+                        "policy says CONFIRM and no approval channel is configured "
+                        f"({channel_note}); an operator runs `helper exec run {proposal.id}`",
+                        decision,
+                    )
+                return await channel.request(m, decision, proposal_id=str(proposal.id))
+
+            try:
+                adapter = _load_proxmox_adapter()
+            except ProxmoxConfigError as exc:
+                return {"error": f"Proxmox adapter: {exc}"}
+            k8s = _load_k8s_adapter() if shutil.which("kubectl") else None
+            try:
+                result = await _run_proposal(
+                    session,
+                    proposal,
+                    adapter,
+                    actor="agent:mcp",
+                    confirm_cb=_confirm,
+                    override=None,
+                    k8s_adapter=k8s,
+                )
+            except ExecutionRefused as exc:
+                return {
+                    "refused": str(exc),
+                    "decision": exc.decision.level.value if exc.decision else None,
+                    "reasons": list(exc.decision.reasons) if exc.decision else [],
+                    "cell": manifest.cell_key,
+                    "next": f"an operator runs `helper exec run {proposal.id}`",
+                }
+            except ApprovalError as exc:
+                return {"refused": f"approval channel failed: {exc}", "cell": manifest.cell_key}
+            finally:
+                await adapter.aclose()
+            return {
+                "proposal_id": str(proposal.id),
+                "cell": manifest.cell_key,
+                "target": manifest.target_label,
+                "decision": result.decision.level.value,
+                "reasons": list(result.decision.reasons),
+                "outcome": result.outcome,
+                "error": result.error,
+                "receipt_id": str(result.receipt_id),
+                "duration_ms": result.duration_ms,
+                "escalation": (
+                    None
+                    if result.escalation is None
+                    else {
+                        "event": result.escalation.event,
+                        "level": result.escalation.level.value,
+                        "clean_streak": result.escalation.clean_streak,
+                    }
+                ),
             }
     finally:
         await engine.dispose()

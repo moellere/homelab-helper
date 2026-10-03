@@ -218,6 +218,24 @@ class ProxmoxAdapter:
         """Restore a guest to a named snapshot. Executor-only."""
         return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/snapshot/{name}/rollback")
 
+    async def migrate_guest(
+        self, node: str, vmid: int, kind: str, target_node: str, *, online: bool = True
+    ) -> Any:
+        """Move a guest to another cluster node. Executor-only — see the block comment above.
+
+        ``online`` keeps a running QEMU guest up during the move; an LXC guest
+        cannot live-migrate, so the same flag asks Proxmox to restart it on the
+        target (``restart=1``). Returns the Proxmox task UPID.
+        """
+        if kind not in {"qemu", "lxc"}:
+            raise ValueError(f"kind must be qemu or lxc, not {kind!r}")
+        if not target_node or target_node == node:
+            raise ValueError("target_node must name a different node")
+        params: dict[str, Any] = {"target": target_node}
+        if online:
+            params["online" if kind == "qemu" else "restart"] = 1
+        return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/migrate", params=params)
+
     # ------------------------------------------------------------------ reads
 
     async def version(self) -> dict[str, Any]:

@@ -5,8 +5,10 @@
 
 **Status: beta.** The read-only product — discovery, inventory, audit, chat,
 MCP tools, placement and rebalancing recommendations — is complete, installs
-from PyPI, and has been run against a real multi-site lab. Execution (Phase 6)
-is built and tested but **opt-in and off by default**: nothing runs until you
+from PyPI, and has been run against a real multi-site lab. Execution (Phase 6,
+widened in Phase 7 to guest migration, Kubernetes workloads, and agent-triggered
+runs behind a phone-tap approval) is built and tested but **opt-in and off by
+default**: nothing runs until you
 raise a trust cell, and you should validate it against your own fleet before
 you do. Expect the CLI verbs, MCP tool names, and configuration variables to
 stay stable through the 0.1 series; database schema changes ship as Alembic
@@ -106,6 +108,7 @@ verb (all are prefixed `HOMELAB_HELPER_`):
 | Kubernetes | `KUBECONFIG`, `KUBE_CONTEXT` |
 | OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
 | Home Assistant | `HASS_URL`, `HASS_TOKEN` (a long-lived access token; a non-admin user is enough), `HASS_VERIFY_SSL` |
+| Approval channel (Phase 7) | `APPROVAL_NOTIFY_SERVICE` (an HA `notify.*` service that reaches your phone, e.g. `notify.mobile_app_pixel`), `APPROVAL_TIMEOUT_S` (default 300); uses the Home Assistant URL/token above |
 | MikroTik | `MIKROTIK_URL`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD` (a read-only user with the `rest-api` policy), `MIKROTIK_VERIFY_SSL`, `MIKROTIK_NAME` |
 | Service identity | `SERVICE_ALIASES` — YAML mapping hostnames to service names when the leftmost-label default is wrong (see `fixtures/service-aliases.example.yaml`) |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |
@@ -231,9 +234,16 @@ Nothing executes until you raise a trust cell. The gate is `decide()`, a pure
 function over the cell's level, the domain ceiling, per-host boundaries, open
 elevation windows, and whether a rollback was verified — never an LLM.
 
+Write surfaces today: Proxmox guest power (`start`/`stop`/`shutdown`/`restart`)
+and `migrate`, and Kubernetes workloads (`workload-restart`, `workload-scale`
+on a deployment, statefulset or daemonset). Each has a verified rollback path
+(prior power state or snapshot, prior node, rollout undo, prior replicas).
+
 ```bash
 helper trust show                                   # every cell sits at PROPOSE by default
 helper trust grant hypervisor restart single-host confirm
+helper trust grant hypervisor migrate single-host confirm
+helper trust grant containers workload-restart single-service confirm
 helper exec list                                    # pending action proposals
 helper exec run <proposal-id>                       # asks at CONFIRM; runs unattended only at AUTONOMOUS
 helper exec receipts                                # what ran, at which level, with its rollback state
@@ -285,20 +295,31 @@ refuse anything else. To let an MCP client onboard hosts it hasn't seen, set
 must both match. Otherwise add hosts from the CLI (`helper discover host`,
 `helper onboard`) and let the agent probe them from there.
 
-**The trust surface is read-only; an agent may draft, never authorize.**
-`trust_status`, `list_receipts` and `pending_actions` let a model see the
-gradient — which cells are granted, what has executed, what policy would say
-about each pending action — and give it no way to change any of it.
-`propose_action` lets it draft a guest power action (start/stop/shutdown/
-restart of a Proxmox VM or container) as a *pending* proposal, validated
-against the manifest schema and returned with the policy preview; you then
-run it with `helper exec run <id>` or reject it. `list_proposals` and
-`get_proposal` read them back. There is no MCP tool that grants a cell, opens
-an elevation window, overrides a floor, rolls back, or executes a proposal;
-those are operator gestures at the CLI, and tests enforce the absence rather
-than trusting the convention. Decisions are reported pessimistically (as if
-reversibility were unverified), because verifying it means probing the target
-and a query tool has no business doing that.
+**An agent may draft and trigger, never authorize.** `trust_status`,
+`list_receipts` and `pending_actions` let a model see the gradient — which
+cells are granted, what has executed, what policy would say about each pending
+action — and give it no way to change any of it. `propose_action` drafts a
+Proxmox guest action (start/stop/shutdown/restart, or migrate with a
+`target_node`) and `propose_workload_action` a Kubernetes one (rollout restart
+or scale) as *pending* proposals, validated against the manifest schema and
+returned with the policy preview. `list_proposals` and `get_proposal` read
+them back.
+
+`execute_proposal` (Phase 7) is the one trigger: it hands a pending proposal
+to the same executor `helper exec run` uses, with no override, so the outcome
+is still `decide()`'s. AUTONOMOUS runs; CONFIRM sends you a Home Assistant
+actionable notification with **Approve** / **Deny** (set
+`HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE`) and waits for your tap, which is
+recorded on the audit spine with the channel and device; PROPOSE and BLOCK
+execute nothing and return the policy reason plus the CLI command. With every
+cell at its default, an agent calling `execute_proposal` changes nothing.
+
+There is no MCP tool that grants a cell, opens an elevation window, overrides
+a floor, or rolls back; those are operator gestures at the CLI, and tests
+enforce the absence — and that `execute_proposal` can never carry an override
+— rather than trusting the convention. Previews are reported pessimistically
+(as if reversibility were unverified), because verifying it means probing the
+target and a query tool has no business doing that.
 
 **Transport and trust.** The server speaks stdio only. It runs as you, in
 your shell, and reads the same `.env` the CLI does, so put nothing secret in
@@ -368,3 +389,8 @@ cut from tags (see [`releasing.md`](./docs/releasing.md)).
 ## License
 
 Apache License 2.0 — see [`LICENSE`](./LICENSE).
+
+## Contributing
+
+See `CONTRIBUTING.md`: the four checks, the three invariants a change must not
+break, and the shape of a Phase-7 action-kind contribution.

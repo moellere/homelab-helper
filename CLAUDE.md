@@ -25,12 +25,14 @@ when making implementation decisions.
 src/homelab_helper/
 ├── adapters/       NetBox, KernelSSH, Proxmox, K8s, UniFi, Cloudflare,
 │                   Argo CD, OpenMediaVault — read-only at L1, except the
-│                   Proxmox guest-power writes reserved for the executor
+│                   Proxmox guest power/migrate and K8s workload writes
+│                   reserved for the executor
 ├── cli/            Typer apps; entry point in main.py (20 verbs)
 ├── db/             Models, enums, async session
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
 │                   placement/rebalance/bottlenecks/network_path planners,
 │                   trust (decide) + executor + escalation + rollback (Phase 6),
+│                   approval (Phase 7: HA phone-tap channel for CONFIRM),
 │                   manifest (authoring schema for ProposalLog.artifact)
 ├── llm/            LLMRouter + backends, chat context, Narrator/Planner/
 │                   Discovery agents (LLM never in any authorization path)
@@ -139,16 +141,27 @@ regression tests enforce it (`test_decide_path_never_imports_llm`,
 transitively imports `homelab_helper.llm`.
 
 Every write path routes through `engine/executor.py`, which is the only caller
-of an adapter's mutate methods; adapter writes carry a block comment saying so,
-and `tests/test_write_isolation.py` fails if any other module names one.
+of an adapter's mutate methods (Proxmox `vm_power`/snapshots/`migrate_guest`,
+K8s `rollout_restart`/`scale_workload`/`rollout_undo`); adapter writes carry a
+block comment saying so, and `tests/test_write_isolation.py` fails if any
+other module names one — add every new write method to its `WRITE_METHODS`.
 Agents draft manifests through `engine/manifest.py` (`build_artifact`) and the
 MCP `propose_action` tool; the executor re-validates with its own
 `parse_manifest` because that input is untrusted.
 `engine/escalation.py` moves the cell floors *after* the fact — it never
 participates in a decision in flight. The MCP surface can *read* the gradient
 (`trust_status`, `list_receipts`, `pending_actions`) and has no tool that
-grants, elevates, overrides, rolls back, or executes — two mechanical tests
-enforce that absence. Two ordering rules in the executor are
+grants, elevates, overrides, rolls back, or opens a window — mechanical tests
+enforce that absence. Phase 7's `execute_proposal` MCP tool is a *trigger*,
+not an authority: it calls the executor with `override=None` (pinned by
+`test_execute_proposal_can_never_carry_an_override`), and at CONFIRM the
+executor consults `engine/approval.py` — a human's tap on another device —
+whose answer lands on `TrustHistory` as an `approval` event. A cell at PROPOSE
+executes nothing through it (`test_execute_proposal_executes_nothing_at_propose`).
+When adding an action kind: manifest schema (`engine/manifest.py`) **and**
+`parse_manifest`, a rollback strategy with a read-only verifier in
+`engine/rollback.py`, `REVERSIBLE_ACTION_KINDS` in `engine/escalation.py` only
+once that inverse is a tested write path, and the write-isolation list. Two ordering rules in the executor are
 load-bearing, not stylistic: the gate runs **pessimistically first** (assuming
 no rollback) so a refused action never touches the target even to probe it,
 and rollback **capture** (which may snapshot — a write) happens only after the

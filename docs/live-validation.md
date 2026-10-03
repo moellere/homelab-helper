@@ -251,6 +251,87 @@ receipts as evidence; delete it otherwise.
 
 ---
 
+## Part 3 — Phase 7, an agent triggers and you tap
+
+Needs Part 2 signed off, a phone with the Home Assistant companion app, and
+the throwaway guest from Part 2 still around (or a second one).
+
+### Step 0 — point the approval channel at your phone
+
+```bash
+export HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE=notify.mobile_app_<your phone>   # from HA's notify services
+export HOMELAB_HELPER_APPROVAL_TIMEOUT_S=300
+uv run helper config                 # Home Assistant URL/token must be configured too
+```
+
+### Step 1 — the trigger does nothing at the floor
+
+From an MCP client with the `homelab` server, or the Python REPL:
+
+```
+propose_action("migrate", node="<src>", vmid=<throwaway>, vm_kind="qemu",
+               title="validate migrate", target_node="<dst>")
+execute_proposal("<id>")
+```
+
+Expected: `{"refused": "decision is propose for cell hypervisor/migrate/single-host …", "next": "an operator runs `helper exec run …`"}`,
+`helper exec receipts` shows nothing new, `helper trust history` shows nothing new.
+
+### Step 2 — grant CONFIRM, trigger, tap Approve
+
+```bash
+uv run helper trust grant hypervisor migrate single-host confirm
+```
+
+Call `execute_proposal("<id>")` again. Your phone shows **homelab-helper:
+approve this action?** with Approve / Deny. Tap **Approve**.
+
+Expected: the tool returns `outcome: succeeded` with a receipt id; the guest
+is on `<dst>` in the Proxmox UI; `helper trust history` has an `approval`
+event naming the channel and your device; `helper exec receipts` shows the
+receipt with `strategy: prior-node`.
+
+### Step 3 — roll it back
+
+```bash
+uv run helper exec rollback <receipt-id> --yes
+```
+
+Expected: the guest migrates back to `<src>`; the original receipt is marked
+rolled back and linked to the undo receipt.
+
+### Step 4 — Deny and timeout both leave it pending
+
+Propose the migrate again, trigger it, tap **Deny**. Expected: `refused:
+declined via home-assistant …`, proposal still pending, an `approval` event
+with `approved: false`. Trigger once more and let the notification sit past
+the timeout. Expected: the same refusal with `no answer within …s`.
+
+### Step 5 — a workload restart, if you run Kubernetes
+
+Pick a stateless Deployment you can bounce.
+
+```bash
+uv run helper trust grant containers workload-restart single-service confirm
+```
+
+```
+propose_workload_action("workload-restart", namespace="<ns>", kind="deployment",
+                        name="<name>", title="validate rollout restart")
+execute_proposal("<id>")
+```
+
+Tap **Approve**. Expected: pods roll; the receipt's `rollback_state` has
+`strategy: rollout-undo` and the revision it will return to; `helper exec
+rollback <receipt-id> --yes` runs `kubectl rollout undo` to that revision.
+
+### Step 6 — clean up
+
+Revoke the two grants unless you want to keep them (`helper trust show`),
+unset the approval service if you do not want agents able to ask.
+
+---
+
 ## Sign-off
 
 | Criterion | Result | Notes |
@@ -258,7 +339,8 @@ receipts as evidence; delete it otherwise.
 | P4-AC1 … P4-AC6 | | |
 | P5-AC1 … P5-AC6 | | |
 | P6 steps 0–7 | | |
+| P7 steps 0–6 | | |
 
 Until this table is filled in, `backlog.md` should keep listing live-fleet
-validation as outstanding, and no Phase-6 execution path should run against
-infrastructure you are not prepared to lose.
+validation as outstanding, and no Phase-6 or Phase-7 execution path should run
+against infrastructure you are not prepared to lose.

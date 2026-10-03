@@ -3,7 +3,9 @@
 Second management-plane source (after Proxmox). Like the Talos adapter it shells
 out to a CLI the operator already has configured (``kubectl``) rather than
 vendoring a client + the apiserver auth dance — kubeconfig handles auth, and the
-dependency surface stays flat. Read-only at L1.
+dependency surface stays flat. Read-only at L1, with the Phase-7 exception
+below: three workload writes (rollout restart, scale, rollout undo) that only
+``engine/executor.py`` and ``engine/rollback.py`` may call.
 
 The high-value read is **nodes**: a K8s node carries the same host facts the
 kernel probes report (kernel, arch, cpu, memory) plus K8s-only ones (kubelet /
@@ -202,8 +204,82 @@ class K8sAdapter:
             return False, str(exc)
         return True, None
 
+    # --------------------------------------------------------------- workloads
+
+    async def get_workload(self, namespace: str, kind: str, name: str) -> dict[str, Any]:
+        """One Deployment / StatefulSet / DaemonSet as ``{replicas, ready, generation, ...}``.
+
+        Read-only — the rollback orchestrator's probe for ``prior-replicas``.
+        """
+        _check_workload_kind(kind)
+        out = await self._run("get", f"{kind}/{name}", "-n", namespace, "-o", "json")
+        payload = json.loads(out) if out.strip() else {}
+        spec = payload.get("spec") or {}
+        status = payload.get("status") or {}
+        return {
+            "namespace": namespace,
+            "kind": kind,
+            "name": name,
+            "replicas": spec.get("replicas"),
+            "ready_replicas": status.get("readyReplicas"),
+            "generation": (payload.get("metadata") or {}).get("generation"),
+            "observed_generation": status.get("observedGeneration"),
+        }
+
+    async def rollout_history(self, namespace: str, kind: str, name: str) -> list[int]:
+        """Revision numbers ``kubectl rollout history`` knows, oldest first. Read-only."""
+        _check_workload_kind(kind)
+        out = await self._run("rollout", "history", f"{kind}/{name}", "-n", namespace)
+        revisions: list[int] = []
+        for line in out.splitlines():
+            head = line.strip().split(None, 1)[0] if line.strip() else ""
+            if head.isdigit():
+                revisions.append(int(head))
+        return sorted(revisions)
+
+    # ----------------------------------------------------------------- writes
+    #
+    # The Phase-7 write surface, and it exists solely for the executor: every
+    # call site must have routed through engine.trust.decide() first. Nothing
+    # else in the codebase may call these (tests/test_write_isolation.py).
+
+    async def rollout_restart(self, namespace: str, kind: str, name: str) -> str:
+        """``kubectl rollout restart`` one workload. Executor-only."""
+        _check_workload_kind(kind)
+        return (await self._run("rollout", "restart", f"{kind}/{name}", "-n", namespace)).strip()
+
+    async def scale_workload(self, namespace: str, kind: str, name: str, replicas: int) -> str:
+        """``kubectl scale`` one workload to ``replicas``. Executor-only."""
+        _check_workload_kind(kind)
+        if kind == "daemonset":
+            raise KubeError("a DaemonSet has no replica count to scale")
+        if replicas < 0:
+            raise ValueError("replicas must be >= 0")
+        return (
+            await self._run("scale", f"{kind}/{name}", "-n", namespace, f"--replicas={replicas}")
+        ).strip()
+
+    async def rollout_undo(
+        self, namespace: str, kind: str, name: str, *, to_revision: int | None = None
+    ) -> str:
+        """``kubectl rollout undo`` one workload. Rollback use only (engine/rollback.py)."""
+        _check_workload_kind(kind)
+        argv = ["rollout", "undo", f"{kind}/{name}", "-n", namespace]
+        if to_revision is not None:
+            argv.append(f"--to-revision={to_revision}")
+        return (await self._run(*argv)).strip()
+
+
+WORKLOAD_KINDS: tuple[str, ...] = ("deployment", "statefulset", "daemonset")
+
+
+def _check_workload_kind(kind: str) -> None:
+    if kind not in WORKLOAD_KINDS:
+        raise ValueError(f"kind must be one of {', '.join(WORKLOAD_KINDS)}, not {kind!r}")
+
 
 __all__ = [
+    "WORKLOAD_KINDS",
     "K8sAdapter",
     "K8sConfig",
     "KubeCommandRunner",

@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
     from homelab_helper.engine.talos_probe import TalosProbeRequest
 
+from sqlalchemy import select
+
 import homelab_helper.mcp_server as mcp_srv
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
 from homelab_helper.adapters.mikrotik import MikroTikAdapter, MikroTikConfig
@@ -27,11 +29,14 @@ from homelab_helper.db.enums import (
     DiscoverySource,
     FindingKind,
     FindingSeverity,
+    ProposalOutcome,
     ResolutionScope,
 )
 from homelab_helper.db.models import (
     Cluster,
+    ExecutionReceipt,
     Host,
+    ProposalLog,
     ReconciliationFinding,
     Service,
     ServiceEndpoint,
@@ -39,10 +44,12 @@ from homelab_helper.db.models import (
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.host_probe import HostProbeRequest, HostProbeResult
+from homelab_helper.engine.trust import seed_domains
 from homelab_helper.mcp_server import (
     analyze_bottlenecks,
     analyze_surplus,
     audit_summary,
+    execute_proposal,
     get_finding,
     get_host,
     get_proposal,
@@ -94,21 +101,25 @@ EXPECTED_TOOLS = {
     "trust_status",
     "list_receipts",
     "pending_actions",
-    # Agent-side proposals: draft only; the operator runs or rejects them.
+    # Agent-side proposals: draft only; policy + the operator decide what runs.
     "propose_action",
+    "propose_workload_action",
     "list_proposals",
     "get_proposal",
+    # Phase 7: a *trigger*, not an authority — see test_execute_proposal_* below.
+    "execute_proposal",
 }
 
-# Anything that grants, elevates, overrides, rolls back, or executes belongs to
-# the operator at the CLI. The gradient's premise is that an LLM is never in the
-# authorization path, so these must never appear as MCP tools.
+# Anything that grants, elevates, overrides, rolls back, or opens a window
+# belongs to the operator at the CLI. The gradient's premise is that an LLM is
+# never in the authorization path, so these must never appear as MCP tools.
+# (Phase 7's execute_proposal is allowed by name because it carries no
+# authority: it cannot pass an override, and a PROPOSE cell still runs nothing
+# through it — both pinned mechanically below.)
 FORBIDDEN_TOOL_SUBSTRINGS = (
     "grant",
     "override",
     "window",
-    "execute",
-    "exec_",
     "rollback",
     "kill",
     "promote",
@@ -135,11 +146,10 @@ async def test_no_tool_can_change_authority_or_execute() -> None:
 
 
 def test_mcp_module_never_calls_the_write_paths() -> None:
-    """Belt and braces: the module must not even import the mutating helpers."""
+    """Belt and braces: the module must not even import the authority-changing helpers."""
     import homelab_helper.mcp_server as mod
 
     forbidden = (
-        "execute_proposal",
         "rollback_receipt",
         "grant_cell",
         "open_window",
@@ -155,6 +165,54 @@ def test_mcp_module_never_calls_the_write_paths() -> None:
     source = Path(mod.__file__).read_text()
     called = [name for name in forbidden if f"{name}(" in source]
     assert not called, f"mcp_server calls write-path helpers: {called}"
+
+
+def test_execute_proposal_can_never_carry_an_override() -> None:
+    """The trigger runs the executor with ``override=None`` and nothing else:
+    no OverrideGrant is ever built here, so an agent cannot cross a soft-hard
+    floor through the MCP surface."""
+    import homelab_helper.mcp_server as mod
+
+    source = Path(mod.__file__).read_text()
+    assert "OverrideGrant" not in source
+    assert not hasattr(mod, "OverrideGrant")
+    assert "override=None" in source
+    assert "override=grant" not in source
+    assert "override=override" not in source
+
+
+async def test_execute_proposal_executes_nothing_at_propose(seeded_db, monkeypatch) -> None:
+    """Phase 7 AC1: with every cell at its PROPOSE default, the trigger is refused,
+    no receipt is written, and the answer carries the CLI command."""
+    monkeypatch.setenv("HOMELAB_HELPER_PROXMOX_URL", "https://pve.example:8006")
+    monkeypatch.setenv("HOMELAB_HELPER_PROXMOX_TOKEN_ID", "root@pam!t")
+    monkeypatch.setenv("HOMELAB_HELPER_PROXMOX_TOKEN_SECRET", "s")
+    monkeypatch.delenv("HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE", raising=False)
+    engine = make_engine(seeded_db)
+    try:
+        async with session_scope(make_sessionmaker(engine)) as session:
+            await seed_domains(session)
+    finally:
+        await engine.dispose()
+
+    drafted = await propose_action(
+        action_kind="restart", node="node0", vmid=105, vm_kind="lxc", title="restart 105"
+    )
+    assert drafted["decision_if_run_now"] == "propose"
+    answer = await execute_proposal(drafted["id"])
+    assert "refused" in answer
+    assert answer["decision"] == "propose"
+    assert "helper exec run" in answer["next"]
+
+    engine = make_engine(seeded_db)
+    try:
+        async with make_sessionmaker(engine)() as session:
+            receipts = (await session.execute(select(ExecutionReceipt))).scalars().all()
+            proposal = (await session.execute(select(ProposalLog))).scalar_one()
+    finally:
+        await engine.dispose()
+    assert receipts == []
+    assert proposal.outcome is ProposalOutcome.PENDING
 
 
 async def test_every_tool_has_a_description() -> None:

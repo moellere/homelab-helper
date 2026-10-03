@@ -6,8 +6,9 @@ the internal-resolution ground truth), and network/VLAN definitions — the data
 that feeds internal ``ServiceEndpoint`` reconciliation and, later, stray-config
 detection.
 
-**Read-only at L1.** Like the other management-plane adapters, this exposes
-only reads until the Phase-6 trust gradient gates writes.
+**Read-only at L1,** with the Phase-7 exception below: three static-DNS writes
+(create / update / delete) that only ``engine/executor.py`` and
+``engine/rollback.py`` may call, behind the trust gradient.
 
 Auth is an API key sent in the ``X-API-KEY`` header (UniFi OS 3.x / Network
 9.x+). UniFi ships a self-signed cert, so ``verify_ssl`` defaults to ``False``.
@@ -126,6 +127,7 @@ def parse_dns_record(raw: dict[str, Any]) -> dict[str, Any]:
     is ``A`` / ``AAAA`` / ``CNAME`` / ``TXT`` / … Disabled records still list.
     """
     return {
+        "id": raw.get("_id"),
         "hostname": raw.get("key"),
         "value": raw.get("value"),
         "record_type": raw.get("record_type") or "A",
@@ -219,8 +221,8 @@ class UniFiAdapter:
         answers ``api.err.InvalidObject`` on current controllers."""
         return f"/v2/api/site/{self.config.site}/{tail.lstrip('/')}"
 
-    async def _request(self, method: str, path: str) -> Any:
-        response = await self.client.request(method, path)
+    async def _request(self, method: str, path: str, *, json: Any | None = None) -> Any:
+        response = await self.client.request(method, path, json=json)
         if response.status_code >= _HTTP_ERROR_THRESHOLD:
             detail = response.text.strip()[:300] or response.reason_phrase
             raise UniFiAPIError(response.status_code, detail, method=method, path=path)
@@ -237,6 +239,72 @@ class UniFiAdapter:
         than the ``{meta, data}`` envelope — ``_request`` passes both through."""
         rows = await self._request("GET", self._v2_site_path("static-dns")) or []
         return [parse_dns_record(r) for r in rows]
+
+    async def find_dns_record(self, hostname: str, record_type: str = "A") -> dict[str, Any] | None:
+        """The static record for one name + type, or ``None``. Read-only — the
+        rollback orchestrator's probe for ``prior-dns-record``."""
+        for record in await self.list_dns_records():
+            if record["hostname"] == hostname and record["record_type"] == record_type:
+                return record
+        return None
+
+    # ----------------------------------------------------------------- writes
+    #
+    # The Phase-7 write surface, and it exists solely for the executor: every
+    # call site must have routed through engine.trust.decide() first. Nothing
+    # else in the codebase may call these (tests/test_write_isolation.py).
+
+    async def create_dns_record(
+        self,
+        hostname: str,
+        value: str,
+        *,
+        record_type: str = "A",
+        ttl: int = 0,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """Add one static DNS record. Executor-only."""
+        body = {
+            "key": hostname,
+            "value": value,
+            "record_type": record_type,
+            "ttl": int(ttl),
+            "enabled": enabled,
+            "port": 0,
+            "priority": 0,
+            "weight": 0,
+        }
+        raw = await self._request("POST", self._v2_site_path("static-dns"), json=body)
+        return parse_dns_record(raw if isinstance(raw, dict) else {})
+
+    async def update_dns_record(
+        self,
+        record_id: str,
+        hostname: str,
+        value: str,
+        *,
+        record_type: str = "A",
+        ttl: int = 0,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """Replace one static DNS record's fields. Executor-only."""
+        body = {
+            "_id": record_id,
+            "key": hostname,
+            "value": value,
+            "record_type": record_type,
+            "ttl": int(ttl),
+            "enabled": enabled,
+            "port": 0,
+            "priority": 0,
+            "weight": 0,
+        }
+        raw = await self._request("PUT", self._v2_site_path(f"static-dns/{record_id}"), json=body)
+        return parse_dns_record(raw if isinstance(raw, dict) else body | {"_id": record_id})
+
+    async def delete_dns_record(self, record_id: str) -> None:
+        """Remove one static DNS record. Executor-only (and rollback of a create)."""
+        await self._request("DELETE", self._v2_site_path(f"static-dns/{record_id}"))
 
     async def list_clients(self) -> list[dict[str, Any]]:
         """Known clients (hostname↔IP). The internal-resolution ground truth."""

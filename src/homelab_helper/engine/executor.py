@@ -48,8 +48,10 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from homelab_helper.adapters.argocd import ArgoCDAPIError
 from homelab_helper.adapters.kubernetes import KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAPIError
+from homelab_helper.adapters.unifi import UniFiAPIError
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog, TrustHistory
 from homelab_helper.engine.approval import ApprovalResult
@@ -60,6 +62,11 @@ from homelab_helper.engine.escalation import (
 )
 from homelab_helper.engine.manifest import (
     ACTION_KINDS,
+    ARGOCD_ACTION_KINDS,
+    ARGOCD_DOMAIN,
+    DNS_ACTION_KINDS,
+    DNS_DOMAIN,
+    DNS_RECORD_TYPES,
     GUEST_ACTION_KINDS,
     VM_KIND_DOMAIN,
     WORKLOAD_ACTION_KINDS,
@@ -88,8 +95,10 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from homelab_helper.adapters.argocd import ArgoCDAdapter
     from homelab_helper.adapters.kubernetes import K8sAdapter
     from homelab_helper.adapters.proxmox import ProxmoxAdapter
+    from homelab_helper.adapters.unifi import UniFiAdapter
 
     ConfirmCallback = Callable[["ActionManifest", Decision], Awaitable["bool | ApprovalResult"]]
 
@@ -125,10 +134,19 @@ class ActionManifest:
     vm_kind: str | None = None
     target_node: str | None = None
     online: bool | None = None
+    cpu_type: str | None = None
     namespace: str | None = None
     workload_kind: str | None = None
     workload_name: str | None = None
     replicas: int | None = None
+    application: str | None = None
+    revision: str | None = None
+    prune: bool = False
+    dns_hostname: str | None = None
+    dns_value: str | None = None
+    record_type: str | None = None
+    ttl: int = 0
+    controller: str | None = None
 
     @property
     def cell_key(self) -> str:
@@ -139,11 +157,27 @@ class ActionManifest:
         return self.workload_name is not None
 
     @property
+    def is_argocd(self) -> bool:
+        return self.application is not None
+
+    @property
+    def is_dns(self) -> bool:
+        return self.dns_hostname is not None
+
+    @property
     def target_label(self) -> str:
+        if self.is_argocd:
+            rev = f" @ {self.revision}" if self.revision else ""
+            return f"argocd app {self.application}{rev}"
+        if self.is_dns:
+            where = f" on {self.controller}" if self.controller else ""
+            return f"dns {self.record_type} {self.dns_hostname} -> {self.dns_value}{where}"
         if self.is_workload:
             return f"{self.workload_kind}/{self.workload_name} in {self.namespace}"
         label = f"{self.vm_kind}/{self.vmid} on {self.node}"
-        return f"{label} -> {self.target_node}" if self.target_node else label
+        if self.target_node:
+            return f"{label} -> {self.target_node}"
+        return f"{label} cpu={self.cpu_type}" if self.cpu_type else label
 
 
 @dataclass(frozen=True)
@@ -218,7 +252,67 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
 
     if "vmid" in target or "node" in target:
         return _parse_guest_target(action, target, domain, common)
+    if "application" in target:
+        return _parse_argocd_target(action, target, domain, common)
+    if "hostname" in target and "value" in target:
+        return _parse_dns_target(action, target, domain, common)
     return _parse_workload_target(action, target, domain, common)
+
+
+def _parse_argocd_target(
+    action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
+) -> ActionManifest:
+    if common["action_kind"] not in ARGOCD_ACTION_KINDS:
+        raise ManifestError(f"{common['action_kind']!r} is not an Argo CD action")
+    application = target.get("application")
+    if not application or not isinstance(application, str):
+        raise ManifestError("target.application is required")
+    if domain is not ARGOCD_DOMAIN:
+        raise ManifestError(
+            f"declared domain {domain.value!r} does not match an Argo CD application "
+            f"(which is {ARGOCD_DOMAIN.value!r}) — refusing"
+        )
+    revision = target.get("revision")
+    return ActionManifest(
+        **common,
+        hostnames=tuple(action.get("hostnames") or ()),
+        application=application,
+        revision=revision if isinstance(revision, str) and revision else None,
+        prune=bool(target.get("prune", False)),
+    )
+
+
+def _parse_dns_target(
+    action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
+) -> ActionManifest:
+    if common["action_kind"] not in DNS_ACTION_KINDS:
+        raise ManifestError(f"{common['action_kind']!r} is not a DNS action")
+    hostname, value = target.get("hostname"), target.get("value")
+    if not hostname or not isinstance(hostname, str):
+        raise ManifestError("target.hostname is required")
+    if not value or not isinstance(value, str):
+        raise ManifestError("target.value is required")
+    record_type = target.get("record_type") or "A"
+    if record_type not in DNS_RECORD_TYPES:
+        raise ManifestError(f"target.record_type must be one of {', '.join(DNS_RECORD_TYPES)}")
+    if domain is not DNS_DOMAIN:
+        raise ManifestError(
+            f"declared domain {domain.value!r} does not match a DNS record "
+            f"(which is {DNS_DOMAIN.value!r}) — refusing"
+        )
+    ttl = target.get("ttl", 0)
+    if not isinstance(ttl, int) or ttl < 0:
+        raise ManifestError("target.ttl must be a non-negative integer")
+    controller = target.get("controller")
+    return ActionManifest(
+        **common,
+        hostnames=tuple(action.get("hostnames") or ()),
+        dns_hostname=hostname,
+        dns_value=value,
+        record_type=record_type,
+        ttl=ttl,
+        controller=controller if isinstance(controller, str) and controller else None,
+    )
 
 
 def _parse_guest_target(
@@ -248,6 +342,12 @@ def _parse_guest_target(
             raise ManifestError("target.target_node is required for migrate")
         if target_node == node:
             raise ManifestError("target.target_node must differ from target.node")
+    cpu_type = target.get("cpu_type")
+    if action_kind == "cpu-type":
+        if vm_kind != "qemu":
+            raise ManifestError("cpu-type applies to QEMU guests only")
+        if not cpu_type or not isinstance(cpu_type, str):
+            raise ManifestError("target.cpu_type is required for cpu-type")
     online = target.get("online")
     return ActionManifest(
         **common,
@@ -257,6 +357,7 @@ def _parse_guest_target(
         vm_kind=vm_kind,
         target_node=target_node if action_kind == "migrate" else None,
         online=bool(online) if online is not None else None,
+        cpu_type=cpu_type if action_kind == "cpu-type" else None,
     )
 
 
@@ -293,26 +394,65 @@ def _parse_workload_target(
     )
 
 
-async def _dispatch(
-    manifest: ActionManifest, adapter: ProxmoxAdapter, k8s: K8sAdapter | None
+async def _dispatch_argocd(
+    manifest: ActionManifest, argocd: ArgoCDAdapter | None
 ) -> tuple[str, Any]:
-    """Run the one adapter write the manifest names; returns ``(verb, task-ish detail)``."""
-    if manifest.is_workload:
-        if k8s is None:
-            raise KubeError("no Kubernetes adapter is configured")
-        ns, kind, name = manifest.namespace, manifest.workload_kind, manifest.workload_name
-        if ns is None or kind is None or name is None:
-            raise ManifestError("workload target is incomplete")
-        if manifest.action_kind == "workload-restart":
-            return "rollout restart", await k8s.rollout_restart(ns, kind, name)
-        if manifest.replicas is None:
-            raise ManifestError("workload-scale has no replica count")
-        return f"scale --replicas={manifest.replicas}", await k8s.scale_workload(
-            ns, kind, name, manifest.replicas
+    if argocd is None:
+        raise ArgoCDAPIError(0, "no Argo CD adapter is configured", method="POST", path="sync")
+    if manifest.application is None:
+        raise ManifestError("argocd target is incomplete")
+    await argocd.sync_application(
+        manifest.application, revision=manifest.revision, prune=manifest.prune
+    )
+    return f"sync{' @ ' + manifest.revision if manifest.revision else ''}", None
+
+
+async def _dispatch_dns(manifest: ActionManifest, unifi: UniFiAdapter | None) -> tuple[str, Any]:
+    if unifi is None:
+        raise UniFiAPIError(0, "no UniFi adapter is configured", method="POST", path="static-dns")
+    if manifest.dns_hostname is None or manifest.dns_value is None:
+        raise ManifestError("dns target is incomplete")
+    rtype = manifest.record_type or "A"
+    existing = await unifi.find_dns_record(manifest.dns_hostname, rtype)
+    if existing and existing.get("id"):
+        await unifi.update_dns_record(
+            str(existing["id"]),
+            manifest.dns_hostname,
+            manifest.dns_value,
+            record_type=rtype,
+            ttl=manifest.ttl,
         )
+        return f"update {rtype} record", existing["id"]
+    created = await unifi.create_dns_record(
+        manifest.dns_hostname, manifest.dns_value, record_type=rtype, ttl=manifest.ttl
+    )
+    return f"create {rtype} record", created.get("id")
+
+
+async def _dispatch_workload(manifest: ActionManifest, k8s: K8sAdapter | None) -> tuple[str, Any]:
+    if k8s is None:
+        raise KubeError("no Kubernetes adapter is configured")
+    ns, kind, name = manifest.namespace, manifest.workload_kind, manifest.workload_name
+    if ns is None or kind is None or name is None:
+        raise ManifestError("workload target is incomplete")
+    if manifest.action_kind == "workload-restart":
+        return "rollout restart", await k8s.rollout_restart(ns, kind, name)
+    if manifest.replicas is None:
+        raise ManifestError("workload-scale has no replica count")
+    return f"scale --replicas={manifest.replicas}", await k8s.scale_workload(
+        ns, kind, name, manifest.replicas
+    )
+
+
+async def _dispatch_guest(manifest: ActionManifest, adapter: ProxmoxAdapter) -> tuple[str, Any]:
     node, vmid, vm_kind = manifest.node, manifest.vmid, manifest.vm_kind
     if node is None or vmid is None or vm_kind is None:
         raise ManifestError("guest target is incomplete")
+    if manifest.action_kind == "cpu-type":
+        if manifest.cpu_type is None:
+            raise ManifestError("cpu-type has no cpu_type")
+        await adapter.set_vm_config(node, vmid, vm_kind, cpu=manifest.cpu_type)
+        return f"set cpu={manifest.cpu_type} (applies at next stop/start)", None
     if manifest.action_kind == "migrate":
         if manifest.target_node is None:
             raise ManifestError("migrate has no target node")
@@ -322,6 +462,23 @@ async def _dispatch(
         )
     verb = _POWER_DISPATCH[manifest.action_kind]
     return verb, await adapter.vm_power(node, vmid, vm_kind, verb)
+
+
+async def _dispatch(
+    manifest: ActionManifest,
+    adapter: ProxmoxAdapter,
+    k8s: K8sAdapter | None,
+    argocd: ArgoCDAdapter | None = None,
+    unifi: UniFiAdapter | None = None,
+) -> tuple[str, Any]:
+    """Run the one adapter write the manifest names; returns ``(verb, task-ish detail)``."""
+    if manifest.is_argocd:
+        return await _dispatch_argocd(manifest, argocd)
+    if manifest.is_dns:
+        return await _dispatch_dns(manifest, unifi)
+    if manifest.is_workload:
+        return await _dispatch_workload(manifest, k8s)
+    return await _dispatch_guest(manifest, adapter)
 
 
 async def _log_override(
@@ -371,7 +528,7 @@ async def _confirm(
     *,
     proposal: ProposalLog,
     actor: str,
-) -> None:
+) -> ApprovalResult | None:
     """One human's "yes" for this one action, from the CLI prompt or an approval channel.
 
     A channel's answer (an :class:`ApprovalResult`) is written to ``TrustHistory``
@@ -402,8 +559,10 @@ async def _confirm(
         await session.flush()
         if not answer.approved:
             raise ExecutionRefused(f"{answer.summary} — proposal left pending", decision)
-    elif not answer:
+        return answer
+    if not answer:
         raise ExecutionRefused("operator declined — proposal left pending", decision)
+    return None
 
 
 async def execute_proposal(
@@ -415,6 +574,8 @@ async def execute_proposal(
     confirm_cb: ConfirmCallback | None = None,
     override: OverrideGrant | None = None,
     k8s_adapter: K8sAdapter | None = None,
+    argocd_adapter: ArgoCDAdapter | None = None,
+    unifi_adapter: UniFiAdapter | None = None,
 ) -> ExecutionResult:
     """Gate, (maybe) confirm, dispatch, and receipt one pending action proposal.
 
@@ -457,7 +618,9 @@ async def execute_proposal(
     # Authorized in some form, so it is worth asking the target whether this is
     # undoable. Read-only, and deliberately not the manifest's to assert: a
     # proposal may *request* a rollback strategy but may not certify one.
-    verification = await verify_rollback(adapter, manifest, k8s=k8s_adapter)
+    verification = await verify_rollback(
+        adapter, manifest, k8s=k8s_adapter, argocd=argocd_adapter, unifi=unifi_adapter
+    )
     action = _request(verification.verified)
     decision = decide(action, context)
 
@@ -474,8 +637,11 @@ async def execute_proposal(
         proposal=proposal,
         actor=actor,
     )
+    approval: ApprovalResult | None = None
     if decision.level is AutonomyLevel.CONFIRM:
-        await _confirm(session, confirm_cb, manifest, decision, proposal=proposal, actor=actor)
+        approval = await _confirm(
+            session, confirm_cb, manifest, decision, proposal=proposal, actor=actor
+        )
 
     # The kill switch's checkpoint. A window can be revoked between the
     # decision and the dispatch — including by an operator watching this run
@@ -503,8 +669,8 @@ async def execute_proposal(
     outcome, error, upid = "succeeded", None, None
     verb = manifest.action_kind
     try:
-        verb, upid = await _dispatch(manifest, adapter, k8s_adapter)
-    except (ProxmoxAPIError, KubeError, OSError, ValueError) as exc:
+        verb, upid = await _dispatch(manifest, adapter, k8s_adapter, argocd_adapter, unifi_adapter)
+    except (ProxmoxAPIError, KubeError, ArgoCDAPIError, UniFiAPIError, OSError, ValueError) as exc:
         outcome, error = "failed", str(exc)
     duration_ms = int((time.monotonic() - started) * 1000)
 
@@ -519,6 +685,16 @@ async def execute_proposal(
         outcome=outcome,
         error=error,
         duration_ms=duration_ms,
+        approval=(
+            {
+                "channel": approval.channel,
+                "responder": approval.responder,
+                "approved": approval.approved,
+                **approval.detail,
+            }
+            if approval is not None
+            else None
+        ),
     )
     if upid is not None:
         receipt.action = {**receipt.action, "upid": upid}
@@ -576,6 +752,8 @@ async def rollback_receipt(
     *,
     actor: str,
     k8s_adapter: K8sAdapter | None = None,
+    argocd_adapter: ArgoCDAdapter | None = None,
+    unifi_adapter: UniFiAdapter | None = None,
 ) -> RollbackResult:
     """Undo one executed action, using the state captured before it ran.
 
@@ -599,7 +777,9 @@ async def rollback_receipt(
     plan = RollbackPlan.from_receipt_state(receipt.rollback_state or {})
 
     started = time.monotonic()
-    detail = await restore(adapter, plan, k8s=k8s_adapter)
+    detail = await restore(
+        adapter, plan, k8s=k8s_adapter, argocd=argocd_adapter, unifi=unifi_adapter
+    )
     duration_ms = int((time.monotonic() - started) * 1000)
 
     undo = ExecutionReceipt(

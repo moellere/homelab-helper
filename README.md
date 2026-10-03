@@ -234,16 +234,23 @@ Nothing executes until you raise a trust cell. The gate is `decide()`, a pure
 function over the cell's level, the domain ceiling, per-host boundaries, open
 elevation windows, and whether a rollback was verified — never an LLM.
 
-Write surfaces today: Proxmox guest power (`start`/`stop`/`shutdown`/`restart`)
-and `migrate`, and Kubernetes workloads (`workload-restart`, `workload-scale`
-on a deployment, statefulset or daemonset). Each has a verified rollback path
-(prior power state or snapshot, prior node, rollout undo, prior replicas).
+Write surfaces today, each with a verified rollback path:
+
+| Domain | Action kinds | Undo |
+|---|---|---|
+| hypervisor / containers (Proxmox guests) | `start` `stop` `shutdown` `restart`, `migrate` (to a named node), `cpu-type` (QEMU; applies at next stop/start) | prior power state or snapshot, prior node, prior config |
+| containers (Kubernetes) | `workload-restart`, `workload-scale` on a deployment / statefulset / daemonset | rollout undo, prior replicas |
+| containers (Argo CD) | `argocd-sync` (optionally pinned to a revision, optionally pruning) | Argo CD's own sync history |
+| dns (UniFi static DNS) | `dns-record` (create or update one name + type) | the prior record, or deleting the created one |
 
 ```bash
 helper trust show                                   # every cell sits at PROPOSE by default
 helper trust grant hypervisor restart single-host confirm
 helper trust grant hypervisor migrate single-host confirm
 helper trust grant containers workload-restart single-service confirm
+helper trust grant containers argocd-sync single-service confirm
+helper trust grant dns dns-record single-service confirm
+helper approvals show                               # channel status, what would ask you, who answered
 helper exec list                                    # pending action proposals
 helper exec run <proposal-id>                       # asks at CONFIRM; runs unattended only at AUTONOMOUS
 helper exec receipts                                # what ran, at which level, with its rollback state
@@ -299,10 +306,11 @@ must both match. Otherwise add hosts from the CLI (`helper discover host`,
 `list_receipts` and `pending_actions` let a model see the gradient — which
 cells are granted, what has executed, what policy would say about each pending
 action — and give it no way to change any of it. `propose_action` drafts a
-Proxmox guest action (start/stop/shutdown/restart, or migrate with a
-`target_node`) and `propose_workload_action` a Kubernetes one (rollout restart
-or scale) as *pending* proposals, validated against the manifest schema and
-returned with the policy preview. `list_proposals` and `get_proposal` read
+Proxmox guest action (start/stop/shutdown/restart, migrate with a
+`target_node`, or a QEMU `cpu_type`), `propose_workload_action` a Kubernetes
+one (rollout restart or scale), `propose_argocd_sync` an Argo CD sync, and
+`propose_dns_record` a UniFi static-DNS upsert, all as *pending* proposals
+validated against the manifest schema and returned with the policy preview. `list_proposals` and `get_proposal` read
 them back.
 
 `execute_proposal` (Phase 7) is the one trigger: it hands a pending proposal

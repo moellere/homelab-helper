@@ -20,8 +20,10 @@ from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
+from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDAPIError, ArgoCDConfigError
 from homelab_helper.adapters.kubernetes import K8sAdapter, KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxAPIError, ProxmoxConfigError
+from homelab_helper.adapters.unifi import UniFiAdapter, UniFiAPIError, UniFiConfig, UniFiConfigError
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog
@@ -68,6 +70,25 @@ def _build_k8s_adapter() -> K8sAdapter | None:
     if shutil.which("kubectl") is None:
         return None
     return K8sAdapter.from_env()
+
+
+def _build_argocd_adapter() -> ArgoCDAdapter | None:
+    """Argo CD adapter for sync actions; ``None`` when it is not configured."""
+    try:
+        return ArgoCDAdapter.from_env()
+    except ArgoCDConfigError:
+        return None
+
+
+def _build_unifi_adapter(controller: str | None) -> UniFiAdapter | None:
+    """The UniFi controller a DNS action names (or the only one); ``None`` when unconfigured."""
+    try:
+        configs = UniFiConfig.all_from_env()
+    except UniFiConfigError:
+        return None
+    if controller is None:
+        return UniFiAdapter(configs[0]) if len(configs) == 1 else None
+    return next((UniFiAdapter(c) for c in configs if c.name == controller), None)
 
 
 async def _pending_action_proposals(session: AsyncSession) -> list[tuple[ProposalLog, str | None]]:
@@ -256,9 +277,10 @@ def exec_run(
                     return 2
 
                 try:
+                    manifest = parse_manifest(proposal)
                     adapter = _build_adapter()
-                except ProxmoxConfigError as exc:
-                    console.print(f"[red]adapter config:[/red] {escape(str(exc))}")
+                except (ManifestError, ProxmoxConfigError) as exc:
+                    console.print(f"[red]cannot run:[/red] {escape(str(exc))}")
                     return 2
                 try:
                     result = await execute_proposal(
@@ -269,6 +291,8 @@ def exec_run(
                         confirm_cb=_confirm,
                         override=grant,
                         k8s_adapter=_build_k8s_adapter(),
+                        argocd_adapter=_build_argocd_adapter(),
+                        unifi_adapter=_build_unifi_adapter(manifest.controller),
                     )
                 except ManifestError as exc:
                     console.print(f"[red]invalid manifest:[/red] {escape(str(exc))}")
@@ -431,11 +455,15 @@ def exec_rollback(
                         adapter,
                         actor=operator_identity(),
                         k8s_adapter=_build_k8s_adapter(),
+                        argocd_adapter=_build_argocd_adapter(),
+                        unifi_adapter=_build_unifi_adapter(
+                            (receipt.rollback_state or {}).get("controller")
+                        ),
                     )
                 except RollbackError as exc:
                     console.print(f"[red]cannot roll back:[/red] {escape(str(exc))}")
                     return 2
-                except (ProxmoxAPIError, KubeError) as exc:
+                except (ProxmoxAPIError, KubeError, ArgoCDAPIError, UniFiAPIError) as exc:
                     console.print(f"[red]restore failed:[/red] {escape(str(exc))}")
                     return 4
                 finally:

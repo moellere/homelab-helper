@@ -104,6 +104,8 @@ EXPECTED_TOOLS = {
     # Agent-side proposals: draft only; policy + the operator decide what runs.
     "propose_action",
     "propose_workload_action",
+    "propose_argocd_sync",
+    "propose_dns_record",
     "list_proposals",
     "get_proposal",
     # Phase 7: a *trigger*, not an authority — see test_execute_proposal_* below.

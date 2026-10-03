@@ -25,8 +25,8 @@ when making implementation decisions.
 src/homelab_helper/
 ├── adapters/       NetBox, KernelSSH, Proxmox, K8s, UniFi, Cloudflare,
 │                   Argo CD, OpenMediaVault — read-only at L1, except the
-│                   Proxmox guest power/migrate and K8s workload writes
-│                   reserved for the executor
+│                   Proxmox guest, K8s workload, Argo CD sync and UniFi DNS
+│                   writes reserved for the executor
 ├── cli/            Typer apps; entry point in main.py (20 verbs)
 ├── db/             Models, enums, async session
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
@@ -141,8 +141,10 @@ regression tests enforce it (`test_decide_path_never_imports_llm`,
 transitively imports `homelab_helper.llm`.
 
 Every write path routes through `engine/executor.py`, which is the only caller
-of an adapter's mutate methods (Proxmox `vm_power`/snapshots/`migrate_guest`,
-K8s `rollout_restart`/`scale_workload`/`rollout_undo`); adapter writes carry a
+of an adapter's mutate methods (Proxmox `vm_power`/snapshots/`migrate_guest`/
+`set_vm_config`, K8s `rollout_restart`/`scale_workload`/`rollout_undo`, Argo CD
+`sync_application`/`rollback_application`, UniFi `create/update/delete_dns_record`);
+adapter writes carry a
 block comment saying so, and `tests/test_write_isolation.py` fails if any
 other module names one — add every new write method to its `WRITE_METHODS`.
 Agents draft manifests through `engine/manifest.py` (`build_artifact`) and the

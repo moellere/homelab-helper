@@ -57,7 +57,18 @@ LOW_BLAST_RADII = frozenset({"metadata-only", "single-service", "single-host"})
 Kubernetes workload, Phase 7)."""
 
 REVERSIBLE_ACTION_KINDS = frozenset(
-    {"start", "stop", "shutdown", "restart", "migrate", "workload-restart", "workload-scale"}
+    {
+        "start",
+        "stop",
+        "shutdown",
+        "restart",
+        "migrate",
+        "cpu-type",
+        "workload-restart",
+        "workload-scale",
+        "argocd-sync",
+        "dns-record",
+    }
 )
 """Deliberately narrow: an action kind earns a place here only once its
 inverse is a real, tested write path (``engine/rollback.py``: prior power

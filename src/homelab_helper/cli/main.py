@@ -21,6 +21,7 @@ import typer
 from rich.console import Console
 
 from homelab_helper import __version__
+from homelab_helper.cli.approvals import approvals_app
 from homelab_helper.cli.assertion import assert_app
 from homelab_helper.cli.audit import audit_app
 from homelab_helper.cli.bottlenecks import bottlenecks_app
@@ -64,6 +65,7 @@ app.add_typer(plan_app)
 app.add_typer(bottlenecks_app)
 app.add_typer(trust_app)
 app.add_typer(exec_app)
+app.add_typer(approvals_app)
 app.add_typer(window_app)
 app.add_typer(part_app)
 app.add_typer(service_app)

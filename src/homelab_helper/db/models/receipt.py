@@ -40,6 +40,10 @@ class ExecutionReceipt(Base):
     error: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
 
+    approval: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    """Who said yes at CONFIRM and how: ``{channel, responder, approved, ...}`` from an
+    approval channel; ``None`` for CLI prompts and unattended runs."""
+
     rolled_back_at: Mapped[datetime | None] = mapped_column()
     rollback_receipt_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("execution_receipt.id")

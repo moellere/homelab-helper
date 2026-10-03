@@ -19,13 +19,21 @@ WRITE_METHODS = (
     "create_snapshot",
     "rollback_snapshot",
     "migrate_guest",
+    "set_vm_config",
     "rollout_restart",
     "scale_workload",
     "rollout_undo",
+    "sync_application",
+    "rollback_application",
+    "create_dns_record",
+    "update_dns_record",
+    "delete_dns_record",
 )
 ALLOWED = {
     SRC / "adapters" / "proxmox.py",  # the definitions
     SRC / "adapters" / "kubernetes.py",  # the Phase-7 workload writes
+    SRC / "adapters" / "argocd.py",  # Phase-7 slice 2: sync / rollback
+    SRC / "adapters" / "unifi.py",  # Phase-7 slice 2: static DNS
     SRC / "engine" / "executor.py",  # the gate's enforcement point
     SRC / "engine" / "rollback.py",  # driven by the executor
 }

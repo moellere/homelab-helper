@@ -325,9 +325,26 @@ Tap **Approve**. Expected: pods roll; the receipt's `rollback_state` has
 `strategy: rollout-undo` and the revision it will return to; `helper exec
 rollback <receipt-id> --yes` runs `kubectl rollout undo` to that revision.
 
-### Step 6 — clean up
+### Step 6 — the slice-2 surfaces, as needed
 
-Revoke the two grants unless you want to keep them (`helper trust show`),
+Each follows the same shape — grant CONFIRM, propose, trigger, tap, check the
+receipt, `helper exec rollback` — on a target you can afford to touch:
+
+- `hypervisor cpu-type single-host`: `propose_action("cpu-type", node=, vmid=,
+  vm_kind="qemu", cpu_type="x86-64-v3", …)` on the throwaway guest; the change
+  shows under the guest's *Pending* tab until its next stop/start.
+- `containers argocd-sync single-service`: `propose_argocd_sync("<app>", …)` on
+  an app that is already Synced (a no-op sync); rollback returns to the same
+  history entry.
+- `dns dns-record single-service`: `propose_dns_record("validate.lan",
+  "10.0.0.250", …)`; rollback deletes the record it created.
+
+`helper approvals show` lists what each pending proposal would get and the
+answers so far.
+
+### Step 7 — clean up
+
+Revoke the grants unless you want to keep them (`helper trust show`),
 unset the approval service if you do not want agents able to ask.
 
 ---

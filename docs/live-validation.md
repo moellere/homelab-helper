@@ -52,6 +52,11 @@ uv run helper chat "what hosts do I have?"
 
 ### P4-AC2 · Ceph narration
 
+> On a fleet whose cluster nodes all share one link speed, `helper bottlenecks`
+> correctly reports nothing and this criterion cannot be exercised live —
+> record it as not applicable and rely on the analyser's unit tests (which
+> change a link speed and assert the mitigations change with it).
+
 ```bash
 uv run helper bottlenecks
 uv run helper chat "what's wrong with my ceph cluster?"
@@ -102,7 +107,7 @@ router must never downgrade quality without saying so.
 After several sessions talking about ZFS, Ceph and Kubernetes:
 
 ```bash
-uv run helper skills show
+uv run helper skills
 ```
 
 **Pass:** levels reflect the conversations without you setting them by hand.
@@ -390,13 +395,23 @@ unset the approval service if you do not want agents able to ask.
 
 | Criterion | Result | Notes |
 |---|---|---|
-| P4-AC1 … P4-AC6 | | |
-| P5-AC1 … P5-AC6 | | |
-| P6 steps 0–7 | | |
+| P4-AC1 chat grounded | ✅ 10/03/2026 | 17 hosts named from inventory, cloud footer honest. Found: the footer said "cloud" but not that Ollama had been tried and was unreachable — `RouterResult.skipped` + a `skipped:` line (PR #52). |
+| P4-AC2 Ceph narration | ⚪ n/a | bmax0–3 are symmetric 1 GbE, Ceph HEALTH_OK, covomv on 10 GbE: the analyser is correctly silent. Derivation covered by unit tests only. |
+| P4-AC3 onboard | ⏳ | Interactive; not yet run. |
+| P4-AC4 MCP discovery | ✅ 10/03/2026 | `probe_host bmax3` from Claude Code: 4 probes, 33 observations, 0 failures, capability changes reconciled. |
+| P4-AC5 strict-local refusal | ✅ 10/03/2026 | Names the tier, the policy, each backend's exclusion reason, and the three options. |
+| P4-AC6 skill profile | ✅ mechanism 10/03/2026 | One Ceph/CSI question inferred `storage` + `container-orchestration` (basic, evidence 1). Longitudinal drift still to observe. |
+| P5-AC1 workload library | ✅ 10/03/2026 | 67 entries. |
+| P5-AC2 placement | ✅ 10/03/2026 | `immich` → bmax0 with RAM headroom, threads, GPU optionality and photo-library data gravity; arm/RAM rejections explained. |
+| P5-AC3 rebalance | ✅ after fix 10/03/2026 | First run: no migrations-only plan. Then: Proxmox guests planned onto a NAS, arm64 Pis and Talos workers, one VM ping-ponging. Three defects fixed (PR #51); now three plan classes, all moves within bmax0–3, no repeated VM. |
+| P5-AC4 Ceph mitigations | ⚪ n/a | As P4-AC2. |
+| P5-AC5 surplus | ✅ 10/03/2026 | bmax0: three stopped guests, 32 GiB spare DIMMs, three options. Gap: covomv (a NAS running Docker) is also called surplus — the planner has no "not a hypervisor" notion; same root as the P5-AC3 targets defect, noted in backlog. |
+| P5-AC6 VPN path refused | ✅ 10/03/2026 | Needed a topology file (none existed): two sites, VPN 6 ms RTT measured, bandwidth a placeholder. `plan path wynode2 bmax0` → LAN-grade: no. |
+| P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 (a *dispatch failure* demotes) and step 6 (kill switch mid-flight) were exercised by tests only. |
 | P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 | P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
 | P7 step 8 (unattended run notice) | | |
 
-Until this table is filled in, `backlog.md` should keep listing live-fleet
-validation as outstanding, and no Phase-6 or Phase-7 execution path should run
-against infrastructure you are not prepared to lose.
+Open as of 10/04/2026: P4-AC3 (interactive), P6 steps 5–6 live, P7 step 8.
+Everything that has run live has run against the Covington lab with cells at
+CONFIRM; nothing autonomous has executed yet.

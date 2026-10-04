@@ -817,10 +817,13 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 
 ### Test hygiene (found during slice 1)
 
-- [ ] `tests/test_mcp_server.py` flakes (one random failure or error per run)
-  on `main` too — an unclosed event loop from the CLI runner inside async
-  tests; and the UniFi/OMV discovery tests read real credentials from the
-  developer's environment. Both need fixtures that isolate the environment.
+- [x] `tests/test_mcp_server.py` flakes (one random failure or error per run):
+  the unclosed event loop was pytest-asyncio remembering an "old" loop that
+  Python 3.12's default policy had just conjured because `asyncio.run` (any
+  CliRunner test) leaves the main thread loop-less; `conftest.py` now installs
+  a policy that refuses to create loops implicitly. The UniFi/OMV tests reading
+  the operator's exported `HOMELAB_HELPER_*` credentials is fixed separately
+  by scrubbing them in `conftest.py`.
 
 ---
 

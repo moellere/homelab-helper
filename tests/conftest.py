@@ -14,6 +14,15 @@ import tempfile
 
 from homelab_helper.config import HOME_VAR, NO_DOTENV_VAR
 
+# The operator's shell exports HOMELAB_HELPER_* from ~/.env; a test that builds
+# an adapter from the environment would then reach a real controller or NAS.
+# Only the two variables this file sets survive. The Anthropic key is also read
+# under its SDK name, so it goes too.
+for _name in [k for k in os.environ if k.startswith("HOMELAB_HELPER_")]:
+    if _name not in {HOME_VAR, NO_DOTENV_VAR}:
+        del os.environ[_name]
+os.environ.pop("ANTHROPIC_API_KEY", None)
+
 # Set before the CLI/MCP entry points call load_env(); pytest imports conftest
 # ahead of the test modules, so this lands first.
 os.environ[NO_DOTENV_VAR] = "1"

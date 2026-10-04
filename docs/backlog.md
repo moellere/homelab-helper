@@ -18,7 +18,7 @@ doesn't block. Acceptance-criterion references (AC1–AC5, P6-AC1–6) point at
 **Phases 1 (core), 3, 4, 5 and 6 are build-complete, and Phase 7 slice 1
 (agent-triggered execution behind a phone-tap approval, guest migrate,
 Kubernetes workload actions) has landed; Phase 2 (continuous agent /
-time-series) landed as Phase 7 slice 3's daemon.** Full suite: 965+ tests green.
+time-series) landed as Phase 7 slice 3's daemon.** Full suite: 985+ tests green.
 Packaging is release-ready (`uv tool install`, per-user dirs, tag-driven PyPI
 release — see `releasing.md`).
 Live-fleet validation (runbook: `docs/live-validation.md`): Phases 4–5 swept

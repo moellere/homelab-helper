@@ -21,10 +21,10 @@ Kubernetes workload actions) has landed; Phase 2 (continuous agent /
 time-series) landed as Phase 7 slice 3's daemon.** Full suite: 965+ tests green.
 Packaging is release-ready (`uv tool install`, per-user dirs, tag-driven PyPI
 release — see `releasing.md`).
-Live-fleet validation of the Phase 4–5 ACs is the outstanding sign-off gate
-(runbook: `docs/live-validation.md`),
-and is required before any Phase-6 execution path runs against real
-infrastructure.
+Live-fleet validation (runbook: `docs/live-validation.md`): Phases 4–5 swept
+10/03/2026 (two n/a on this fleet, onboarding still to run), Phase 6 covered by
+the Phase 7 live sessions, Phase 7 steps 0–7 signed off; step 8 (an autonomous
+run announcing itself) is the remaining live gate.
 
 Phase-1 foundation, built and green:
 
@@ -499,6 +499,13 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Known gaps (found during validation)
 
+- [ ] **Planners have no "is a hypervisor" notion** (P5-AC5, 10/03/2026): `plan surplus`
+  calls covomv's RAM surplus although it is a NAS running Docker; `plan rebalance`
+  had the mirror defect (fixed in #51 via cluster membership). Surplus should skip
+  hosts that are nodes of no cluster, or carry a role.
+- [ ] **Runbook text assumes the day-one 1 GbE / 2.5 GbE asymmetry** (P4-AC2, P5-AC4):
+  the fleet is symmetric now; the criteria are marked n/a with a note.
+
 - [x] **P5-AC3 on the live fleet (10/03/2026)** produced no migrations-only plan, then
   — after the first fix — plans that migrated Proxmox guests onto a NAS, arm64 Pis and
   Talos workers, with one VM ping-ponging. Three defects in `engine/rebalance.py`:
@@ -817,10 +824,13 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 
 ### Test hygiene (found during slice 1)
 
-- [ ] `tests/test_mcp_server.py` flakes (one random failure or error per run)
-  on `main` too — an unclosed event loop from the CLI runner inside async
-  tests; and the UniFi/OMV discovery tests read real credentials from the
-  developer's environment. Both need fixtures that isolate the environment.
+- [x] `tests/test_mcp_server.py` flakes (one random failure or error per run):
+  the unclosed event loop was pytest-asyncio remembering an "old" loop that
+  Python 3.12's default policy had just conjured because `asyncio.run` (any
+  CliRunner test) leaves the main thread loop-less; `conftest.py` now installs
+  a policy that refuses to create loops implicitly. The UniFi/OMV tests reading
+  the operator's exported `HOMELAB_HELPER_*` credentials is fixed separately
+  by scrubbing them in `conftest.py`.
 
 ---
 

@@ -259,8 +259,9 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
 | 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F), agent-side `propose_action` + manifest schema + secret references (agent-access items 4–6). All six ACs implemented; live-fleet validation outstanding |
 
-Live-fleet validation of Phases 4–5 ACs is the outstanding sign-off gate, and
-required before any Phase-6 execution path runs against real infrastructure.
+Live-fleet validation: Phases 4–7 have run against the operator's lab
+(`docs/live-validation.md` sign-off table); the open items are onboarding
+(interactive), Phase 6 steps 5–6 live, and Phase 7 step 8 (an AUTONOMOUS run).
 Packaging is release-ready: `helper` works from `uv tool install` (per-user
 data/config dirs, packaged migrations and workload library), and a `v*` tag
 publishes to PyPI (`docs/releasing.md`).

@@ -513,6 +513,10 @@ The rest of Phase 1, and all of Phase 6, is below.
   not *why* local was passed over — `RouterResult` dropped the exclusion
   reasons on success. Now `RouterResult.skipped` carries them and `helper chat`
   prints a `skipped:` line under a cloud footer.
+- [x] **Cloudflare account-owned tokens were rejected (10/04/2026)**: the adapter's
+  health check called `/user/tokens/verify`, which answers only for user-owned
+  tokens and returns `1000 Invalid API Token` for a valid `cfat_…` account token.
+  The check is now a zone read — the permission the adapter actually needs.
 
 - [x] **NIC virtual-interface filter** — added Proxmox firewall prefixes
   (`fwbr`/`fwln`/`fwpr`) to the host.network reconciler heuristic so they no

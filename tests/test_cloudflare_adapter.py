@@ -193,9 +193,13 @@ async def test_non_2xx_raises() -> None:
 
 
 async def test_health_check_ok() -> None:
+    seen: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
         if request.url.path.endswith("/tokens/verify"):
-            return httpx.Response(200, json=_ok({"status": "active"}))
+            # An account-owned token is valid yet this endpoint rejects it.
+            return httpx.Response(401, json={"success": False, "errors": [{"code": 1000}]})
         return httpx.Response(200, json=_ok([{"id": "z", "name": "example.com"}]))
 
     adapter = _adapter(handler)
@@ -205,6 +209,7 @@ async def test_health_check_ok() -> None:
         await adapter.aclose()
     assert ok is True
     assert err is None
+    assert not any(p.endswith("/tokens/verify") for p in seen)
 
 
 async def test_health_check_reports_failure() -> None:

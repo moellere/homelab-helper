@@ -194,10 +194,17 @@ class CloudflareAdapter:
         return out
 
     async def health_check(self) -> tuple[bool, str | None]:
-        """Verify the token is live and (if named) the zone resolves."""
+        """Prove the token can read the zone this adapter will read.
+
+        Deliberately not ``/user/tokens/verify``: that endpoint answers only for
+        *user*-owned tokens and returns ``1000 Invalid API Token`` for an
+        account-owned one that is perfectly valid, so a zone read is both the
+        liveness probe and the permission check.
+        """
         try:
-            await self._request("GET", "/user/tokens/verify")
-            await self._resolve_zone_id()
+            zone_id = await self._resolve_zone_id()
+            if zone_id == self.config.zone_id:
+                await self._request("GET", f"/zones/{zone_id}")
         except (CloudflareAPIError, CloudflareConfigError, httpx.HTTPError) as exc:
             return False, str(exc)
         return True, None

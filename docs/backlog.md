@@ -499,6 +499,20 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### Known gaps (found during validation)
 
+- [x] **P5-AC3 on the live fleet (10/03/2026)** produced no migrations-only plan, then
+  — after the first fix — plans that migrated Proxmox guests onto a NAS, arm64 Pis and
+  Talos workers, with one VM ping-ponging. Three defects in `engine/rebalance.py`:
+  the greedy mover tried only the single emptiest host as destination; an empty
+  host counted as "joinable" to any cluster; nothing stopped a VM moving twice.
+  Fixed: destinations are searched emptiest-first past illegal ones, a target
+  must be a node of the guest's cluster (from the cluster's persisted `nodes`
+  list, else the guests it already runs), and a VM moves at most once per plan.
+  `virt_reconcile` now records `Cluster.attributes["nodes"]`.
+- [x] **P4-AC1 on the live fleet (10/03/2026)**: Ollama was not running, the router
+  answered from Anthropic under `prefer-local`, and the footer said "cloud" but
+  not *why* local was passed over — `RouterResult` dropped the exclusion
+  reasons on success. Now `RouterResult.skipped` carries them and `helper chat`
+  prints a `skipped:` line under a cloud footer.
 - [x] **Cloudflare account-owned tokens were rejected (10/04/2026)**: the adapter's
   health check called `/user/tokens/verify`, which answers only for user-owned
   tokens and returns `1000 Invalid API Token` for a valid `cfat_…` account token.
@@ -786,6 +800,20 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
   (needs an expected-state model for VMs), stray DNS → `dns-record`.
 - [ ] Probe-level schedules and assertion cadences inside the daemon (the rest
   of the Phase-2 spec).
+
+### Slice 4 — tell me afterwards (landed)
+
+- [x] `engine/notify.py`: `should_notify` (AUTONOMOUS, any failure, auto-promote /
+  demote), `render`, `HomeAssistantNotifier` on the approval channel's config,
+  `notifier_from_env`, best-effort `notify_after_run`. Executor calls it after
+  the receipt + escalation flush; `ExecutionResult.notification` says what
+  happened; wired from `helper exec run`, MCP `execute_proposal`, the listener
+  and the daemon. _P7-AC4 "with a receipt and a notification"._
+- [ ] Live validation: let `containers/argocd-sync` or `workload-restart` earn
+  AUTONOMOUS through the streak, watch the phone announce the run, then break
+  one deliberately and watch the demotion notice (runbook step 8).
+- [ ] Daily digest (one notification summarising the day's receipts) — only if
+  the per-run notices turn out noisy.
 
 ### Test hygiene (found during slice 1)
 

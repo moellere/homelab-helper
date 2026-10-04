@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from sqlalchemy import select
 from typer.testing import CliRunner
 
 if TYPE_CHECKING:
@@ -167,6 +168,51 @@ async def test_cross_vpn_migration_never_planned(sessionmaker) -> None:
     for plan in report.plans:
         for step in plan.steps:
             assert step.action != "migrate-vm", f"planned a cross-VPN migration: {step}"
+
+
+async def test_moves_skip_an_illegal_emptiest_host_and_find_the_cluster_mate(sessionmaker) -> None:
+    """The emptiest host is off the LAN-grade map; the idle cluster-mate must still be found."""
+    async with session_scope(sessionmaker) as s:
+        await _seed_imbalanced(s, dimms_on_node2=0)
+        s.add(_host("remote-idle", 64))  # 0% committed, a cluster node, but at the other site
+        cluster = (await s.execute(select(Cluster))).scalar_one()
+        cluster.attributes = {"nodes": ["node1", "node2", "remote-idle"]}
+    topology = Topology(
+        host_sites={"node1": "covington", "node2": "covington", "remote-idle": "wyola"},
+        links=(Link("covington", "wyola", "vpn", 40, 28.0, "best-effort"),),
+    )
+    async with sessionmaker() as s:
+        report = await plan_rebalance(s, topology=topology)
+    moves = [p for p in report.plans if p.name == "current-hardware"]
+    assert moves, [p.name for p in report.plans]
+    descriptions = [step.description for step in moves[0].steps]
+    assert any("to node2" in d for d in descriptions), descriptions
+    assert not any("remote-idle" in d for d in descriptions), descriptions
+
+
+async def test_moves_never_target_a_host_outside_the_cluster(sessionmaker) -> None:
+    """A NAS or a Pi with free RAM is not a hypervisor; no plan may fill it."""
+    async with session_scope(sessionmaker) as s:
+        await _seed_imbalanced(s, dimms_on_node2=0)
+        s.add(_host("nas", 64))  # idle, roomy, not a cluster node
+    async with sessionmaker() as s:
+        report = await plan_rebalance(s)
+    for plan in report.plans:
+        for step in plan.steps:
+            assert "nas" not in step.description, step.description
+    moves = [p for p in report.plans if p.name == "current-hardware"]
+    assert moves
+    assert all(st.action == "migrate-vm" for st in moves[0].steps)
+
+
+async def test_a_vm_moves_at_most_once_per_plan(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await _seed_imbalanced(s, dimms_on_node2=2)
+    async with sessionmaker() as s:
+        report = await plan_rebalance(s)
+    for plan in report.plans:
+        names = [st.description.split("'")[1] for st in plan.steps if st.action == "migrate-vm"]
+        assert len(names) == len(set(names)), (plan.name, names)
 
 
 async def test_balanced_fleet_produces_no_plans(sessionmaker) -> None:

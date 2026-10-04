@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from homelab_helper.engine.approval import ApprovalChannel, ApprovalResult
+    from homelab_helper.engine.notify import Notifier
 
 DEFAULT_SOURCES: tuple[str, ...] = ("playbook:", "agent:")
 
@@ -92,6 +93,7 @@ async def ask_pending(
     sources: tuple[str, ...] = DEFAULT_SOURCES,
     actor: str = "listener",
     limit: int = 20,
+    notifier: Notifier | None = None,
 ) -> ListenerResult:
     """One listener pass over pending proposals from the listened sources."""
     result = ListenerResult()
@@ -148,6 +150,7 @@ async def ask_pending(
                 k8s_adapter=k8s,
                 argocd_adapter=argocd,
                 unifi_adapter=unifi,
+                notifier=notifier,
             )
         except ExecutionRefused as exc:
             result.declined.append(f"{pid[:8]}: {exc}")
@@ -157,7 +160,8 @@ async def ask_pending(
                 close = getattr(a, "aclose", None)
                 if close is not None:
                     await close()
-        result.executed.append(f"{pid[:8]} {manifest.cell_key} -> {outcome.outcome}")
+        note = f" ({outcome.notification})" if outcome.notification else ""
+        result.executed.append(f"{pid[:8]} {manifest.cell_key} -> {outcome.outcome}{note}")
     return result
 
 

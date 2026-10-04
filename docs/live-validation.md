@@ -364,7 +364,22 @@ Expected: a drifted Argo CD app or an unhealthy workload produces exactly one
 pending proposal (`proposed_by` = `playbook:…`), a second pass drafts nothing
 new, the listener asks once and never re-asks a denied one.
 
-### Step 8 — clean up
+### Step 8 — the unattended run announces itself (slice 4)
+
+```bash
+uv run helper trust grant containers workload-restart single-service autonomous   # or let the streak promote it
+uv run helper daemon run --once           # a drafted restart now runs with no tap …
+# … and the phone shows "✓ homelab-helper: Rollout restart …" with the undo one-liner
+uv run helper exec rollback <receipt>     # optional; a confirmed rollback is silent
+```
+
+Expected: the receipt exists before the notification arrives (`helper exec
+receipts`); the notice names the cell, the target, `unattended`, and
+`helper exec rollback <id>`. Break the next one on purpose (scale a workload
+that does not exist) and the "✗" notice reports the failure and the
+demotion to PROPOSE.
+
+### Step 9 — clean up
 
 Revoke the grants unless you want to keep them (`helper trust show`),
 unset the approval service if you do not want agents able to ask.
@@ -380,6 +395,7 @@ unset the approval service if you do not want agents able to ask.
 | P6 steps 0–7 | | |
 | P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 | P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
+| P7 step 8 (unattended run notice) | | |
 
 Until this table is filled in, `backlog.md` should keep listing live-fleet
 validation as outstanding, and no Phase-6 or Phase-7 execution path should run

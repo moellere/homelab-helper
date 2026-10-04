@@ -74,6 +74,7 @@ from homelab_helper.engine.manifest import (
     WORKLOAD_KINDS,
     ManifestError,
 )
+from homelab_helper.engine.notify import ExecutionNotice, Notifier, notify_after_run
 from homelab_helper.engine.rollback import (
     RollbackError,
     RollbackPlan,
@@ -207,6 +208,8 @@ class ExecutionResult:
     """What this outcome did to the cell's floor — see engine/escalation.py."""
     override_used: bool = False
     """True only when the override actually changed the decided level."""
+    notification: str | None = None
+    """What the post-run notifier did: ``None`` when the run did not warrant one."""
 
 
 def parse_manifest(proposal: ProposalLog) -> ActionManifest:
@@ -576,6 +579,7 @@ async def execute_proposal(
     k8s_adapter: K8sAdapter | None = None,
     argocd_adapter: ArgoCDAdapter | None = None,
     unifi_adapter: UniFiAdapter | None = None,
+    notifier: Notifier | None = None,
 ) -> ExecutionResult:
     """Gate, (maybe) confirm, dispatch, and receipt one pending action proposal.
 
@@ -726,6 +730,27 @@ async def execute_proposal(
         )
     await session.flush()
 
+    # Only now, with the receipt and the escalation on disk, is the operator
+    # told about a run they were not asked about. A lost notification changes
+    # nothing above this line.
+    notification = await notify_after_run(
+        notifier,
+        ExecutionNotice(
+            receipt_id=receipt.id,
+            proposal_id=proposal.id,
+            title=proposal.title,
+            cell=manifest.cell_key,
+            target=manifest.target_label,
+            level=decision.level,
+            outcome=outcome,
+            error=error,
+            duration_ms=duration_ms,
+            actor=actor,
+            rollback_available=plan.verified and plan.capture_error is None,
+            escalation=escalation,
+        ),
+    )
+
     return ExecutionResult(
         receipt_id=receipt.id,
         decision=decision,
@@ -734,6 +759,7 @@ async def execute_proposal(
         duration_ms=duration_ms,
         escalation=escalation,
         override_used=override_was_load_bearing,
+        notification=notification,
     )
 
 

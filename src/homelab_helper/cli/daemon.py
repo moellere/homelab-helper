@@ -30,6 +30,7 @@ from homelab_helper.config import database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.approval import ApprovalConfigError, approval_channel_from_env
 from homelab_helper.engine.listener import ask_pending
+from homelab_helper.engine.notify import notifier_from_env
 from homelab_helper.engine.playbooks import run_playbooks
 
 if TYPE_CHECKING:
@@ -93,7 +94,9 @@ async def run_listen_pass() -> dict[str, Any]:
     engine = make_engine(database_url())
     try:
         async with session_scope(make_sessionmaker(engine)) as session:
-            r = await ask_pending(session, channel=channel, adapters_for=_adapters_for)
+            r = await ask_pending(
+                session, channel=channel, adapters_for=_adapters_for, notifier=notifier_from_env()
+            )
             return {
                 "asked": r.asked,
                 "executed": r.executed,

@@ -67,6 +67,18 @@ async def test_prefer_local_falls_to_cloud_when_local_down() -> None:
     router = LLMRouter([local, cloud], PrivacyPolicy.PREFER_LOCAL)
     result = await router.complete(TaskClass.CHAT, "s", _msgs())
     assert result.backend == "anthropic"
+    assert len(result.skipped) == 1
+    assert result.skipped[0].startswith("ollama (")
+    assert "unavailable" in result.skipped[0]
+
+
+async def test_a_first_choice_answer_reports_nothing_skipped() -> None:
+    local = FakeBackend("ollama", local=True, tier=CapabilityTier.SMALL, reply="local")
+    cloud = FakeBackend("anthropic", local=False, tier=CapabilityTier.FRONTIER, reply="cloud")
+    router = LLMRouter([local, cloud], PrivacyPolicy.PREFER_LOCAL)
+    result = await router.complete(TaskClass.CHAT, "s", _msgs())
+    assert result.backend == "ollama"
+    assert result.skipped == ()
 
 
 async def test_failover_on_backend_error() -> None:

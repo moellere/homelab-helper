@@ -108,6 +108,30 @@ def test_chat_one_shot_grounds_in_lab_context(
     assert "fake-model" in result.stdout
 
 
+class CloudAfterLocalDownRouter(EchoRouter):
+    async def complete(self, task, system, messages, *, min_tier=None) -> RouterResult:  # type: ignore[override]
+        return RouterResult(
+            text=self.reply,
+            backend="anthropic",
+            model="claude",
+            tier=CapabilityTier.FRONTIER,
+            local=False,
+            skipped=("ollama (llama3.2, small): unavailable — connection refused",),
+        )
+
+
+def test_chat_says_why_the_local_model_was_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_chat, "_load_router", CloudAfterLocalDownRouter)
+    result = runner.invoke(app, ["chat", "what hosts do I have?"])
+    assert result.exit_code == 0
+    assert "cloud" in result.stdout
+    assert "skipped: ollama" in result.stdout
+    assert "unavailable" in result.stdout
+
+
 def test_chat_refusal_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_db(tmp_path, monkeypatch)
     monkeypatch.setattr(cli_chat, "_load_router", RefusingRouter)

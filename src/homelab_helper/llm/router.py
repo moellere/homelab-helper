@@ -102,6 +102,9 @@ class RouterResult:
     model: str
     tier: CapabilityTier
     local: bool
+    skipped: tuple[str, ...] = ()
+    """Why each backend ahead of this one was passed over — a cloud answer under
+    prefer-local must be able to say that the local model was unreachable."""
 
 
 def privacy_from_env() -> PrivacyPolicy:
@@ -171,6 +174,7 @@ class LLMRouter:
                 model=backend.model,
                 tier=backend.tier,
                 local=backend.local,
+                skipped=tuple(reasons),
             )
         raise RouterRefusal(task, needed, self.policy, reasons)
 

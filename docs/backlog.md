@@ -508,6 +508,11 @@ The rest of Phase 1, and all of Phase 6, is below.
   must be a node of the guest's cluster (from the cluster's persisted `nodes`
   list, else the guests it already runs), and a VM moves at most once per plan.
   `virt_reconcile` now records `Cluster.attributes["nodes"]`.
+- [x] **P4-AC1 on the live fleet (10/03/2026)**: Ollama was not running, the router
+  answered from Anthropic under `prefer-local`, and the footer said "cloud" but
+  not *why* local was passed over — `RouterResult` dropped the exclusion
+  reasons on success. Now `RouterResult.skipped` carries them and `helper chat`
+  prints a `skipped:` line under a cloud footer.
 
 - [x] **NIC virtual-interface filter** — added Proxmox firewall prefixes
   (`fwbr`/`fwln`/`fwpr`) to the host.network reconciler heuristic so they no

@@ -133,6 +133,12 @@ async def reconcile_proxmox_cluster(
         result.cluster_created = True
     cluster.quorate = cluster_status.get("quorate")
     cluster.node_count = cluster_status.get("node_count")
+    members = sorted(
+        {str(n["name"]) for n in cluster_status.get("nodes") or [] if n.get("name")}
+        | {str(v["node"]) for v in vms if v.get("node")}
+    )
+    if members:
+        cluster.attributes = {**(cluster.attributes or {}), "nodes": members}
     cluster.discovery_last_run = when
     await session.flush()
 

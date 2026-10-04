@@ -266,6 +266,17 @@ Clean confirmed runs promote a reversible, low-blast cell one rung; one bad
 outcome demotes it and puts it on probation. See `docs/architecture.md`
 ("Trust gradient") for the model.
 
+### After the fact
+
+Every run you were *not* asked about tells you it happened: an AUTONOMOUS
+execution, a failed dispatch at any level, or an outcome that moved a cell's
+floor (auto-promotion, demotion) posts a plain notification to the same
+`notify.<phone>` service the approval channel uses — what ran, the outcome,
+the `helper exec rollback <receipt>` one-liner when the receipt holds enough
+state to undo it. A confirmed success stays quiet; you just tapped Approve.
+The notification goes out after the receipt is written and is best-effort: a
+phone that cannot be reached changes nothing about the run or its record.
+
 ### Proactive mode (Phase 7)
 
 `helper daemon run` closes the loop without anyone asking: discovery on a

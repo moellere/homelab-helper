@@ -34,6 +34,7 @@ src/homelab_helper/
 │                   placement/rebalance/bottlenecks/network_path planners,
 │                   trust (decide) + executor + escalation + rollback (Phase 6),
 │                   approval (Phase 7: HA phone-tap channel for CONFIRM),
+│                   notify (after-the-fact notice for unattended runs),
 │                   playbooks (finding → proposal, deterministic), listener
 │                   (asks about agent/playbook proposals), k8s_workloads,
 │                   manifest (authoring schema for ProposalLog.artifact)
@@ -163,7 +164,9 @@ not an authority: it calls the executor with `override=None` (pinned by
 executor consults `engine/approval.py` — a human's tap on another device —
 whose answer lands on `TrustHistory` as an `approval` event. A cell at PROPOSE
 executes nothing through it (`test_execute_proposal_executes_nothing_at_propose`).
-The playbook registry (`engine/playbooks.py`) is the "Triage agent" and it is
+`engine/notify.py` runs *after* the receipt and escalation are flushed and
+never raises into the executor — a lost notification must not alter what
+happened or what was recorded. The playbook registry (`engine/playbooks.py`) is the "Triage agent" and it is
 deliberately deterministic: a finding's fields pick the manifest, an LLM may
 narrate a finding but never drafts a remediation. The listener and the daemon
 (`cli/daemon.py`) are triggers like the MCP tool — never authorities.

@@ -36,6 +36,7 @@ src/homelab_helper/
 │                   approval (Phase 7: HA phone-tap channel for CONFIRM),
 │                   notify (after-the-fact notice for unattended runs),
 │                   versions (Phase 8.1 version currency; EOL table in data/),
+│                   backups (8.2 posture), category_findings (shared Phase 8 reconcile),
 │                   playbooks (finding → proposal, deterministic), listener
 │                   (asks about agent/playbook proposals), k8s_workloads,
 │                   manifest (authoring schema for ProposalLog.artifact)

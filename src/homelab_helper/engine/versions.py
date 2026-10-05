@@ -19,26 +19,26 @@ or did not:
   summarised per instance. MEDIUM when core, OS or supervisor is behind, LOW
   for add-ons and device firmware.
 
-Findings key by ``(version-drift, target_type, target_id, category)`` and carry
-their category in ``evidence_refs`` so resolution can honour invariant 1: a
-finding resolves only when its category was observed this run and the issue is
-no longer present. A source that failed or was skipped resolves nothing.
+Findings and their resolution follow ``engine/category_findings.py``: keyed by
+``(version-drift, target_type, target_id, category)``, resolved only when the
+category was observed this run (invariant 1).
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from sqlalchemy import select
 
-from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus
-from homelab_helper.db.models import ReconciliationFinding
-from homelab_helper.engine.fingerprint import make_fingerprint
+from homelab_helper.db.enums import FindingKind, FindingSeverity
+from homelab_helper.engine.category_findings import (
+    CategoryIssue,
+    CategoryResult,
+    reconcile_category_findings,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -54,40 +54,16 @@ _CORE_UPDATE_MARKERS = ("home_assistant_core", "home_assistant_operating_system"
 CATEGORIES = ("pve-updates", "pve-mixed", "os-eol", "k8s-skew", "talos-skew", "hass-updates")
 
 
-@dataclass(frozen=True)
-class VersionIssue:
-    """One version problem, ready to become (or refresh) a finding."""
-
-    category: str
-    target_type: str
-    target_id: str
-    severity: FindingSeverity
-    title: str
-    description: str
-    evidence: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def fingerprint(self) -> str:
-        return make_fingerprint(
-            FindingKind.VERSION_DRIFT.value, self.target_type, self.target_id, self.category
-        )
-
-
-@dataclass
-class VersionResult:
-    observed: list[str] = field(default_factory=list)
-    opened: list[str] = field(default_factory=list)
-    reopened: list[str] = field(default_factory=list)
-    updated: list[str] = field(default_factory=list)
-    resolved: list[str] = field(default_factory=list)
+def VersionIssue(**kw: Any) -> CategoryIssue:
+    return CategoryIssue(kind=FindingKind.VERSION_DRIFT, **kw)
 
 
 # ----------------------------------------------------------------- proxmox
 
 
-def proxmox_issues(cluster: str, nodes: list[dict[str, Any]]) -> list[VersionIssue]:
+def proxmox_issues(cluster: str, nodes: list[dict[str, Any]]) -> list[CategoryIssue]:
     """``nodes``: ``{"node", "version", "pending": [apt entries]}`` per reachable node."""
-    issues: list[VersionIssue] = []
+    issues: list[CategoryIssue] = []
     for n in nodes:
         pending = n.get("pending") or []
         if not pending:
@@ -168,10 +144,10 @@ def os_eol_issues(
     hosts: Iterable[tuple[str, str, dict[str, Any]]],
     table: dict[str, Any],
     today: date,
-) -> list[VersionIssue]:
+) -> list[CategoryIssue]:
     """``hosts``: ``(host_id, hostname, capabilities)``."""
     aliases = table.get("aliases") or {}
-    issues: list[VersionIssue] = []
+    issues: list[CategoryIssue] = []
     for host_id, hostname, caps in hosts:
         release = os_release(caps)
         if release is None:
@@ -224,7 +200,7 @@ def _talos_release(caps: dict[str, Any]) -> str | None:
 
 def k8s_issues(
     hosts: Iterable[tuple[str, str, dict[str, Any]]],
-) -> tuple[list[VersionIssue], set[str]]:
+) -> tuple[list[CategoryIssue], set[str]]:
     """Skew findings plus the categories that had any data to look at."""
     kubelet: dict[str, str] = {}
     talos: dict[str, str] = {}
@@ -235,7 +211,7 @@ def k8s_issues(
         if release:
             talos[hostname] = release
     observed: set[str] = set()
-    issues: list[VersionIssue] = []
+    issues: list[CategoryIssue] = []
     for category, versions, what in (
         ("k8s-skew", kubelet, "kubelet"),
         ("talos-skew", talos, "Talos"),
@@ -262,7 +238,7 @@ def k8s_issues(
 # ------------------------------------------------------------ home assistant
 
 
-def hass_update_issues(instance: str, states: list[dict[str, Any]]) -> list[VersionIssue]:
+def hass_update_issues(instance: str, states: list[dict[str, Any]]) -> list[CategoryIssue]:
     pending = [
         s for s in states if s.get("entity_id", "").startswith("update.") and s.get("state") == "on"
     ]
@@ -308,97 +284,23 @@ def hass_update_issues(instance: str, states: list[dict[str, Any]]) -> list[Vers
 # ---------------------------------------------------------------- reconcile
 
 
-def _category_of(finding: ReconciliationFinding) -> str | None:
-    for ref in finding.evidence_refs or []:
-        if ref.get("type") == "version-category":
-            return str(ref.get("category"))
-    return None
-
-
 async def reconcile_version_findings(
     session: AsyncSession,
-    issues: list[VersionIssue],
+    issues: list[CategoryIssue],
     observed: set[str],
     *,
     when: datetime | None = None,
-) -> VersionResult:
-    """Upsert one finding per issue; resolve only within observed categories."""
-    now = when or datetime.now(UTC)
-    result = VersionResult(observed=sorted(observed))
-    active = {i.fingerprint for i in issues}
-    for issue in issues:
-        refs = [
-            {"type": "version-category", "category": issue.category},
-            {"type": "version", **issue.evidence},
-        ]
-        affected = [{"target_type": issue.target_type, "target_id": issue.target_id}]
-        row = (
-            await session.execute(
-                select(ReconciliationFinding).where(
-                    ReconciliationFinding.fingerprint == issue.fingerprint
-                )
-            )
-        ).scalar_one_or_none()
-        if row is None:
-            session.add(
-                ReconciliationFinding(
-                    kind=FindingKind.VERSION_DRIFT,
-                    severity=issue.severity,
-                    fingerprint=issue.fingerprint,
-                    title=issue.title[:512],
-                    description=issue.description,
-                    affected=affected,
-                    evidence_refs=refs,
-                    status=FindingStatus.OPEN,
-                    first_seen=now,
-                    last_seen=now,
-                )
-            )
-            result.opened.append(issue.title)
-            continue
-        if row.status == FindingStatus.RESOLVED:
-            row.status = FindingStatus.OPEN
-            row.resolved_at = None
-            row.first_seen = now
-            result.reopened.append(issue.title)
-        else:
-            result.updated.append(issue.title)
-        row.last_seen = now
-        row.severity = issue.severity
-        row.title = issue.title[:512]
-        row.description = issue.description
-        row.affected = affected
-        row.evidence_refs = refs
-
-    open_rows = (
-        (
-            await session.execute(
-                select(ReconciliationFinding).where(
-                    ReconciliationFinding.kind == FindingKind.VERSION_DRIFT,
-                    ReconciliationFinding.status.in_(
-                        (FindingStatus.OPEN, FindingStatus.ACKNOWLEDGED)
-                    ),
-                )
-            )
-        )
-        .scalars()
-        .all()
+) -> CategoryResult:
+    """Upsert one ``version-drift`` finding per issue; resolve only within observed categories."""
+    return await reconcile_category_findings(
+        session, FindingKind.VERSION_DRIFT, issues, observed, when=when
     )
-    for row in open_rows:
-        if row.fingerprint in active or _category_of(row) not in observed:
-            continue
-        row.status = FindingStatus.RESOLVED
-        row.resolved_at = now
-        result.resolved.append(row.title)
-    await session.flush()
-    return result
 
 
 __all__ = [
     "CATEGORIES",
     "EOL_TABLE_PATH",
     "VersionIssue",
-    "VersionResult",
     "hass_update_issues",
     "k8s_issues",
     "load_eol_table",

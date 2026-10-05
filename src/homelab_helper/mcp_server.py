@@ -74,6 +74,13 @@ from homelab_helper.engine.approval import (
     approval_channel_from_env,
 )
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
+from homelab_helper.engine.backups import CATEGORIES as BACKUP_CATEGORIES
+from homelab_helper.engine.backups import (
+    backup_issues,
+    capacity_issues,
+    orphan_issues,
+    reconcile_backup_findings,
+)
 from homelab_helper.engine.bottlenecks import analyze_bottlenecks as _analyze_bottlenecks
 from homelab_helper.engine.bottlenecks import persist_bottlenecks
 from homelab_helper.engine.dns_reconcile import (
@@ -118,7 +125,6 @@ from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
 from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
 from homelab_helper.engine.versions import (
-    VersionIssue,
     hass_update_issues,
     k8s_issues,
     load_eol_table,
@@ -134,6 +140,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from homelab_helper.engine.category_findings import CategoryIssue
 
 server = MCPServer(
     "homelab-helper",
@@ -717,7 +725,7 @@ async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
     Each source that fails is reported and contributes no categories, so its
     findings neither open nor resolve this run.
     """
-    issues: list[VersionIssue] = []
+    issues: list[CategoryIssue] = []
     observed: set[str] = set()
     errors: dict[str, str] = {}
 
@@ -772,13 +780,48 @@ async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
     return {
         "observed": result.observed,
         "issues": len(issues),
-        "findings": {
-            "opened": len(result.opened),
-            "reopened": len(result.reopened),
-            "updated": len(result.updated),
-            "resolved": len(result.resolved),
-        },
+        "findings": result.counts(),
         "errors": errors,
+    }
+
+
+async def _discover_backups(session: AsyncSession) -> dict[str, Any]:
+    """Phase 8.2: backup posture from Proxmox backup jobs and backup storages."""
+    adapter = _load_proxmox_adapter()
+    try:
+        guests = await adapter.list_vms()
+        jobs = await adapter.list_backup_jobs()
+        storages: list[dict[str, Any]] = []
+        backups: list[dict[str, Any]] = []
+        orphans: list[CategoryIssue] = []
+        seen_shared: set[str] = set()
+        for row in await adapter.list_storage():
+            if "backup" not in str(row.get("content") or "") or row.get("status") != "available":
+                continue
+            name = str(row.get("storage"))
+            if row.get("shared"):
+                if name in seen_shared:
+                    continue
+                seen_shared.add(name)
+                label = name
+            else:
+                label = f"{name}@{row.get('node')}"
+            content = await adapter.storage_content(str(row.get("node")), name)
+            backups += content
+            orphans += orphan_issues(label, guests, content)
+            storages.append({**row, "storage": label})
+    finally:
+        await adapter.aclose()
+    now = datetime.now(UTC)
+    issues = backup_issues(guests, jobs, backups, now=now) + orphans + capacity_issues(storages)
+    result = await reconcile_backup_findings(session, issues, set(BACKUP_CATEGORIES), when=now)
+    return {
+        "guests": len(guests),
+        "jobs": len(jobs),
+        "backup_storages": [s["storage"] for s in storages],
+        "backups": len(backups),
+        "issues": len(issues),
+        "findings": result.counts(),
     }
 
 
@@ -792,6 +835,7 @@ _DISCOVERERS = {
     "hass": _discover_hass,
     "mikrotik": _discover_mikrotik,
     "versions": _discover_versions,
+    "backups": _discover_backups,
 }
 
 
@@ -799,7 +843,8 @@ _DISCOVERERS = {
 async def run_discovery(source: str) -> dict[str, Any]:
     """Run a management-plane discovery and persist into the harness DB.
     Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass, mikrotik,
-    versions (Phase 8.1: package lag, mixed versions, OS end of life, HA updates).
+    versions (Phase 8.1: package lag, mixed versions, OS end of life, HA updates),
+    backups (Phase 8.2: uncovered/stale/unverified guests, orphaned backups, capacity).
     Reads the live source (credentials from HOMELAB_HELPER_* env vars); never
     writes to the infrastructure itself."""
     discoverer = _DISCOVERERS.get(source)

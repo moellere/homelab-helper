@@ -275,6 +275,14 @@ within 180 days of end of support (dates live in `data/os-eol.yaml`, nothing is
 guessed), Kubernetes/Talos version skew, and pending Home Assistant updates. A
 source that cannot be reached is reported and its findings are left alone.
 
+### Backup posture (Phase 8.2)
+
+`helper discover backups` reads the Proxmox backup jobs and every backup
+storage and records `backup-gap` findings: guests no enabled job covers,
+covered guests whose newest backup is older than twice the job interval (or
+that have none), newest backups that failed verification, backups still kept
+for guests that no longer exist, and backup storage past 80 / 90%.
+
 ### After the fact
 
 Every run you were *not* asked about tells you it happened: an AUTONOMOUS

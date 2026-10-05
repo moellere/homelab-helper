@@ -261,7 +261,8 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 
 Live-fleet validation: Phases 4–7 have run against the operator's lab
 (`docs/live-validation.md` sign-off table); the open items are onboarding
-(interactive), Phase 6 steps 5–6 live, and Phase 7 step 8 (an AUTONOMOUS run).
+(interactive) and Phase 6 steps 5–6 live. Phase 7 is signed off end to end; the
+operator's lab runs `containers/workload-restart/single-service` at AUTONOMOUS.
 Packaging is release-ready: `helper` works from `uv tool install` (per-user
 data/config dirs, packaged migrations and workload library), and a `v*` tag
 publishes to PyPI (`docs/releasing.md`).

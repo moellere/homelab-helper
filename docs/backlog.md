@@ -23,8 +23,7 @@ Packaging is release-ready (`uv tool install`, per-user dirs, tag-driven PyPI
 release — see `releasing.md`).
 Live-fleet validation (runbook: `docs/live-validation.md`): Phases 4–5 swept
 10/03/2026 (two n/a on this fleet, onboarding still to run), Phase 6 covered by
-the Phase 7 live sessions, Phase 7 steps 0–7 signed off; step 8 (an autonomous
-run announcing itself) is the remaining live gate.
+the Phase 7 live sessions, Phase 7 signed off end to end (first unattended run 10/05/2026).
 
 Phase-1 foundation, built and green:
 
@@ -816,9 +815,10 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
   the receipt + escalation flush; `ExecutionResult.notification` says what
   happened; wired from `helper exec run`, MCP `execute_proposal`, the listener
   and the daemon. _P7-AC4 "with a receipt and a notification"._
-- [ ] Live validation: let `containers/argocd-sync` or `workload-restart` earn
-  AUTONOMOUS through the streak, watch the phone announce the run, then break
-  one deliberately and watch the demotion notice (runbook step 8).
+- [x] Live validation (10/05/2026, runbook step 8): `workload-restart` granted
+  AUTONOMOUS, an agent-drafted homepage restart ran unattended from the daemon
+  and the phone got the ✓ notice after the receipt. The demotion notice was not
+  forced live (needs a failing write behind a succeeding read); covered by tests.
 - [ ] Daily digest (one notification summarising the day's receipts) — only if
   the per-run notices turn out noisy.
 

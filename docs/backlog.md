@@ -834,6 +834,21 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 
 ---
 
+## Phase 8 — Operate & Optimize
+
+See `roadmap.md` Phase 8. Slices land in this order.
+
+- [ ] 8.1 Version currency — `version-drift` findings: Proxmox node package lag and mixed cluster versions, OS end of life (dated table in the repo), K8s node version skew, Home Assistant updates pending.
+- [ ] 8.2 Backup posture — `backup-gap` findings: uncovered guests, stale last backup, verify/prune gaps, offsite freshness.
+- [ ] 8.3 Usage history — bounded rollups, Proxmox RRD backfill.
+- [ ] 8.4 Rightsizing & real-usage placement.
+- [ ] 8.5 Storage efficiency.
+- [ ] 8.6 Weekly digest.
+- [ ] 8.7 Service suggestions.
+- [ ] Update orchestration (first Phase 8 write path, at PROPOSE) — after 8.1 has run a while.
+
+---
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but

@@ -20,6 +20,7 @@ from .receipt import ExecutionReceipt
 from .service import Service, ServiceEndpoint
 from .skill import SkillProfile
 from .trust import CellTrust, Domain, ElevationWindow, TrustBoundary, TrustHistory
+from .usage import UsageSample
 from .virtualization import Cluster, VirtualMachine
 
 __all__ = [
@@ -44,5 +45,6 @@ __all__ = [
     "SkillProfile",
     "TrustBoundary",
     "TrustHistory",
+    "UsageSample",
     "VirtualMachine",
 ]

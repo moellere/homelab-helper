@@ -290,6 +290,21 @@ class ProxmoxAdapter:
             or []
         )
 
+    async def rrd(
+        self,
+        node: str,
+        timeframe: str,
+        cf: str = "AVERAGE",
+        *,
+        vmid: int | None = None,
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Round-robin usage points for a node, or a guest when ``vmid``/``kind`` are given."""
+        path = (
+            f"/nodes/{node}/{kind}/{vmid}/rrddata" if vmid is not None else f"/nodes/{node}/rrddata"
+        )
+        return await self._request("GET", path, params={"timeframe": timeframe, "cf": cf}) or []
+
     async def version(self) -> dict[str, Any]:
         return await self._request("GET", "/version") or {}
 

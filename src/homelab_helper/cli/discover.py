@@ -1297,3 +1297,17 @@ def discover_versions() -> None:
 def discover_backups() -> None:
     """Backup posture (Phase 8.2): uncovered, stale or unverified guests; orphans; capacity."""
     raise typer.Exit(code=_category_discovery("backups", FindingKind.BACKUP_GAP, "backup gaps"))
+
+
+@discover_app.command(name="usage")
+def discover_usage() -> None:
+    """Usage history (Phase 8.3): hourly/daily rollups from Proxmox RRD, backfilled, pruned."""
+    result = asyncio.run(mcp_server.run_discovery("usage"))
+    if "error" in result:
+        console.print(f"[red]usage failed:[/red] {result['error']}")
+        raise typer.Exit(code=1)
+    s = result["samples"]
+    console.print(
+        f"[cyan]usage[/cyan]: {result['with_data']}/{result['subjects']} subject(s) with data — "
+        f"{s['inserted']} inserted, {s['updated']} updated; pruned {result['pruned']}"
+    )

@@ -33,10 +33,11 @@ Run it: ``helper mcp serve`` (stdio). Register in a client, e.g. Claude Code::
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
@@ -65,6 +66,7 @@ from homelab_helper.db.models import (
     Service,
     ServiceEndpoint,
     TrustBoundary,
+    UsageSample,
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
@@ -124,6 +126,16 @@ from homelab_helper.engine.stray_export import reconcile_stray_exports
 from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
 from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
+from homelab_helper.engine.usage import GUEST_FIELDS as USAGE_GUEST_FIELDS
+from homelab_helper.engine.usage import NODE_EXTRA as USAGE_NODE_EXTRA
+from homelab_helper.engine.usage import NODE_FIELDS as USAGE_NODE_FIELDS
+from homelab_helper.engine.usage import SOURCE_TIMEFRAME as USAGE_TIMEFRAME
+from homelab_helper.engine.usage import (
+    prune_usage,
+    record_usage,
+    summarize,
+)
+from homelab_helper.engine.usage import rollup as usage_rollup
 from homelab_helper.engine.versions import (
     hass_update_issues,
     k8s_issues,
@@ -825,6 +837,81 @@ async def _discover_backups(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _discover_usage(session: AsyncSession) -> dict[str, Any]:
+    """Phase 8.3: hourly and daily usage rollups from Proxmox RRD, then prune."""
+    adapter = _load_proxmox_adapter()
+    try:
+        status = await adapter.cluster_status()
+        cluster = str(status.get("name") or "proxmox")
+        subjects: list[tuple[str, str, str | None, str, int | None, str | None]] = [
+            ("host", str(n["node"]), str(n["node"]), str(n["node"]), None, None)
+            for n in await adapter.list_nodes()
+            if n.get("status") == "online"
+        ]
+        subjects += [
+            (
+                "guest",
+                f"{cluster}/{v['vmid']}",
+                v.get("name"),
+                str(v["node"]),
+                int(v["vmid"]),
+                str(v.get("type")),
+            )
+            for v in await adapter.list_vms()
+            if not v.get("template") and v.get("node")
+        ]
+        gate = asyncio.Semaphore(8)
+
+        async def _fetch(node: str, vmid: int | None, kind: str | None) -> dict[str, list[Any]]:
+            async with gate:
+                out: dict[str, list[Any]] = {}
+                for resolution, timeframe in USAGE_TIMEFRAME.items():
+                    for cf in ("AVERAGE", "MAX"):
+                        out[f"{resolution}:{cf}"] = await adapter.rrd(
+                            node, timeframe, cf, vmid=vmid, kind=kind
+                        )
+                return out
+
+        fetched = await asyncio.gather(
+            *(_fetch(node, vmid, kind) for _, _, _, node, vmid, kind in subjects)
+        )
+    finally:
+        await adapter.aclose()
+
+    inserted = updated = with_data = 0
+    for (stype, key, label, _node, _vmid, _kind), points in zip(subjects, fetched, strict=True):
+        fields = USAGE_NODE_FIELDS if stype == "host" else USAGE_GUEST_FIELDS
+        extra = USAGE_NODE_EXTRA if stype == "host" else ()
+        any_data = False
+        for resolution in USAGE_TIMEFRAME:
+            buckets = usage_rollup(
+                points[f"{resolution}:AVERAGE"],
+                points[f"{resolution}:MAX"],
+                resolution=resolution,
+                fields=fields,
+                extra=extra,
+            )
+            any_data = any_data or bool(buckets)
+            w = await record_usage(
+                session,
+                subject_type=stype,
+                subject_key=key,
+                label=label,
+                resolution=resolution,
+                buckets=buckets,
+            )
+            inserted += w.inserted
+            updated += w.updated
+        with_data += any_data
+    pruned = await prune_usage(session)
+    return {
+        "subjects": len(subjects),
+        "with_data": with_data,
+        "samples": {"inserted": inserted, "updated": updated},
+        "pruned": pruned,
+    }
+
+
 _DISCOVERERS = {
     "unifi": _discover_unifi,
     "cloudflare": _discover_cloudflare,
@@ -836,6 +923,7 @@ _DISCOVERERS = {
     "mikrotik": _discover_mikrotik,
     "versions": _discover_versions,
     "backups": _discover_backups,
+    "usage": _discover_usage,
 }
 
 
@@ -844,7 +932,8 @@ async def run_discovery(source: str) -> dict[str, Any]:
     """Run a management-plane discovery and persist into the harness DB.
     Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass, mikrotik,
     versions (Phase 8.1: package lag, mixed versions, OS end of life, HA updates),
-    backups (Phase 8.2: uncovered/stale/unverified guests, orphaned backups, capacity).
+    backups (Phase 8.2: uncovered/stale/unverified guests, orphaned backups, capacity),
+    usage (Phase 8.3: hourly/daily usage rollups from Proxmox RRD, backfilled, pruned).
     Reads the live source (credentials from HOMELAB_HELPER_* env vars); never
     writes to the infrastructure itself."""
     discoverer = _DISCOVERERS.get(source)
@@ -858,6 +947,38 @@ async def run_discovery(source: str) -> dict[str, Any]:
         return {"source": source, **result}
     except Exception as exc:  # surface adapter/config errors as data, not protocol faults
         return {"source": source, "error": redact(str(exc))}
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def usage_summary(subject: str | None = None, days: int = 30) -> list[dict[str, Any]]:
+    """What hosts and guests actually used over the last ``days`` (Phase 8.3).
+
+    Per subject: CPU p95 and peak (fraction of allocated CPUs), memory p95 and
+    peak (bytes) against the allocation, and how many hourly buckets back it.
+    ``subject`` filters by node name, guest name, or vmid; omit for everything.
+    Read-only; history comes from ``run_discovery("usage")``."""
+    engine = make_engine(database_url())
+    try:
+        async with session_scope(make_sessionmaker(engine)) as session:
+            keys = (
+                await session.execute(
+                    select(
+                        UsageSample.subject_type, UsageSample.subject_key, UsageSample.label
+                    ).distinct()
+                )
+            ).all()
+            out = []
+            for stype, key, label in keys:
+                if subject and subject not in (key, label, key.rsplit("/", 1)[-1]):
+                    continue
+                summary = await summarize(
+                    session, subject_type=stype, subject_key=key, window=timedelta(days=days)
+                )
+                if summary.get("samples"):
+                    out.append({"type": stype, **summary})
+            return sorted(out, key=lambda r: (r["type"], str(r.get("label") or r["subject"])))
     finally:
         await engine.dispose()
 

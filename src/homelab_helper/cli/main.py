@@ -42,6 +42,7 @@ from homelab_helper.cli.probes import probes_app
 from homelab_helper.cli.service import service_app
 from homelab_helper.cli.skills import skills_app
 from homelab_helper.cli.trust import trust_app
+from homelab_helper.cli.usage import usage_app
 from homelab_helper.cli.view import view_app
 from homelab_helper.cli.window import window_app
 from homelab_helper.config import load_env
@@ -68,6 +69,7 @@ app.add_typer(trust_app)
 app.add_typer(exec_app)
 app.add_typer(approvals_app)
 app.add_typer(daemon_app)
+app.add_typer(usage_app)
 app.add_typer(window_app)
 app.add_typer(part_app)
 app.add_typer(service_app)

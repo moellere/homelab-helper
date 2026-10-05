@@ -123,13 +123,18 @@ def parse_state(raw: dict[str, Any]) -> dict[str, Any]:
     """Shape one ``GET /api/states`` row; the domain is the entity id's prefix."""
     entity_id = str(raw.get("entity_id") or "")
     attributes = raw.get("attributes") or {}
-    return {
+    shaped = {
         "entity_id": entity_id,
         "domain": entity_id.split(".", 1)[0] if "." in entity_id else None,
         "state": raw.get("state"),
         "name": attributes.get("friendly_name"),
         "last_changed": raw.get("last_changed"),
     }
+    if shaped["domain"] == "update":
+        # Version currency (Phase 8.1) needs what is installed and what is offered.
+        for key in ("installed_version", "latest_version", "title"):
+            shaped[key] = attributes.get(key)
+    return shaped
 
 
 def summarize_states(states: list[dict[str, Any]]) -> dict[str, int]:

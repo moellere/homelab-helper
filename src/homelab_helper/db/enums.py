@@ -203,6 +203,7 @@ class FindingKind(StrEnum):
     LEGACY_WORKLOAD = "legacy-workload"
     UNKNOWN_WORKLOAD = "unknown-workload"
     WORKLOAD_UNHEALTHY = "workload-unhealthy"
+    VERSION_DRIFT = "version-drift"
     """A Kubernetes workload has fewer ready replicas than it asks for, with its rollout settled (Phase 7)."""
     STORAGE_PROVENANCE_DELTA = "storage-provenance-delta"
     DISCOVERY_AGENTLESS_NEEDED = "discovery-agentless-needed"

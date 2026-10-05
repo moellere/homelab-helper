@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import select
 
+from homelab_helper import mcp_server
 from homelab_helper.adapters.argocd import ArgoCDAdapter, application_is_drifted
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.homeassistant import (
@@ -35,8 +36,8 @@ from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.config import database_url as _database_url
-from homelab_helper.db.enums import DiscoverySource
-from homelab_helper.db.models import Host, Observation
+from homelab_helper.db.enums import DiscoverySource, FindingKind, FindingSeverity, FindingStatus
+from homelab_helper.db.models import Host, Observation, ReconciliationFinding
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
@@ -1234,6 +1235,53 @@ def discover_hass(
             f"[green]persisted[/green]: service {result.service!r} {verb}"
             + (f", endpoint {result.endpoint_hostname}" if result.endpoint_hostname else "")
         )
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="versions")
+def discover_versions() -> None:
+    """Version currency (Phase 8.1): package lag, mixed versions, OS end of life, HA updates."""
+
+    async def _go() -> int:
+        result = await mcp_server.run_discovery("versions")
+        if "error" in result:
+            console.print(f"[red]versions failed:[/red] {result['error']}")
+            return 1
+        f = result["findings"]
+        console.print(
+            f"[cyan]versions[/cyan]: observed {', '.join(result['observed'])} — "
+            f"{f['opened']} opened, {f['reopened']} reopened, {f['updated']} updated, "
+            f"{f['resolved']} resolved"
+        )
+        for source, err in (result.get("errors") or {}).items():
+            console.print(f"[yellow]{source} skipped:[/yellow] {err}")
+        engine = make_engine(_database_url())
+        try:
+            async with session_scope(make_sessionmaker(engine)) as session:
+                rows = (
+                    (
+                        await session.execute(
+                            select(ReconciliationFinding).where(
+                                ReconciliationFinding.kind == FindingKind.VERSION_DRIFT,
+                                ReconciliationFinding.status == FindingStatus.OPEN,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                table = Table(title="version drift")
+                for col in ("severity", "finding", "detail"):
+                    table.add_column(col)
+                rank = {sev: i for i, sev in enumerate(FindingSeverity)}
+                for row in sorted(rows, key=lambda r: (rank[r.severity], r.title)):
+                    table.add_row(row.severity.value, row.title, row.description or "")
+                console.print(table)
+                console.print(f"{len(rows)} open version finding(s)")
+        finally:
+            await engine.dispose()
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))

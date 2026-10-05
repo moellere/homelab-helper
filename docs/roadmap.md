@@ -33,11 +33,17 @@ Phase 1 — Inventory & Discovery
     │       │
     │       ▼
     │   Phase 6 — L2 Execution & Trust Gradient
+    │       │
+    │       ▼
+    │   Phase 7 — Agentic Operations
+    │       │
+    │       ▼
+    │   Phase 8 — Operate & Optimize
     │
     └── Cross-cutting: probe catalog growth, docs, test fixtures
 ```
 
-Phases 2 and 3 are sequential as written but loosely coupled — could be parallelized once Phase 1 is solid. Phase 4 can begin once Phase 3 produces enough cross-source signal to be worth narrating; can ship narratively before all of Phase 3 is done. Phase 5 needs both inventory depth (P1-2) and external context (P3). Phase 6 needs the proposal stream and blast-radius/rollback metadata that the planner (P5) and reconciler (P1-2) produce — it executes what the read-only system has been proposing all along.
+Phases 2 and 3 are sequential as written but loosely coupled — could be parallelized once Phase 1 is solid. Phase 4 can begin once Phase 3 produces enough cross-source signal to be worth narrating; can ship narratively before all of Phase 3 is done. Phase 5 needs both inventory depth (P1-2) and external context (P3). Phase 6 needs the proposal stream and blast-radius/rollback metadata that the planner (P5) and reconciler (P1-2) produce — it executes what the read-only system has been proposing all along. Phase 8 turns the planners from snapshot reasoning into continuous, history-backed operations advice; its findings flow into the same proposal → trust gate → execution path Phase 7 built.
 
 ## Effort scale
 
@@ -364,15 +370,55 @@ A lab that fixes what it already knows how to fix, with the operator deciding ho
 
 ---
 
-## Post-roadmap (Phase 8+)
+## Phase 8 — Operate & Optimize
+
+Phases 1–7 answer "what is there, what is wrong with it, and may I fix it". Phase 8 asks the operator's next question: **what should change, and why** — currency, resilience, efficiency, and gaps. Everything here is L1 first: findings and proposals with deterministic fingerprints and the reconciler's lifecycle. Anything that later executes goes through `decide()` like every other write, and the highest-blast items (node updates) start at `PROPOSE`.
+
+The one structural gap is history. The harness holds the latest observation per fact, so it can reason about what is *allocated* but not what is *used*. Slice 8.3 adds bounded usage history; slices that need it come after it.
+
+### Slices, in delivery order
+
+| # | Slice | Finds | Sources | Needs history |
+|---|---|---|---|---|
+| 8.1 | **Version currency** | Hypervisor nodes behind on packages or on mixed versions within one cluster; operating systems past end of life; Kubernetes node version skew; Home Assistant core / add-on / device firmware updates pending | Proxmox `version` + `apt/update`, host `os_*` capabilities, K8s node info, HA `update.*` entities | no |
+| 8.2 | **Backup posture** | Guests with no enabled backup job; last successful backup older than its schedule allows; verify / prune gaps; offsite copy freshness; important state that lives outside Proxmox backups | Proxmox `cluster/backup` + task history, PBS, operator-declared extras | no |
+| 8.3 | **Usage history** | (enabler) Bounded per-host and per-guest CPU / memory / disk / network rollups; backfilled from Proxmox RRD on first run | Proxmox `rrddata`, K8s metrics, OMV | — |
+| 8.4 | **Rightsizing & real-usage placement** | Guests allocated well above p95 use; K8s requests vs usage; rebalance driven by p95 instead of commitment; idle guests as retire candidates | 8.3 + existing planners | yes |
+| 8.5 | **Storage efficiency** | Pool headroom trends and time-to-full; stale snapshots; detached disks; released PVCs; template / ISO clutter; backup retention cost | Proxmox, PBS, K8s, OMV | partly |
+| 8.6 | **Weekly digest** | One summary per week (phone notification + a readable page) instead of a stream: what changed, what is recommended, what was done | all of the above | no |
+| 8.7 | **Service suggestions** | Unused capability (GPU / accelerator present, no workload using it), missing building blocks (metrics, alerting, a local LLM the router expects), matched deterministically against the workload library | inventory + library | no |
+
+Update orchestration (rolling node update: drain → update → reboot → verify → next) is the first Phase 8 *write* path. It lands only after 8.1 has run long enough to trust its findings, as a new action kind behind the trust gate, at `PROPOSE`.
+
+### Acceptance criteria
+
+1. **Mixed versions are named.** A cluster whose nodes report different hypervisor versions, or a node with pending package updates, produces a `version-drift` finding naming the nodes, the versions, and the pending count; updating the node resolves it on the next pass.
+2. **End of life is a date, not an opinion.** A host whose OS release is past its published end-of-life date produces a finding citing that date; the table of dates is data in the repo, not model output.
+3. **Every guest's backup is accounted for.** A guest with no enabled backup job, or whose last successful backup is older than twice its job interval, produces a `backup-gap` finding.
+4. **History survives restarts and stays bounded.** Usage rollups are backfilled on first run, retained to a configured horizon, and never grow without bound.
+5. **Rightsizing cites numbers.** A rightsizing proposal names the allocation, the observed p95, the window, and the proposed value; a guest with too little history gets no proposal.
+6. **One digest a week.** The digest is generated deterministically from findings and receipts; an LLM may narrate it but does not choose its contents.
+7. **Absence never resolves.** Every new finding kind follows invariant 1: a source that was not observed this run cannot resolve its findings.
+
+### Effort
+
+**6–10 weeks.** 8.1, 8.2 and 8.6 are small adapter-read + reconcile slices; 8.3 is the largest (storage, retention, backfill); 8.4 and 8.5 are planner work on top of it; 8.7 is mostly library curation.
+
+### Stop-here value
+
+A lab that tells its operator, once a week and with evidence, what is out of date, what is unprotected, what is wasting capacity, and what it could be doing — and fixes the parts the operator has already chosen to trust.
+
+---
+
+## Post-roadmap (Phase 9+)
 
 These are real future phases, deliberately not committed in this roadmap:
 
-- **Operate & maintain, beyond playbooks**. Update orchestration, predictive failure analysis using observation history, anomaly detection.
+- **Predictive operations**. Failure prediction and anomaly detection on the Phase 8 usage history.
 - **Multi-tenant + hosted service**. The Nabu-Casa-style subscription tier — managed LLM access, off-site backup, remote access, mobile push, community template marketplace.
 - **Heterogeneous architecture support beyond Linux**. FreeBSD probes (TrueNAS Core, pfSense/OPNsense), macOS probes (Mac mini servers), Windows probes (Windows hosts in mixed labs).
 
-Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–7).
+Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–8).
 
 ---
 

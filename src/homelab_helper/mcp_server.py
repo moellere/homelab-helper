@@ -117,6 +117,15 @@ from homelab_helper.engine.stray_export import reconcile_stray_exports
 from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
 from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
+from homelab_helper.engine.versions import (
+    VersionIssue,
+    hass_update_issues,
+    k8s_issues,
+    load_eol_table,
+    os_eol_issues,
+    proxmox_issues,
+    reconcile_version_findings,
+)
 from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
 from homelab_helper.engine.workloads import WorkloadLibraryError, load_workload_library
 from homelab_helper.secrets import redact
@@ -702,6 +711,77 @@ async def _discover_mikrotik(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
+    """Phase 8.1: version currency from Proxmox, stored host facts and Home Assistant.
+
+    Each source that fails is reported and contributes no categories, so its
+    findings neither open nor resolve this run.
+    """
+    issues: list[VersionIssue] = []
+    observed: set[str] = set()
+    errors: dict[str, str] = {}
+
+    try:
+        adapter = _load_proxmox_adapter()
+        try:
+            status = await adapter.cluster_status()
+            nodes = []
+            for n in await adapter.list_nodes():
+                if n.get("status") != "online":
+                    continue
+                name = str(n.get("node"))
+                version = await adapter.node_version(name)
+                nodes.append(
+                    {
+                        "node": name,
+                        "version": version.get("version"),
+                        "pending": await adapter.pending_updates(name),
+                    }
+                )
+        finally:
+            await adapter.aclose()
+        issues += proxmox_issues(str(status.get("name") or "proxmox"), nodes)
+        observed |= {"pve-updates", "pve-mixed"}
+    except Exception as exc:  # one dead source must not sink the others
+        errors["proxmox"] = redact(str(exc))
+
+    retired = await retired_host_ids(session)
+    hosts = [
+        (str(h.id), h.hostname, dict(h.capabilities or {}))
+        for h in (await session.execute(select(Host))).scalars().all()
+        if h.id not in retired
+    ]
+    issues += os_eol_issues(hosts, load_eol_table(), datetime.now(UTC).date())
+    observed.add("os-eol")
+    skew, skew_observed = k8s_issues(hosts)
+    issues += skew
+    observed |= skew_observed
+
+    try:
+        hass = _load_hass_adapter()
+        try:
+            states = await hass.list_states()
+        finally:
+            await hass.aclose()
+        issues += hass_update_issues("home-assistant", states)
+        observed.add("hass-updates")
+    except Exception as exc:
+        errors["hass"] = redact(str(exc))
+
+    result = await reconcile_version_findings(session, issues, observed, when=datetime.now(UTC))
+    return {
+        "observed": result.observed,
+        "issues": len(issues),
+        "findings": {
+            "opened": len(result.opened),
+            "reopened": len(result.reopened),
+            "updated": len(result.updated),
+            "resolved": len(result.resolved),
+        },
+        "errors": errors,
+    }
+
+
 _DISCOVERERS = {
     "unifi": _discover_unifi,
     "cloudflare": _discover_cloudflare,
@@ -711,13 +791,15 @@ _DISCOVERERS = {
     "omv": _discover_omv,
     "hass": _discover_hass,
     "mikrotik": _discover_mikrotik,
+    "versions": _discover_versions,
 }
 
 
 @server.tool()
 async def run_discovery(source: str) -> dict[str, Any]:
     """Run a management-plane discovery and persist into the harness DB.
-    Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass, mikrotik.
+    Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass, mikrotik,
+    versions (Phase 8.1: package lag, mixed versions, OS end of life, HA updates).
     Reads the live source (credentials from HOMELAB_HELPER_* env vars); never
     writes to the infrastructure itself."""
     discoverer = _DISCOVERERS.get(source)

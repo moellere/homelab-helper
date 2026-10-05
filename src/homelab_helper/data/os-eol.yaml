@@ -1,0 +1,24 @@
+# End of free security support per operating-system release (Phase 8.1).
+#
+# These dates are data, not opinion: the version-currency pass compares a host's
+# release against this table and nothing else. Correct a date here, not in code.
+# "eol" is the last day the release receives free security updates — Debian LTS
+# end for Debian and its derivatives, end of standard support for Ubuntu.
+# Paid extensions (Debian ELTS, Ubuntu Pro/ESM) are deliberately not counted.
+
+aliases:
+  raspbian: debian
+
+debian:
+  "10": {codename: buster, eol: 2024-06-30, basis: "Debian LTS end"}
+  "11": {codename: bullseye, eol: 2026-08-31, basis: "Debian LTS end"}
+  "12": {codename: bookworm, eol: 2028-06-30, basis: "Debian LTS end"}
+  "13": {codename: trixie, eol: 2030-06-30, basis: "Debian LTS end"}
+
+ubuntu:
+  "20.04": {codename: focal, eol: 2025-05-31, basis: "end of standard support"}
+  "22.04": {codename: jammy, eol: 2027-04-30, basis: "end of standard support"}
+  "24.04": {codename: noble, eol: 2029-04-30, basis: "end of standard support"}
+  "25.04": {codename: plucky, eol: 2026-01-31, basis: "end of standard support"}
+  "25.10": {codename: questing, eol: 2026-07-31, basis: "end of standard support"}
+  "26.04": {codename: resolute, eol: 2031-04-30, basis: "end of standard support"}

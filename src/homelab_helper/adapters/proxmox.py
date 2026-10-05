@@ -263,6 +263,18 @@ class ProxmoxAdapter:
 
     # ------------------------------------------------------------------ reads
 
+    async def node_version(self, node: str) -> dict[str, Any]:
+        """``pveversion`` for one node: ``version``, ``release``, ``repoid``."""
+        return await self._request("GET", f"/nodes/{node}/version") or {}
+
+    async def pending_updates(self, node: str) -> list[dict[str, Any]]:
+        """The node's cached list of upgradable packages.
+
+        A plain GET: it reads what the node's own daily ``apt update`` cached and
+        never refreshes it (that would be a POST, and this adapter does not).
+        """
+        return await self._request("GET", f"/nodes/{node}/apt/update") or []
+
     async def version(self) -> dict[str, Any]:
         return await self._request("GET", "/version") or {}
 

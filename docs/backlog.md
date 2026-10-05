@@ -838,7 +838,8 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 
 See `roadmap.md` Phase 8. Slices land in this order.
 
-- [ ] 8.1 Version currency — `version-drift` findings: Proxmox node package lag and mixed cluster versions, OS end of life (dated table in the repo), K8s node version skew, Home Assistant updates pending.
+- [x] 8.1 Version currency — `engine/versions.py`, `helper discover versions`, `run_discovery("versions")`: `version-drift` findings for Proxmox package lag (node's cached apt list, Debian/Proxmox split, pve-manager called out) and mixed cluster versions, OS end of life from `data/os-eol.yaml`, kubelet/Talos skew, Home Assistant `update.*` pending (platform MEDIUM, devices LOW). Categories resolve only when observed (invariant 1). First live run 10/05/2026: bmax1–3 on 9.2.11 with 120–123 pending, bmax0 on 9.2.20, 7 HA updates.
+  - [ ] Follow-ups: Argo CD image tags vs upstream releases; Debian security-update count (needs the node's apt sources, not exposed by the API); UniFi/OMV firmware; probe the X1/X4 Pis so their Bullseye/Buster EOL shows up (they have no `os_*` facts yet).
 - [ ] 8.2 Backup posture — `backup-gap` findings: uncovered guests, stale last backup, verify/prune gaps, offsite freshness.
 - [ ] 8.3 Usage history — bounded rollups, Proxmox RRD backfill.
 - [ ] 8.4 Rightsizing & real-usage placement.

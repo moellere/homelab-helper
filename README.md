@@ -266,6 +266,15 @@ Clean confirmed runs promote a reversible, low-blast cell one rung; one bad
 outcome demotes it and puts it on probation. See `docs/architecture.md`
 ("Trust gradient") for the model.
 
+### Version currency (Phase 8.1)
+
+`helper discover versions` (or `run_discovery("versions")` over MCP) checks what
+is out of date and records `version-drift` findings: Proxmox nodes with pending
+package updates or on mixed `pve-manager` versions, hosts whose OS is past or
+within 180 days of end of support (dates live in `data/os-eol.yaml`, nothing is
+guessed), Kubernetes/Talos version skew, and pending Home Assistant updates. A
+source that cannot be reached is reported and its findings are left alone.
+
 ### After the fact
 
 Every run you were *not* asked about tells you it happened: an AUTONOMOUS

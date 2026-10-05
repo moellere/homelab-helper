@@ -378,6 +378,10 @@ uv run helper daemon run --once           # a drafted restart now runs with no t
 uv run helper exec rollback <receipt>     # optional; a confirmed rollback is silent
 ```
 
+Draft the proposal **after** the grant: the cron listener asks about any pending
+agent proposal on its next tick, and a question that timed out at CONFIRM is
+never run unattended later, even once the cell is AUTONOMOUS.
+
 Expected: the receipt exists before the notification arrives (`helper exec
 receipts`); the notice names the cell, the target, `unattended`, and
 `helper exec rollback <id>`. Break the next one on purpose (scale a workload
@@ -410,8 +414,8 @@ unset the approval service if you do not want agents able to ask.
 | P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 (a *dispatch failure* demotes) and step 6 (kill switch mid-flight) were exercised by tests only. |
 | P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 | P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
-| P7 step 8 (unattended run notice) | | |
+| P7 step 8 (unattended run notice) | ✅ 10/05/2026 | `containers/workload-restart/single-service` granted AUTONOMOUS; an agent-drafted restart of `homepage/deployment/homepage` ran from `helper daemon run --once` with no tap (rev 20 → 21, receipt actor `listener`, rollback `rollout-undo` verified); the phone showed the ✓ notice with `unattended` and the `helper exec rollback` line, after the receipt. Failure/demotion path not forced live — it needs a write that fails after a read that succeeds; pinned by tests. Cell left at AUTONOMOUS by the operator's choice. Found: the 15-min cron listener asked about the proposal while the cell was still CONFIRM, the ask timed out, and the listener then (correctly) refused to run it unattended after the grant — draft *after* granting. |
 
-Open as of 10/04/2026: P4-AC3 (interactive), P6 steps 5–6 live, P7 step 8.
-Everything that has run live has run against the Covington lab with cells at
-CONFIRM; nothing autonomous has executed yet.
+Open as of 10/05/2026: P4-AC3 (interactive) and P6 steps 5–6 live. Phase 7 is
+signed off end to end; the first unattended execution ran 10/05/2026 and
+`containers/workload-restart/single-service` is live at AUTONOMOUS.

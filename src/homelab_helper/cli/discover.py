@@ -1240,23 +1240,21 @@ def discover_hass(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
-@discover_app.command(name="versions")
-def discover_versions() -> None:
-    """Version currency (Phase 8.1): package lag, mixed versions, OS end of life, HA updates."""
+def _category_discovery(source: str, kind: FindingKind, title: str) -> int:
+    """Run one Phase 8 pass through the MCP discoverer and print its open findings."""
 
     async def _go() -> int:
-        result = await mcp_server.run_discovery("versions")
+        result = await mcp_server.run_discovery(source)
         if "error" in result:
-            console.print(f"[red]versions failed:[/red] {result['error']}")
+            console.print(f"[red]{source} failed:[/red] {result['error']}")
             return 1
         f = result["findings"]
         console.print(
-            f"[cyan]versions[/cyan]: observed {', '.join(result['observed'])} — "
-            f"{f['opened']} opened, {f['reopened']} reopened, {f['updated']} updated, "
-            f"{f['resolved']} resolved"
+            f"[cyan]{source}[/cyan]: {f['opened']} opened, {f['reopened']} reopened, "
+            f"{f['updated']} updated, {f['resolved']} resolved"
         )
-        for source, err in (result.get("errors") or {}).items():
-            console.print(f"[yellow]{source} skipped:[/yellow] {err}")
+        for name, err in (result.get("errors") or {}).items():
+            console.print(f"[yellow]{name} skipped:[/yellow] {err}")
         engine = make_engine(_database_url())
         try:
             async with session_scope(make_sessionmaker(engine)) as session:
@@ -1264,7 +1262,7 @@ def discover_versions() -> None:
                     (
                         await session.execute(
                             select(ReconciliationFinding).where(
-                                ReconciliationFinding.kind == FindingKind.VERSION_DRIFT,
+                                ReconciliationFinding.kind == kind,
                                 ReconciliationFinding.status == FindingStatus.OPEN,
                             )
                         )
@@ -1272,16 +1270,30 @@ def discover_versions() -> None:
                     .scalars()
                     .all()
                 )
-                table = Table(title="version drift")
+                table = Table(title=title)
                 for col in ("severity", "finding", "detail"):
                     table.add_column(col)
                 rank = {sev: i for i, sev in enumerate(FindingSeverity)}
                 for row in sorted(rows, key=lambda r: (rank[r.severity], r.title)):
                     table.add_row(row.severity.value, row.title, row.description or "")
                 console.print(table)
-                console.print(f"{len(rows)} open version finding(s)")
+                console.print(f"{len(rows)} open {kind.value} finding(s)")
         finally:
             await engine.dispose()
         return 0
 
-    raise typer.Exit(code=asyncio.run(_go()))
+    return asyncio.run(_go())
+
+
+@discover_app.command(name="versions")
+def discover_versions() -> None:
+    """Version currency (Phase 8.1): package lag, mixed versions, OS end of life, HA updates."""
+    raise typer.Exit(
+        code=_category_discovery("versions", FindingKind.VERSION_DRIFT, "version drift")
+    )
+
+
+@discover_app.command(name="backups")
+def discover_backups() -> None:
+    """Backup posture (Phase 8.2): uncovered, stale or unverified guests; orphans; capacity."""
+    raise typer.Exit(code=_category_discovery("backups", FindingKind.BACKUP_GAP, "backup gaps"))

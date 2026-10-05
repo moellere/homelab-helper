@@ -275,6 +275,21 @@ class ProxmoxAdapter:
         """
         return await self._request("GET", f"/nodes/{node}/apt/update") or []
 
+    async def list_backup_jobs(self) -> list[dict[str, Any]]:
+        """Cluster-wide scheduled backup jobs (``/cluster/backup``)."""
+        return await self._request("GET", "/cluster/backup") or []
+
+    async def storage_content(
+        self, node: str, storage: str, content: str = "backup"
+    ) -> list[dict[str, Any]]:
+        """Volumes of one content type on one storage, as seen from ``node``."""
+        return (
+            await self._request(
+                "GET", f"/nodes/{node}/storage/{storage}/content", params={"content": content}
+            )
+            or []
+        )
+
     async def version(self) -> dict[str, Any]:
         return await self._request("GET", "/version") or {}
 

@@ -121,6 +121,8 @@ from homelab_helper.engine.rebalance import plan_rebalance as _plan_rebalance
 from homelab_helper.engine.reconfigure import analyze_surplus as _analyze_surplus
 from homelab_helper.engine.retire import is_retired, retired_host_ids
 from homelab_helper.engine.retire import retire_host as _retire_host
+from homelab_helper.engine.rightsizing import evaluate as evaluate_rightsizing
+from homelab_helper.engine.rightsizing import reconcile_rightsizing
 from homelab_helper.engine.stray_config import reconcile_stray_config
 from homelab_helper.engine.stray_export import reconcile_stray_exports
 from homelab_helper.engine.talos_probe import TalosProbeRequest
@@ -1306,19 +1308,61 @@ async def recommend_placement(workload: str) -> dict[str, Any]:
 
 
 @server.tool()
-async def plan_rebalance() -> dict[str, Any]:
+async def plan_rebalance(basis: str = "allocated") -> dict[str, Any]:
     """Fleet memory load per host plus up to three candidate rebalancing plans
     across cost classes (VM migrations only; one DIMM move; one DIMM purchase),
-    each with steps, tradeoffs, and resulting load. Proposals only — the
-    operator migrates, moves, or buys by hand."""
+    each with steps, tradeoffs, and resulting load. ``basis="usage"`` loads guests
+    at their observed 30-day memory p95 instead of their allocation. Proposals
+    only — the operator migrates, moves, or buys by hand."""
     engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
-            report = await _plan_rebalance(session)
+            report = await _plan_rebalance(session, basis=basis)
         return report.as_dict()
     except (TopologyError, OSError) as exc:
         return {"error": f"topology error: {exc}"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def rightsizing(days: int = 30, persist: bool = False) -> dict[str, Any]:
+    """Cores and memory recommendations from usage history (Phase 8.4).
+
+    Each names the allocation, the observed p95 and peak, the window and the
+    proposed value. Guests with under 7 days of hourly history are skipped and
+    listed. VM memory is only ever shrunk (its reported figure includes page
+    cache). ``persist`` records them as ``rightsizing`` findings. Nothing changes
+    on any guest."""
+    engine = make_engine(database_url())
+    try:
+        async with session_scope(make_sessionmaker(engine)) as session:
+            window = timedelta(days=days)
+            if persist:
+                result, issues, skipped = await reconcile_rightsizing(session, window=window)
+                counts: dict[str, int] | None = result.counts()
+            else:
+                issues, _evaluated, skipped = await evaluate_rightsizing(session, window=window)
+                counts = None
+            return {
+                "window_days": days,
+                "recommendations": [
+                    {
+                        "category": i.category,
+                        "severity": i.severity.value,
+                        "guest": i.target_id,
+                        "title": i.title,
+                        "detail": i.description,
+                        **i.evidence,
+                    }
+                    for i in issues
+                ],
+                "skipped": skipped,
+                "findings": counts,
+            }
     finally:
         await engine.dispose()
 

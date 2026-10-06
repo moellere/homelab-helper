@@ -291,6 +291,18 @@ history on the very first run — and prunes past a horizon so the table stays
 bounded. `helper usage [name]` shows CPU and memory p95 and peak against what
 each host or guest is allocated; agents read the same through `usage_summary`.
 
+### Rightsizing (Phase 8.4)
+
+`helper plan rightsize` reads that history and recommends cores and memory per
+guest — more cores where the CPU p95 runs hot, fewer where even the peak is low,
+less memory where the peak leaves a lot unused, and flags guests idle for the
+whole window. Each recommendation states the allocation, the observed p95 and
+peak, the window and the proposed value; a guest with under a week of history
+gets none. VM memory is only ever shrunk, never grown: Proxmox's figure for a VM
+includes the guest's page cache. `helper plan rebalance --basis usage` plans
+migrations on observed memory instead of allocations. Nothing is changed on any
+guest; `--persist` records the recommendations as findings.
+
 ### After the fact
 
 Every run you were *not* asked about tells you it happened: an AUTONOMOUS

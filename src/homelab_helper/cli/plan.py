@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from homelab_helper import mcp_server
 from homelab_helper.config import database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker
 from homelab_helper.engine.network_path import (
@@ -239,6 +240,11 @@ def _print_rebalance(report: RebalanceReport) -> None:
 @plan_app.command(name="rebalance")
 def plan_rebalance_cmd(
     narrate: bool = typer.Option(False, "--narrate", help="Narrate via the Planner agent."),
+    basis: str = typer.Option(
+        "allocated",
+        "--basis",
+        help="allocated (default) or usage: load guests at observed p95 memory.",
+    ),
 ) -> None:
     """Candidate rebalancing plans with tradeoffs (AC3). Proposals only."""
 
@@ -247,7 +253,7 @@ def plan_rebalance_cmd(
         try:
             sm = make_sessionmaker(engine)
             async with sm() as session:
-                report = await plan_rebalance(session)
+                report = await plan_rebalance(session, basis=basis)
         finally:
             await engine.dispose()
 
@@ -329,3 +335,25 @@ def plan_surplus(
 
 
 __all__ = ["plan_app"]
+
+
+@plan_app.command(name="rightsize")
+def plan_rightsize(
+    days: int = typer.Option(30, "--days", help="History window in days."),
+    persist: bool = typer.Option(False, "--persist", help="Record as rightsizing findings."),
+) -> None:
+    """Cores and memory recommendations from usage history (Phase 8.4). Changes nothing."""
+    result = asyncio.run(mcp_server.rightsizing(days=days, persist=persist))
+    recs = result["recommendations"]
+    table = Table(title=f"rightsizing, last {days} days")
+    for col in ("severity", "check", "recommendation", "evidence"):
+        table.add_column(col)
+    rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    for r in sorted(recs, key=lambda r: (rank.get(r["severity"], 9), r["category"], r["title"])):
+        table.add_row(r["severity"], r["category"], escape(r["title"]), escape(r["detail"]))
+    console.print(table)
+    console.print(f"{len(recs)} recommendation(s)")
+    for line in result["skipped"]:
+        console.print(f"[dim]skipped (too little history): {escape(line)}[/dim]")
+    if result["findings"] is not None:
+        console.print(f"findings: {result['findings']}")

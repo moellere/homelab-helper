@@ -76,8 +76,14 @@ async def reconcile_category_findings(
     observed: set[str],
     *,
     when: datetime | None = None,
+    observed_targets: set[tuple[str, str]] | None = None,
 ) -> CategoryResult:
-    """Upsert one finding per issue of ``kind``; resolve only within observed categories."""
+    """Upsert one finding per issue of ``kind``; resolve only within observed categories.
+
+    ``observed_targets`` narrows resolution further for checks that evaluate
+    some targets and skip others (too little history, say): a finding resolves
+    only if its ``(target_type, target_id)`` was evaluated this run.
+    """
     now = when or datetime.now(UTC)
     result = CategoryResult(observed=sorted(observed))
     active = {i.fingerprint for i in issues}
@@ -141,6 +147,11 @@ async def reconcile_category_findings(
     )
     for row in open_rows:
         if row.fingerprint in active or category_of(row) not in observed:
+            continue
+        if observed_targets is not None and not any(
+            (a.get("target_type"), a.get("target_id")) in observed_targets
+            for a in row.affected or []
+        ):
             continue
         row.status = FindingStatus.RESOLVED
         row.resolved_at = now

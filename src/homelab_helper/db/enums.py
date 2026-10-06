@@ -205,6 +205,7 @@ class FindingKind(StrEnum):
     WORKLOAD_UNHEALTHY = "workload-unhealthy"
     VERSION_DRIFT = "version-drift"
     BACKUP_GAP = "backup-gap"
+    RIGHTSIZING = "rightsizing"
     """A Kubernetes workload has fewer ready replicas than it asks for, with its rollout settled (Phase 7)."""
     STORAGE_PROVENANCE_DELTA = "storage-provenance-delta"
     DISCOVERY_AGENTLESS_NEEDED = "discovery-agentless-needed"

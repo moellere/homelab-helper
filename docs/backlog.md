@@ -822,6 +822,21 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 - [ ] Daily digest (one notification summarising the day's receipts) — only if
   the per-run notices turn out noisy.
 
+### Approval prompts, revised (10/06/2026)
+
+Found live: eight rightsize prompts went out one at a time, each titled
+"homelab-helper: approve this action?" with a technical body and a 5-minute
+fuse; the first two expired unseen and, as "answers", were never re-asked.
+
+- [x] Prompt title = the proposal title; body = why (the finding's first
+  sentence), when it takes effect, the cell, and the expand hint.
+- [x] Dedicated `homelab-helper approvals` channel; `priority: high`, `ttl: 0`,
+  `sticky`, iOS `time-sensitive`; the prompt is cleared once answered or expired.
+- [x] The listener asks every eligible proposal concurrently, then executes the
+  approved ones one at a time; default window 15 minutes.
+- [x] An expired prompt is not an answer: re-asked after `REASK_AFTER` (2 h), at
+  most `MAX_ASKS` (3) times; Approve / Deny stay final.
+
 ### Test hygiene (found during slice 1)
 
 - [x] `tests/test_mcp_server.py` flakes (one random failure or error per run):

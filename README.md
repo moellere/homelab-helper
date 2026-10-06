@@ -238,7 +238,7 @@ Write surfaces today, each with a verified rollback path:
 
 | Domain | Action kinds | Undo |
 |---|---|---|
-| hypervisor / containers (Proxmox guests) | `start` `stop` `shutdown` `restart`, `migrate` (to a named node), `cpu-type` (QEMU; applies at next stop/start) | prior power state or snapshot, prior node, prior config |
+| hypervisor / containers (Proxmox guests) | `start` `stop` `shutdown` `restart`, `migrate` (to a named node), `cpu-type` (QEMU; applies at next stop/start), `resize` (cores and/or memory; QEMU without hotplug at next stop/start, containers live; refused beyond the node's CPUs/memory) | prior power state or snapshot, prior node, prior config |
 | containers (Kubernetes) | `workload-restart`, `workload-scale` on a deployment / statefulset / daemonset | rollout undo, prior replicas |
 | containers (Argo CD) | `argocd-sync` (optionally pinned to a revision, optionally pruning) | Argo CD's own sync history |
 | dns (UniFi static DNS) | `dns-record` (create or update one name + type) | the prior record, or deleting the created one |
@@ -300,8 +300,14 @@ whole window. Each recommendation states the allocation, the observed p95 and
 peak, the window and the proposed value; a guest with under a week of history
 gets none. VM memory is only ever shrunk, never grown: Proxmox's figure for a VM
 includes the guest's page cache. `helper plan rebalance --basis usage` plans
-migrations on observed memory instead of allocations. Nothing is changed on any
-guest; `--persist` records the recommendations as findings.
+migrations on observed memory instead of allocations. `--persist` records the
+recommendations as findings, and the `rightsize` playbook drafts each cores or
+memory change as a `resize` proposal (idle guests are reported, never drafted).
+Like every other action it runs only through the trust gate: grant
+`hypervisor resize single-host` (VMs) or `containers resize single-host`
+(containers) at CONFIRM and the daemon asks your phone; a VM's new size takes
+effect at its next stop/start, and `helper exec rollback` restores the prior
+values.
 
 ### After the fact
 

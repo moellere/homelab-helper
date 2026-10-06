@@ -68,6 +68,9 @@ from homelab_helper.engine.manifest import (
     DNS_DOMAIN,
     DNS_RECORD_TYPES,
     GUEST_ACTION_KINDS,
+    MAX_CORES,
+    MAX_MEMORY_MIB,
+    MIN_MEMORY_MIB,
     VM_KIND_DOMAIN,
     WORKLOAD_ACTION_KINDS,
     WORKLOAD_DOMAIN,
@@ -136,6 +139,8 @@ class ActionManifest:
     target_node: str | None = None
     online: bool | None = None
     cpu_type: str | None = None
+    cores: int | None = None
+    memory_mib: int | None = None
     namespace: str | None = None
     workload_kind: str | None = None
     workload_name: str | None = None
@@ -178,6 +183,11 @@ class ActionManifest:
         label = f"{self.vm_kind}/{self.vmid} on {self.node}"
         if self.target_node:
             return f"{label} -> {self.target_node}"
+        if self.action_kind == "resize":
+            parts = [f"cores={self.cores}"] if self.cores is not None else []
+            if self.memory_mib is not None:
+                parts.append(f"memory={self.memory_mib}MiB")
+            return f"{label} {' '.join(parts)}"
         return f"{label} cpu={self.cpu_type}" if self.cpu_type else label
 
 
@@ -318,6 +328,30 @@ def _parse_dns_target(
     )
 
 
+def _bounded_int(value: Any, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def _parse_resize_fields(
+    action_kind: str, target: dict[str, Any], vm_kind: str
+) -> tuple[int | None, int | None]:
+    cores, memory_mib = target.get("cores"), target.get("memory_mib")
+    if action_kind != "resize":
+        if cores is not None or memory_mib is not None:
+            raise ManifestError("target.cores / target.memory_mib only apply to resize")
+        return None, None
+    if cores is None and memory_mib is None:
+        raise ManifestError("resize needs target.cores and/or target.memory_mib")
+    if cores is not None and not _bounded_int(cores, 1, MAX_CORES):
+        raise ManifestError(f"target.cores must be an integer from 1 to {MAX_CORES}")
+    floor = MIN_MEMORY_MIB[vm_kind]
+    if memory_mib is not None and not _bounded_int(memory_mib, floor, MAX_MEMORY_MIB):
+        raise ManifestError(
+            f"target.memory_mib must be an integer from {floor} to {MAX_MEMORY_MIB} for {vm_kind}"
+        )
+    return cores, memory_mib
+
+
 def _parse_guest_target(
     action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
 ) -> ActionManifest:
@@ -351,6 +385,7 @@ def _parse_guest_target(
             raise ManifestError("cpu-type applies to QEMU guests only")
         if not cpu_type or not isinstance(cpu_type, str):
             raise ManifestError("target.cpu_type is required for cpu-type")
+    cores, memory_mib = _parse_resize_fields(action_kind, target, vm_kind)
     online = target.get("online")
     return ActionManifest(
         **common,
@@ -361,6 +396,8 @@ def _parse_guest_target(
         target_node=target_node if action_kind == "migrate" else None,
         online=bool(online) if online is not None else None,
         cpu_type=cpu_type if action_kind == "cpu-type" else None,
+        cores=cores,
+        memory_mib=memory_mib,
     )
 
 
@@ -447,6 +484,46 @@ async def _dispatch_workload(manifest: ActionManifest, k8s: K8sAdapter | None) -
     )
 
 
+async def _dispatch_resize(
+    manifest: ActionManifest, adapter: ProxmoxAdapter, node: str, vmid: int, vm_kind: str
+) -> tuple[str, Any]:
+    """Set cores and/or memory, refusing more than the guest's node physically has.
+
+    A QEMU guest whose balloon floor sits above the new memory gets the floor
+    lowered with it (Proxmox rejects ``balloon > memory``). QEMU without CPU or
+    memory hotplug stores the change as pending until the guest's next
+    stop/start; the returned verb says which happened. Containers apply live.
+    """
+    host = next((n for n in await adapter.list_nodes() if str(n.get("node")) == node), None)
+    if host is None:
+        raise ValueError(f"node {node} is not in the cluster")
+    if manifest.cores is not None and host.get("maxcpu") and manifest.cores > int(host["maxcpu"]):
+        raise ValueError(f"{manifest.cores} cores exceeds {node}'s {host['maxcpu']} CPUs")
+    mib = 1024**2
+    if (
+        manifest.memory_mib is not None
+        and host.get("maxmem")
+        and manifest.memory_mib * mib > int(host["maxmem"])
+    ):
+        raise ValueError(f"{manifest.memory_mib} MiB exceeds {node}'s physical memory")
+    options: dict[str, Any] = {}
+    if manifest.cores is not None:
+        options["cores"] = manifest.cores
+    if manifest.memory_mib is not None:
+        options["memory"] = manifest.memory_mib
+        if vm_kind == "qemu":
+            balloon = (await adapter.vm_config(node, vmid, vm_kind)).get("balloon")
+            if balloon is not None and 0 < int(balloon) > manifest.memory_mib:
+                options["balloon"] = manifest.memory_mib
+    await adapter.set_vm_config(node, vmid, vm_kind, **options)
+    change = " ".join(f"{k}={v}" for k, v in options.items())
+    if vm_kind == "qemu":
+        pending = await adapter.vm_config(node, vmid, vm_kind, pending=True)
+        if any("pending" in (pending.get(k) or {}) for k in options):
+            return f"set {change} (applies at next stop/start)", None
+    return f"set {change} (live)", None
+
+
 async def _dispatch_guest(manifest: ActionManifest, adapter: ProxmoxAdapter) -> tuple[str, Any]:
     node, vmid, vm_kind = manifest.node, manifest.vmid, manifest.vm_kind
     if node is None or vmid is None or vm_kind is None:
@@ -456,6 +533,8 @@ async def _dispatch_guest(manifest: ActionManifest, adapter: ProxmoxAdapter) -> 
             raise ManifestError("cpu-type has no cpu_type")
         await adapter.set_vm_config(node, vmid, vm_kind, cpu=manifest.cpu_type)
         return f"set cpu={manifest.cpu_type} (applies at next stop/start)", None
+    if manifest.action_kind == "resize":
+        return await _dispatch_resize(manifest, adapter, node, vmid, vm_kind)
     if manifest.action_kind == "migrate":
         if manifest.target_node is None:
             raise ManifestError("migrate has no target node")

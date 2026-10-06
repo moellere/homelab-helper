@@ -64,6 +64,7 @@ REVERSIBLE_ACTION_KINDS = frozenset(
         "restart",
         "migrate",
         "cpu-type",
+        "resize",
         "workload-restart",
         "workload-scale",
         "argocd-sync",
@@ -72,7 +73,8 @@ REVERSIBLE_ACTION_KINDS = frozenset(
 )
 """Deliberately narrow: an action kind earns a place here only once its
 inverse is a real, tested write path (``engine/rollback.py``: prior power
-state, prior node, rollout undo, prior replicas). Everything else needs a grant."""
+state, prior node, prior config, rollout undo, prior replicas). Everything else
+needs a grant."""
 
 _LADDER: tuple[AutonomyLevel, ...] = (
     AutonomyLevel.PROPOSE,

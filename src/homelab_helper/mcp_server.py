@@ -1740,11 +1740,15 @@ async def propose_action(
     target_node: str | None = None,
     online: bool = True,
     cpu_type: str | None = None,
+    cores: int | None = None,
+    memory_mib: int | None = None,
 ) -> dict[str, Any]:
     """Draft a Proxmox guest action — start/stop/shutdown/restart, migrate
-    (give `target_node`; `online=False` for an offline move), or cpu-type
+    (give `target_node`; `online=False` for an offline move), cpu-type
     (give `cpu_type`, e.g. "x86-64-v3"; QEMU only, applied at the guest's
-    next stop/start) of a VM or container — as a PENDING proposal. Validates the manifest, writes only to
+    next stop/start), or resize (give `cores` and/or `memory_mib`; a QEMU
+    guest without hotplug applies it at its next stop/start, a container
+    live) of a VM or container — as a PENDING proposal. Validates the manifest, writes only to
     the harness DB, and returns what policy would decide right now. Never
     executes on its own: follow with `execute_proposal` (policy + the
     operator's tap decide) or leave it for `helper exec`. An agent cannot
@@ -1761,6 +1765,8 @@ async def propose_action(
             target_node=target_node,
             online=online,
             cpu_type=cpu_type,
+            cores=cores,
+            memory_mib=memory_mib,
         )
     except ManifestError as exc:
         return {"error": str(exc)}

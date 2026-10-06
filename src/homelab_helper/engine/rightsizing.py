@@ -75,9 +75,33 @@ def _round_up(value: float, step: int) -> int:
 
 
 def guest_issues(
+    key: str, name: str, kind: str, s: dict[str, Any], window_days: int, node: str | None = None
+) -> list[CategoryIssue]:
+    """Rules for one guest's summary; ``s`` comes from ``engine.usage.summarize``.
+
+    Every issue's evidence also carries the guest's identity (node, vmid, kind)
+    so the ``rightsize`` playbook can draft an executable resize from it.
+    """
+    issues = _guest_rules(key, name, kind, s, window_days)
+    vmid = int(key.rsplit("/", 1)[-1])
+    return [
+        CategoryIssue(
+            kind=i.kind,
+            category=i.category,
+            target_type=i.target_type,
+            target_id=i.target_id,
+            severity=i.severity,
+            title=i.title,
+            description=i.description,
+            evidence={**i.evidence, "node": node, "vmid": vmid, "vm_kind": kind, "name": name},
+        )
+        for i in issues
+    ]
+
+
+def _guest_rules(
     key: str, name: str, kind: str, s: dict[str, Any], window_days: int
 ) -> list[CategoryIssue]:
-    """Rules for one guest's summary; ``s`` comes from ``engine.usage.summarize``."""
     issues: list[CategoryIssue] = []
     label = f"{name} ({key.rsplit('/', 1)[-1]})"
     cpus, cpu_p95, cpu_peak = s.get("cpus"), s.get("cpu_p95"), s.get("cpu_peak")
@@ -219,7 +243,7 @@ async def evaluate(
             skipped.append(f"{vm.name} ({vm.vmid}): {s.get('samples', 0)} hourly bucket(s)")
             continue
         evaluated.add(("guest", key))
-        issues += guest_issues(key, vm.name or key, vm.kind or "qemu", s, days)
+        issues += guest_issues(key, vm.name or key, vm.kind or "qemu", s, days, vm.node_name)
     return issues, evaluated, skipped
 
 

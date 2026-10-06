@@ -250,7 +250,7 @@ async def test_findings_without_a_playbook_are_left_alone(sessionmaker) -> None:
         r = await run_playbooks(s, min_age=NOW)
         assert r.drafted == []
         assert r.no_playbook == 1
-    assert {pb.name for pb in PLAYBOOKS} == {"argocd-resync", "workload-restart"}
+    assert {pb.name for pb in PLAYBOOKS} == {"argocd-resync", "workload-restart", "rightsize"}
 
 
 # ----------------------------------------------------------------- listener

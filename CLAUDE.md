@@ -38,6 +38,7 @@ src/homelab_helper/
 │                   versions (Phase 8.1 version currency; EOL table in data/),
 │                   backups (8.2 posture), category_findings (shared Phase 8 reconcile),
 │                   usage (8.3 history: RRD rollups, retention, p95 summary),
+│                   rightsizing (8.4: cores/memory from history),
 │                   playbooks (finding → proposal, deterministic), listener
 │                   (asks about agent/playbook proposals), k8s_workloads,
 │                   manifest (authoring schema for ProposalLog.artifact)

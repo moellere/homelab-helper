@@ -36,6 +36,8 @@ from homelab_helper.db.enums import PartKind
 from homelab_helper.db.models import Cluster, Host, PhysicalPart, Placement, VirtualMachine
 from homelab_helper.engine.network_path import Topology, load_topology
 from homelab_helper.engine.retire import retired_host_ids
+from homelab_helper.engine.rightsizing import MIN_SAMPLES as USAGE_MIN_SAMPLES
+from homelab_helper.engine.usage import summarize
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,7 +145,20 @@ class RebalanceReport:
         }
 
 
-async def _load_fleet(session: AsyncSession) -> tuple[list[HostLoad], list[str]]:
+async def _observed_memory(session: AsyncSession, vm: VirtualMachine) -> int | None:
+    """30-day memory p95 for a guest, or ``None`` with too little history (Phase 8.3/8.4)."""
+    cluster = await session.get(Cluster, vm.cluster_id)
+    if cluster is None:
+        return None
+    s = await summarize(session, subject_type="guest", subject_key=f"{cluster.name}/{vm.vmid}")
+    if (s.get("samples") or 0) < USAGE_MIN_SAMPLES or s.get("mem_p95") is None:
+        return None
+    return int(s["mem_p95"])
+
+
+async def _load_fleet(
+    session: AsyncSession, basis: str = "allocated"
+) -> tuple[list[HostLoad], list[str]]:
     retired = await retired_host_ids(session)
     hosts = [
         h
@@ -174,11 +189,17 @@ async def _load_fleet(session: AsyncSession) -> tuple[list[HostLoad], list[str]]
         if vm.status != "running" or vm.node_host_id not in by_id or not vm.memory_bytes:
             continue
         load = by_id[vm.node_host_id]
-        load.committed += int(vm.memory_bytes)
+        memory = int(vm.memory_bytes)
+        if basis == "usage":
+            # Never above the allocation: a VM's reported memory includes page cache.
+            observed = await _observed_memory(session, vm)
+            if observed is not None:
+                memory = min(memory, observed)
+        load.committed += memory
         load.vms.append(
             VMLoad(
                 name=vm.name,
-                memory_bytes=int(vm.memory_bytes),
+                memory_bytes=memory,
                 cluster_id=vm.cluster_id,
                 vmid=vm.vmid,
             )
@@ -405,12 +426,18 @@ def _plan_purchase(hosts: list[HostLoad], topology: Topology | None) -> Rebalanc
 
 
 async def plan_rebalance(
-    session: AsyncSession, *, topology: Topology | None = None
+    session: AsyncSession, *, topology: Topology | None = None, basis: str = "allocated"
 ) -> RebalanceReport:
-    """Fleet load model + up to three candidate plans across cost classes."""
+    """Fleet load model + up to three candidate plans across cost classes.
+
+    ``basis="usage"`` loads each guest at its observed 30-day memory p95 (capped
+    at its allocation) instead of its allocation, where history allows.
+    """
+    if basis not in ("allocated", "usage"):
+        raise ValueError(f"basis must be allocated or usage, not {basis!r}")
     if topology is None:
         topology = load_topology()
-    hosts, unknown = await _load_fleet(session)
+    hosts, unknown = await _load_fleet(session, basis)
     report = RebalanceReport(hosts=hosts, unknown_hosts=unknown)
 
     ratios = [h.ratio for h in hosts if h.ratio is not None]

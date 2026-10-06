@@ -251,6 +251,7 @@ async def summarize(
     cpu = [r.cpu for r in rows if r.cpu is not None]
     cpu_peak = [r.cpu_max for r in rows if r.cpu_max is not None]
     mem = [float(v) for r in rows if (v := r.mem_used_max or r.mem_used)]
+    net = [(r.net_in or 0.0) + (r.net_out or 0.0) for r in rows if r.net_in is not None]
     return {
         "subject": subject_key,
         "label": latest.label,
@@ -264,6 +265,7 @@ async def summarize(
         "mem_total": latest.mem_total,
         "mem_p95": percentile(mem, P95),
         "mem_peak": max(mem) if mem else None,
+        "net_mean": sum(net) / len(net) if net else None,
     }
 
 

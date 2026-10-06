@@ -283,6 +283,14 @@ covered guests whose newest backup is older than twice the job interval (or
 that have none), newest backups that failed verification, backups still kept
 for guests that no longer exist, and backup storage past 80 / 90%.
 
+### Usage history (Phase 8.3)
+
+`helper discover usage` turns Proxmox's own round-robin data into hourly and
+daily rollups per node and guest — about a month of hourly and a year of daily
+history on the very first run — and prunes past a horizon so the table stays
+bounded. `helper usage [name]` shows CPU and memory p95 and peak against what
+each host or guest is allocated; agents read the same through `usage_summary`.
+
 ### After the fact
 
 Every run you were *not* asked about tells you it happened: an AUTONOMOUS

@@ -34,9 +34,11 @@ from sqlalchemy import select
 
 from homelab_helper.db.enums import FindingKind, FindingStatus, ProposalOutcome
 from homelab_helper.db.models import ProposalLog, ReconciliationFinding
+from homelab_helper.engine.category_findings import category_of
 from homelab_helper.engine.manifest import (
     ManifestError,
     build_argocd_artifact,
+    build_artifact,
     build_workload_artifact,
 )
 
@@ -117,6 +119,58 @@ def _workload_restart(finding: ReconciliationFinding) -> Draft | None:
     )
 
 
+_RESIZE_CATEGORIES = {"cpu-grow", "cpu-shrink", "mem-grow", "mem-shrink"}
+_MIB = 1024**2
+
+
+def _rightsize(finding: ReconciliationFinding) -> Draft | None:
+    """A rightsizing finding's proposed cores or memory → an executable resize.
+
+    ``idle`` is deliberately not drafted: stopping or retiring a guest is the
+    operator's call, not a sizing correction.
+    """
+    category = category_of(finding)
+    if category not in _RESIZE_CATEGORIES:
+        return None
+    ev: dict[str, Any] = next(
+        (dict(r) for r in finding.evidence_refs or [] if r.get("type") == "evidence"), {}
+    )
+    node, vmid, vm_kind = ev.get("node"), ev.get("vmid"), ev.get("vm_kind")
+    if not node or not isinstance(vmid, int) or vm_kind not in ("qemu", "lxc"):
+        return None
+    name = ev.get("name") or f"{vm_kind}/{vmid}"
+    cores: int | None = None
+    memory_mib: int | None = None
+    if category.startswith("cpu"):
+        cores = ev.get("proposed_cores")
+        if not isinstance(cores, int):
+            return None
+        change = f"cores {ev.get('allocated_cores'):g} → {cores}"
+    else:
+        proposed = ev.get("proposed_bytes")
+        if not isinstance(proposed, int):
+            return None
+        memory_mib = proposed // _MIB
+        change = f"memory {int(ev.get('allocated_bytes') or 0) // _MIB} → {memory_mib} MiB"
+    try:
+        artifact = build_artifact(
+            action_kind="resize",
+            node=str(node),
+            vmid=vmid,
+            vm_kind=str(vm_kind),
+            cores=cores,
+            memory_mib=memory_mib,
+        )
+    except ManifestError:
+        return None
+    return Draft(
+        artifact=artifact,
+        title=f"Resize {name}: {change}",
+        blast_radius="single-host",
+        summary=f"rightsize ({category}): {change}",
+    )
+
+
 PLAYBOOKS: tuple[Playbook, ...] = (
     Playbook(
         name="argocd-resync",
@@ -131,6 +185,13 @@ PLAYBOOKS: tuple[Playbook, ...] = (
         target_type="workload",
         build=_workload_restart,
         description="A settled workload has fewer ready replicas than desired → rollout restart.",
+    ),
+    Playbook(
+        name="rightsize",
+        finding_kind=FindingKind.RIGHTSIZING,
+        target_type="guest",
+        build=_rightsize,
+        description="Usage history says a guest's cores or memory are wrong → resize to the proposed value.",
     ),
 )
 

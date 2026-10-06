@@ -70,6 +70,7 @@ _POWER_ACTION_KINDS = {"start", "stop", "shutdown", "restart"}
 _DEFAULT_STRATEGY = {
     "migrate": PRIOR_NODE,
     "cpu-type": PRIOR_CONFIG,
+    "resize": PRIOR_CONFIG,
     "argocd-sync": ARGOCD_HISTORY,
     "dns-record": PRIOR_DNS_RECORD,
     "workload-scale": PRIOR_REPLICAS,
@@ -297,21 +298,35 @@ async def _verify_prior_node(
     )
 
 
+def _config_keys(manifest: ActionManifest) -> tuple[str, ...]:
+    """The guest config keys an action changes — exactly what prior-config captures."""
+    if manifest.action_kind == "cpu-type":
+        return ("cpu",)
+    if manifest.action_kind == "resize":
+        keys: tuple[str, ...] = ("cores",) if manifest.cores is not None else ()
+        if manifest.memory_mib is not None:
+            keys += ("memory", "balloon") if manifest.vm_kind == "qemu" else ("memory",)
+        return keys
+    return ()
+
+
 async def _verify_prior_config(
     adapter: ProxmoxAdapter, manifest: ActionManifest
 ) -> tuple[bool, str, dict[str, Any]]:
-    if manifest.action_kind != "cpu-type":
-        return False, "prior-config only undoes a cpu-type action", {}
+    keys = _config_keys(manifest)
+    if not keys:
+        return False, "prior-config only undoes a cpu-type or resize action", {}
     try:
         config = await adapter.vm_config(*_guest(manifest))
     except (ProxmoxAPIError, OSError, RollbackError) as exc:
         return False, f"could not read the guest's configuration: {exc}", {}
-    current = config.get("cpu")
-    return (
-        True,
-        f"guest cpu type is {current!r}; setting it back restores the config",
-        {"cpu": current},
-    )
+    prior = {k: config.get(k) for k in keys}
+    if manifest.action_kind == "cpu-type":
+        evidence = f"guest cpu type is {prior['cpu']!r}; setting it back restores the config"
+    else:
+        shown = ", ".join(f"{k}={v}" for k, v in prior.items() if v is not None) or "defaults"
+        evidence = f"guest is configured {shown}; setting those back restores the config"
+    return True, evidence, prior
 
 
 async def _verify_prior_replicas(
@@ -566,17 +581,31 @@ async def _restore_prior_node(adapter: ProxmoxAdapter, plan: RollbackPlan) -> st
     return f"issued migrate from {target} back to {prior}"
 
 
+_CONFIG_KEYS = ("cpu", "cores", "memory", "balloon")
+
+
 async def _restore_prior_config(adapter: ProxmoxAdapter, plan: RollbackPlan) -> str:
     prior = plan.state.get("prior") or {}
-    if "cpu" not in prior:
-        raise RollbackError("captured state names no prior cpu type")
+    keys = [k for k in _CONFIG_KEYS if k in prior]
+    if not keys:
+        raise RollbackError("captured state names no prior configuration")
     node, vmid, vm_kind = _plan_guest(plan)
-    cpu = prior["cpu"]
-    if cpu is None:
-        await adapter.set_vm_config(node, vmid, vm_kind, delete="cpu")
-        return "removed the cpu type so the guest returns to the Proxmox default"
-    await adapter.set_vm_config(node, vmid, vm_kind, cpu=str(cpu))
-    return f"set cpu={cpu} back (applies at next stop/start)"
+    if keys == ["cpu"]:
+        cpu = prior["cpu"]
+        if cpu is None:
+            await adapter.set_vm_config(node, vmid, vm_kind, delete="cpu")
+            return "removed the cpu type so the guest returns to the Proxmox default"
+        await adapter.set_vm_config(node, vmid, vm_kind, cpu=str(cpu))
+        return f"set cpu={cpu} back (applies at next stop/start)"
+    options: dict[str, Any] = {k: prior[k] for k in keys if prior[k] is not None}
+    unset = [k for k in keys if prior[k] is None]
+    if unset:
+        options["delete"] = ",".join(unset)
+    await adapter.set_vm_config(node, vmid, vm_kind, **options)
+    restored = ", ".join(f"{k}={prior[k]}" for k in keys if prior[k] is not None)
+    cleared = f"; cleared {', '.join(unset)}" if unset else ""
+    when = " (applies at next stop/start)" if vm_kind == "qemu" else ""
+    return f"set {restored} back{cleared}{when}"
 
 
 async def _restore_prior_replicas(k8s: K8sAdapter | None, plan: RollbackPlan) -> str:

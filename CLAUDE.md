@@ -150,7 +150,7 @@ transitively imports `homelab_helper.llm`.
 
 Every write path routes through `engine/executor.py`, which is the only caller
 of an adapter's mutate methods (Proxmox `vm_power`/snapshots/`migrate_guest`/
-`set_vm_config`, K8s `rollout_restart`/`scale_workload`/`rollout_undo`, Argo CD
+`set_vm_config` (cpu-type, resize), K8s `rollout_restart`/`scale_workload`/`rollout_undo`, Argo CD
 `sync_application`/`rollback_application`, UniFi `create/update/delete_dns_record`);
 adapter writes carry a
 block comment saying so, and `tests/test_write_isolation.py` fails if any

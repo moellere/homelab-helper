@@ -338,6 +338,11 @@ receipt, `helper exec rollback` — on a target you can afford to touch:
 - `hypervisor cpu-type single-host`: `propose_action("cpu-type", node=, vmid=,
   vm_kind="qemu", cpu_type="x86-64-v3", …)` on the throwaway guest; the change
   shows under the guest's *Pending* tab until its next stop/start.
+- `hypervisor resize single-host` / `containers resize single-host`:
+  `propose_action("resize", node=, vmid=, vm_kind=, cores=… and/or memory_mib=…)`,
+  or let `helper plan rightsize --persist` + the `rightsize` playbook draft it.
+  A VM shows the change under *Pending* until its next stop/start; a container
+  changes live. Rollback sets the prior cores/memory (and balloon) back.
 - `containers argocd-sync single-service`: `propose_argocd_sync("<app>", …)` on
   an app that is already Synced (a no-op sync); rollback returns to the same
   history entry.

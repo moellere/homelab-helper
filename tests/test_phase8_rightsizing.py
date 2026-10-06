@@ -51,13 +51,16 @@ def test_cpu_bound_guest_gets_more_cores_with_the_numbers() -> None:
     (grow,) = guest_issues("lab/105", "ha", "qemu", _summary(cpu_p95=0.62, cpu_peak=1.04), 30)
     assert grow.category == "cpu-grow"
     assert grow.severity is FindingSeverity.MEDIUM  # saturated peak
-    assert grow.evidence == {
-        "allocated_cores": 2.0,
-        "cpu_p95": 0.62,
-        "cpu_peak": 1.04,
-        "window_days": 30,
-        "proposed_cores": 3,
-    }
+    assert (
+        grow.evidence.items()
+        >= {
+            "allocated_cores": 2.0,
+            "cpu_p95": 0.62,
+            "cpu_peak": 1.04,
+            "window_days": 30,
+            "proposed_cores": 3,
+        }.items()
+    )
     assert "62%" in grow.description
     assert "30 days" in grow.description
 

@@ -12,10 +12,12 @@ Two target shapes share the envelope::
 
     {"kind": "action",
      "action": {"domain": "hypervisor" | "containers",
-                "action_kind": "start" | "stop" | "shutdown" | "restart" | "migrate" | "cpu-type",
+                "action_kind": "start" | "stop" | "shutdown" | "restart" | "migrate" | "cpu-type"
+                               | "resize",
                 "target": {"node": "pve1", "vmid": 105, "vm_kind": "qemu" | "lxc",
                            "target_node": "pve2", "online": true,     # migrate only
-                           "cpu_type": "x86-64-v3"},                  # cpu-type only
+                           "cpu_type": "x86-64-v3",                   # cpu-type only
+                           "cores": 3, "memory_mib": 4096},           # resize only (either or both)
                 "hostnames": ["pve1"]},
      "rollback": {"verified": false, "strategy": null}}
 
@@ -48,7 +50,7 @@ WORKLOAD_DOMAIN = TrustDomain.CONTAINERS
 ARGOCD_DOMAIN = TrustDomain.CONTAINERS
 DNS_DOMAIN = TrustDomain.DNS
 POWER_ACTION_KINDS: tuple[str, ...] = ("start", "stop", "shutdown", "restart")
-GUEST_ACTION_KINDS: tuple[str, ...] = (*POWER_ACTION_KINDS, "migrate", "cpu-type")
+GUEST_ACTION_KINDS: tuple[str, ...] = (*POWER_ACTION_KINDS, "migrate", "cpu-type", "resize")
 WORKLOAD_ACTION_KINDS: tuple[str, ...] = ("workload-restart", "workload-scale")
 ARGOCD_ACTION_KINDS: tuple[str, ...] = ("argocd-sync",)
 DNS_ACTION_KINDS: tuple[str, ...] = ("dns-record",)
@@ -59,6 +61,9 @@ ACTION_KINDS: tuple[str, ...] = (
     *DNS_ACTION_KINDS,
 )
 DNS_RECORD_TYPES: tuple[str, ...] = ("A", "AAAA", "CNAME", "TXT")
+MAX_CORES = 512
+MAX_MEMORY_MIB = 4 * 1024 * 1024
+MIN_MEMORY_MIB = {"qemu": 256, "lxc": 64}
 WORKLOAD_KINDS: tuple[str, ...] = ("deployment", "statefulset", "daemonset")
 BLAST_RADII: tuple[str, ...] = (
     "metadata-only",
@@ -76,6 +81,7 @@ ActionKind = Literal[
     "restart",
     "migrate",
     "cpu-type",
+    "resize",
     "workload-restart",
     "workload-scale",
     "argocd-sync",
@@ -100,6 +106,8 @@ class ActionTarget(BaseModel):
     target_node: str | None = Field(default=None, min_length=1)
     online: bool | None = None
     cpu_type: str | None = Field(default=None, min_length=1, max_length=64)
+    cores: int | None = Field(default=None, ge=1, le=MAX_CORES)
+    memory_mib: int | None = Field(default=None, ge=MIN_MEMORY_MIB["lxc"], le=MAX_MEMORY_MIB)
 
 
 class WorkloadTarget(BaseModel):
@@ -207,6 +215,14 @@ def _check_guest_fields(action_kind: str, target: ActionTarget) -> None:
             raise ValueError("cpu-type applies to QEMU guests only")
         if not target.cpu_type:
             raise ValueError("cpu-type needs target.cpu_type")
+    if action_kind == "resize":
+        if target.cores is None and target.memory_mib is None:
+            raise ValueError("resize needs target.cores and/or target.memory_mib")
+        floor = MIN_MEMORY_MIB[target.vm_kind]
+        if target.memory_mib is not None and target.memory_mib < floor:
+            raise ValueError(f"resize memory_mib must be at least {floor} for {target.vm_kind}")
+    elif target.cores is not None or target.memory_mib is not None:
+        raise ValueError("cores / memory_mib only apply to resize")
 
 
 class ActionArtifact(BaseModel):
@@ -269,6 +285,8 @@ def build_artifact(
     target_node: str | None = None,
     online: bool = True,
     cpu_type: str | None = None,
+    cores: int | None = None,
+    memory_mib: int | None = None,
 ) -> dict[str, Any]:
     """An executor-ready guest artifact; the domain follows from ``vm_kind``."""
     if vm_kind not in VM_KIND_DOMAIN:
@@ -279,6 +297,11 @@ def build_artifact(
         target["online"] = online
     if action_kind == "cpu-type":
         target["cpu_type"] = cpu_type
+    if action_kind == "resize":
+        if cores is not None:
+            target["cores"] = cores
+        if memory_mib is not None:
+            target["memory_mib"] = memory_mib
     hosts = list(hostnames) if hostnames else [node]
     if action_kind == "migrate" and target_node and target_node not in hosts:
         hosts.append(target_node)

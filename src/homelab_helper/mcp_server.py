@@ -54,7 +54,13 @@ from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig, UniFiConfigError
 from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
-from homelab_helper.db.enums import DiscoverySource, FindingStatus, ProposalOutcome, ResolutionScope
+from homelab_helper.db.enums import (
+    DiscoverySource,
+    FindingKind,
+    FindingStatus,
+    ProposalOutcome,
+    ResolutionScope,
+)
 from homelab_helper.db.models import (
     CellTrust,
     Cluster,
@@ -85,6 +91,7 @@ from homelab_helper.engine.backups import (
 )
 from homelab_helper.engine.bottlenecks import analyze_bottlenecks as _analyze_bottlenecks
 from homelab_helper.engine.bottlenecks import persist_bottlenecks
+from homelab_helper.engine.category_findings import reconcile_category_findings
 from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
@@ -125,6 +132,11 @@ from homelab_helper.engine.rightsizing import evaluate as evaluate_rightsizing
 from homelab_helper.engine.rightsizing import reconcile_rightsizing
 from homelab_helper.engine.stray_config import reconcile_stray_config
 from homelab_helper.engine.stray_export import reconcile_stray_exports
+from homelab_helper.engine.suggestions import (
+    building_block_issues,
+    idle_gpu_issues,
+    present_names,
+)
 from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
 from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
@@ -839,6 +851,44 @@ async def _discover_backups(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _discover_suggestions(session: AsyncSession) -> dict[str, Any]:
+    """Phase 8.7: capability the lab owns but does not use, from stored facts only.
+
+    Reads the harness DB and the workload library — no adapter calls, so it
+    cannot fail for a source being down and both categories are always
+    observed.
+    """
+    retired = await retired_host_ids(session)
+    hosts = [
+        (str(h.id), h.hostname, dict(h.capabilities or {}))
+        for h in (await session.execute(select(Host))).scalars().all()
+        if h.id not in retired
+    ]
+    guests = (
+        (await session.execute(select(VirtualMachine.name).where(~VirtualMachine.template)))
+        .scalars()
+        .all()
+    )
+    services = (await session.execute(select(Service.name))).scalars().all()
+    endpoints = (await session.execute(select(ServiceEndpoint.hostname))).scalars().all()
+    present = present_names(guests, services, endpoints)
+
+    library = load_workload_library()
+    issues = idle_gpu_issues(hosts, library, present) + building_block_issues(library, present)
+    result = await reconcile_category_findings(
+        session,
+        FindingKind.SERVICE_SUGGESTION,
+        issues,
+        {"capability-idle-gpu", "building-block-missing"},
+    )
+    return {
+        "findings": result.counts(),
+        "issues": len(issues),
+        "known_names": len(present),
+        "errors": {},
+    }
+
+
 async def _discover_usage(session: AsyncSession) -> dict[str, Any]:
     """Phase 8.3: hourly and daily usage rollups from Proxmox RRD, then prune."""
     adapter = _load_proxmox_adapter()
@@ -926,6 +976,7 @@ _DISCOVERERS = {
     "versions": _discover_versions,
     "backups": _discover_backups,
     "usage": _discover_usage,
+    "suggestions": _discover_suggestions,
 }
 
 

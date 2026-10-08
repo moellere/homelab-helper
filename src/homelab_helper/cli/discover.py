@@ -1293,6 +1293,16 @@ def discover_versions() -> None:
     )
 
 
+@discover_app.command(name="suggestions")
+def discover_suggestions() -> None:
+    """Service suggestions (Phase 8.7): idle capability and missing building blocks."""
+    raise typer.Exit(
+        code=_category_discovery(
+            "suggestions", FindingKind.SERVICE_SUGGESTION, "service suggestions"
+        )
+    )
+
+
 @discover_app.command(name="backups")
 def discover_backups() -> None:
     """Backup posture (Phase 8.2): uncovered, stale or unverified guests; orphans; capacity."""

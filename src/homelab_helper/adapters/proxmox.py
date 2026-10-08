@@ -290,6 +290,19 @@ class ProxmoxAdapter:
             or []
         )
 
+    async def storage_rrd(
+        self, node: str, storage: str, timeframe: str, cf: str = "AVERAGE"
+    ) -> list[dict[str, Any]]:
+        """Round-robin usage points for one storage, as seen from ``node``."""
+        return (
+            await self._request(
+                "GET",
+                f"/nodes/{node}/storage/{storage}/rrddata",
+                params={"timeframe": timeframe, "cf": cf},
+            )
+            or []
+        )
+
     async def rrd(
         self,
         node: str,

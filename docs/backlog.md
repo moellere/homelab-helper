@@ -847,7 +847,35 @@ See `roadmap.md` Phase 8. Slices land in this order.
 - [x] 8.4 Rightsizing & real-usage placement — `engine/rightsizing.py`, `helper plan rightsize [--days] [--persist]`, MCP `rightsizing`; `plan rebalance --basis usage` / `plan_rebalance(basis="usage")`. `rightsizing` findings (cpu-grow, cpu-shrink, mem-shrink, mem-grow for containers only, idle), each naming allocation, p95, peak, window and proposed value; < 7 days of hourly history → no verdict and no resolution (`observed_targets` added to the shared reconcile). VM memory is never grown: Proxmox's figure includes guest page cache (measured: ubuntu-dev reported 14.6 GiB, 4 GiB used in-guest). First live run 10/06/2026: Home Assistant CPU-bound 2 → 3 cores; ESPHome builders 4 GiB → 1–2 GiB; proxmox-dc 2 → 1 core, 4 → 1.5 GiB; esphome-lxc idle.
   - [x] `resize` action kind (10/06/2026): cores and/or `memory_mib` on a guest, through the executor via `set_vm_config`; refused at dispatch beyond the node's CPUs/physical memory (no write); a QEMU balloon floor above the new memory is lowered with it; QEMU without hotplug reports *pending until next stop/start*, containers apply live. Rollback: `prior-config` generalised to the keys an action changes (cpu; cores/memory/balloon). In `REVERSIBLE_ACTION_KINDS`. `rightsize` playbook drafts one resize per cpu-*/mem-* rightsizing finding (never for `idle`); rightsizing evidence now carries node/vmid/kind. MCP `propose_action(cores=, memory_mib=)`.
   - [ ] Follow-ups: in-guest memory via the QEMU guest agent so VM memory can grow too; K8s requests vs usage; an optional restart-after-resize for VMs (today the operator restarts, or a `restart` proposal).
-- [ ] 8.5 Storage efficiency.
+- [x] 8.5 Storage efficiency — `engine/storage.py`, `helper discover storage`,
+  `run_discovery("storage")`, `FindingKind.STORAGE_EFFICIENCY` (no migration —
+  SQLite SAEnum has no CHECK). Five categories through
+  `engine/category_findings.py`:
+  - `storage-headroom` — least-squares slope on a pool's daily usage history →
+    "fills in about N days", HIGH inside 30 days, MEDIUM inside 90. Needs
+    history, so **8.3 now records storage pools too** (`subject_type="storage"`,
+    `STORAGE_FIELDS`, `ProxmoxAdapter.storage_rrd`, one reader per pool since a
+    shared pool is reported by every node — no migration, `subject_type` is a
+    free string). A flat, shrinking or sub-10 MiB/day pool gets no projection,
+    and fewer than 7 samples is not a trend. Deliberately linear: a straight
+    line is explainable in a finding ("68 GiB/day"). 8.2's `backup-capacity`
+    still owns the point-in-time ratio on backup storages — this answers the
+    different question of *when*, for every pool, so one pool can raise both.
+  - `storage-snapshot-stale` — snapshots older than 30 days, which pin blocks
+    the guest has since overwritten. The harness's own `helper-` rollback
+    captures are named separately and raised to MEDIUM: that is its own litter.
+  - `storage-detached-disk` — `unusedN` entries: on the pool, attached to
+    nothing, invisible in the guest's own usage.
+  - `storage-template-clutter` — ISOs and container templates no guest config
+    references (disks, `unusedN` slots and `ostemplate` all count as a
+    reference), grouped per storage with the bytes.
+  - `storage-released-pv` — Kubernetes PVs in `Released`: claim gone, volume
+    retained, nothing can bind it again.
+  - [ ] Follow-ups: backup retention cost (8.2's `backup-orphans` already names
+    the groups kept for deleted guests; a per-tier cost breakdown is reporting
+    rather than a finding); OMV/covomv filesystem headroom via the OMV adapter;
+    ZFS snapshot space accounting (`written`/`refer`) so a stale snapshot's real
+    cost is a number rather than an explanation.
 - [ ] 8.6 Weekly digest.
 - [ ] 8.7 Service suggestions.
 - [ ] Update orchestration (first Phase 8 write path, at PROPOSE) — after 8.1 has run a while.

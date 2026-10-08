@@ -54,7 +54,13 @@ from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig, UniFiConfigError
 from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
-from homelab_helper.db.enums import DiscoverySource, FindingStatus, ProposalOutcome, ResolutionScope
+from homelab_helper.db.enums import (
+    DiscoverySource,
+    FindingKind,
+    FindingStatus,
+    ProposalOutcome,
+    ResolutionScope,
+)
 from homelab_helper.db.models import (
     CellTrust,
     Cluster,
@@ -85,6 +91,7 @@ from homelab_helper.engine.backups import (
 )
 from homelab_helper.engine.bottlenecks import analyze_bottlenecks as _analyze_bottlenecks
 from homelab_helper.engine.bottlenecks import persist_bottlenecks
+from homelab_helper.engine.category_findings import reconcile_category_findings
 from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
@@ -123,6 +130,15 @@ from homelab_helper.engine.retire import is_retired, retired_host_ids
 from homelab_helper.engine.retire import retire_host as _retire_host
 from homelab_helper.engine.rightsizing import evaluate as evaluate_rightsizing
 from homelab_helper.engine.rightsizing import reconcile_rightsizing
+from homelab_helper.engine.storage import (
+    Projection,
+    detached_disk_issues,
+    headroom_issues,
+    project_headroom,
+    released_pv_issues,
+    snapshot_issues,
+    template_clutter_issues,
+)
 from homelab_helper.engine.stray_config import reconcile_stray_config
 from homelab_helper.engine.stray_export import reconcile_stray_exports
 from homelab_helper.engine.talos_probe import TalosProbeRequest
@@ -132,7 +148,9 @@ from homelab_helper.engine.usage import GUEST_FIELDS as USAGE_GUEST_FIELDS
 from homelab_helper.engine.usage import NODE_EXTRA as USAGE_NODE_EXTRA
 from homelab_helper.engine.usage import NODE_FIELDS as USAGE_NODE_FIELDS
 from homelab_helper.engine.usage import SOURCE_TIMEFRAME as USAGE_TIMEFRAME
+from homelab_helper.engine.usage import STORAGE_FIELDS as USAGE_STORAGE_FIELDS
 from homelab_helper.engine.usage import (
+    pool_history,
     prune_usage,
     record_usage,
     summarize,
@@ -839,6 +857,110 @@ async def _discover_backups(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _proxmox_storage_facts(
+    adapter: Any,
+) -> tuple[list[dict[str, Any]], dict[str, str], list[dict[str, Any]]]:
+    """Guest configs + snapshots, one reader per pool, and the pools' images."""
+    guests: list[dict[str, Any]] = []
+    for vm in await adapter.list_vms():
+        node, vmid, kind = vm.get("node"), vm.get("vmid"), vm.get("type")
+        if not (node and vmid and kind):
+            continue
+        entry: dict[str, Any] = {
+            "vmid": int(vmid),
+            "node": str(node),
+            "kind": str(kind),
+            "name": vm.get("name"),
+            "template": bool(vm.get("template")),
+            "config": await adapter.vm_config(str(node), int(vmid), str(kind)),
+        }
+        if not entry["template"]:
+            entry["snapshots"] = await adapter.list_snapshots(str(node), int(vmid), str(kind))
+        guests.append(entry)
+
+    pools: dict[str, str] = {}
+    for row in await adapter.cluster_resources("storage"):
+        name, node = str(row.get("storage") or ""), str(row.get("node") or "")
+        if name and node and row.get("status") == "available":
+            pools.setdefault(name, node)
+
+    images: list[dict[str, Any]] = []
+    for name, node in pools.items():
+        for content in ("iso", "vztmpl"):
+            try:
+                images += await adapter.storage_content(node, name, content)
+            except Exception:  # a pool that holds no such content
+                continue
+    return guests, pools, images
+
+
+async def _pool_projections(
+    session: AsyncSession, pools: list[str]
+) -> list[tuple[str, Projection | None]]:
+    """Each pool's time-to-full fit from the 8.3 history, where there is any."""
+    projected: list[tuple[str, Projection | None]] = []
+    for name in pools:
+        rows = await pool_history(session, name)
+        if not rows:
+            continue
+        total = next((r.disk_total for r in reversed(rows) if r.disk_total), 0) or 0
+        projected.append(
+            (
+                name,
+                project_headroom(
+                    [(r.ts.replace(tzinfo=UTC), int(r.disk_used or 0)) for r in rows], int(total)
+                ),
+            )
+        )
+    return projected
+
+
+async def _discover_storage(session: AsyncSession) -> dict[str, Any]:
+    """Phase 8.5: storage efficiency from Proxmox configs, snapshots, pool history, K8s PVs.
+
+    Each source that fails contributes no categories, so its findings neither
+    open nor resolve this run (invariant 1).
+    """
+    issues: list[CategoryIssue] = []
+    observed: set[str] = set()
+    errors: dict[str, str] = {}
+
+    try:
+        adapter = _load_proxmox_adapter()
+        try:
+            guests, pools, images = await _proxmox_storage_facts(adapter)
+        finally:
+            await adapter.aclose()
+
+        issues += snapshot_issues(guests)
+        issues += detached_disk_issues(guests)
+        issues += template_clutter_issues(images, guests)
+        observed |= {
+            "storage-snapshot-stale",
+            "storage-detached-disk",
+            "storage-template-clutter",
+        }
+
+        projected = await _pool_projections(session, list(pools))
+        if projected:
+            issues += headroom_issues(projected)
+            observed.add("storage-headroom")
+    except Exception as exc:  # one dead source must not sink the others
+        errors["proxmox"] = redact(str(exc))
+
+    try:
+        k8s = _load_k8s_adapter()
+        issues += released_pv_issues(await k8s.get_resource("pv"))
+        observed.add("storage-released-pv")
+    except Exception as exc:
+        errors["k8s"] = redact(str(exc))
+
+    result = await reconcile_category_findings(
+        session, FindingKind.STORAGE_EFFICIENCY, issues, observed
+    )
+    return {"findings": result.counts(), "issues": len(issues), "errors": errors}
+
+
 async def _discover_usage(session: AsyncSession) -> dict[str, Any]:
     """Phase 8.3: hourly and daily usage rollups from Proxmox RRD, then prune."""
     adapter = _load_proxmox_adapter()
@@ -862,27 +984,44 @@ async def _discover_usage(session: AsyncSession) -> dict[str, Any]:
             for v in await adapter.list_vms()
             if not v.get("template") and v.get("node")
         ]
+        # One reader per pool: a shared storage is reported by every node, and
+        # its RRD is the same series whichever node answers. 8.5 projects
+        # time-to-full from this history.
+        pools: dict[str, str] = {}
+        for row in await adapter.cluster_resources("storage"):
+            name, node = str(row.get("storage") or ""), str(row.get("node") or "")
+            if name and node and row.get("status") == "available":
+                pools.setdefault(name, node)
+        subjects += [("storage", name, name, node, None, None) for name, node in pools.items()]
         gate = asyncio.Semaphore(8)
 
-        async def _fetch(node: str, vmid: int | None, kind: str | None) -> dict[str, list[Any]]:
+        async def _fetch(
+            stype: str, key: str, node: str, vmid: int | None, kind: str | None
+        ) -> dict[str, list[Any]]:
             async with gate:
                 out: dict[str, list[Any]] = {}
                 for resolution, timeframe in USAGE_TIMEFRAME.items():
                     for cf in ("AVERAGE", "MAX"):
-                        out[f"{resolution}:{cf}"] = await adapter.rrd(
-                            node, timeframe, cf, vmid=vmid, kind=kind
+                        out[f"{resolution}:{cf}"] = (
+                            await adapter.storage_rrd(node, key, timeframe, cf)
+                            if stype == "storage"
+                            else await adapter.rrd(node, timeframe, cf, vmid=vmid, kind=kind)
                         )
                 return out
 
         fetched = await asyncio.gather(
-            *(_fetch(node, vmid, kind) for _, _, _, node, vmid, kind in subjects)
+            *(_fetch(stype, key, node, vmid, kind) for stype, key, _, node, vmid, kind in subjects)
         )
     finally:
         await adapter.aclose()
 
     inserted = updated = with_data = 0
     for (stype, key, label, _node, _vmid, _kind), points in zip(subjects, fetched, strict=True):
-        fields = USAGE_NODE_FIELDS if stype == "host" else USAGE_GUEST_FIELDS
+        fields = {
+            "host": USAGE_NODE_FIELDS,
+            "guest": USAGE_GUEST_FIELDS,
+            "storage": USAGE_STORAGE_FIELDS,
+        }[stype]
         extra = USAGE_NODE_EXTRA if stype == "host" else ()
         any_data = False
         for resolution in USAGE_TIMEFRAME:
@@ -926,6 +1065,7 @@ _DISCOVERERS = {
     "versions": _discover_versions,
     "backups": _discover_backups,
     "usage": _discover_usage,
+    "storage": _discover_storage,
 }
 
 

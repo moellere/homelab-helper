@@ -27,14 +27,15 @@ src/homelab_helper/
 │                   Argo CD, OpenMediaVault — read-only at L1, except the
 │                   Proxmox guest, K8s workload, Argo CD sync and UniFi DNS
 │                   writes reserved for the executor
-├── cli/            Typer apps; entry point in main.py (25 verbs incl.
-│                   approvals, daemon, usage)
+├── cli/            Typer apps; entry point in main.py (26 verbs incl.
+│                   approvals, daemon, usage, digest)
 ├── db/             Models, enums, async session
 ├── engine/         Reconciler, AssertionEngine, ProbeRunner, fingerprint,
 │                   placement/rebalance/bottlenecks/network_path planners,
 │                   trust (decide) + executor + escalation + rollback (Phase 6),
 │                   approval (Phase 7: HA phone-tap channel for CONFIRM),
 │                   notify (after-the-fact notice for unattended runs),
+│                   digest (8.6 weekly summary; contents chosen from rows),
 │                   versions (Phase 8.1 version currency; EOL table in data/),
 │                   backups (8.2 posture), category_findings (shared Phase 8 reconcile),
 │                   usage (8.3 history: RRD rollups, retention, p95 summary),

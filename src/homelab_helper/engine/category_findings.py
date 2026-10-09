@@ -39,6 +39,9 @@ class CategoryIssue:
     title: str
     description: str
     evidence: dict[str, Any] = field(default_factory=dict)
+    also_affects: tuple[tuple[str, str], ...] = ()
+    """Extra ``(target_type, target_id)`` pairs recorded in ``affected`` — e.g. the host
+    an array lives on, so ``observed_targets`` can scope resolution to that host."""
 
     @property
     def fingerprint(self) -> str:
@@ -52,6 +55,10 @@ class CategoryResult:
     reopened: list[str] = field(default_factory=list)
     updated: list[str] = field(default_factory=list)
     resolved: list[str] = field(default_factory=list)
+    fingerprints: dict[str, list[str]] = field(
+        default_factory=lambda: {"opened": [], "reopened": [], "updated": [], "resolved": []}
+    )
+    """The same activity keyed by fingerprint, for callers that report by fingerprint."""
 
     def counts(self) -> dict[str, int]:
         return {
@@ -92,7 +99,10 @@ async def reconcile_category_findings(
             {"type": _CATEGORY_REF, "category": issue.category},
             {"type": "evidence", **issue.evidence},
         ]
-        affected = [{"target_type": issue.target_type, "target_id": issue.target_id}]
+        affected = [
+            {"target_type": t, "target_id": i}
+            for t, i in ((issue.target_type, issue.target_id), *issue.also_affects)
+        ]
         row = (
             await session.execute(
                 select(ReconciliationFinding).where(
@@ -116,14 +126,17 @@ async def reconcile_category_findings(
                 )
             )
             result.opened.append(issue.title)
+            result.fingerprints["opened"].append(issue.fingerprint)
             continue
         if row.status == FindingStatus.RESOLVED:
             row.status = FindingStatus.OPEN
             row.resolved_at = None
             row.first_seen = now
             result.reopened.append(issue.title)
+            result.fingerprints["reopened"].append(issue.fingerprint)
         else:
             result.updated.append(issue.title)
+            result.fingerprints["updated"].append(issue.fingerprint)
         row.last_seen = now
         row.severity = issue.severity
         row.title = issue.title[:512]
@@ -156,6 +169,7 @@ async def reconcile_category_findings(
         row.status = FindingStatus.RESOLVED
         row.resolved_at = now
         result.resolved.append(row.title)
+        result.fingerprints["resolved"].append(row.fingerprint)
     await session.flush()
     return result
 

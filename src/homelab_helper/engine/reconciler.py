@@ -75,6 +75,8 @@ from homelab_helper.db.models import (
     ReconciliationFinding,
 )
 from homelab_helper.engine.fingerprint import make_fingerprint
+from homelab_helper.engine.raid_health import reconcile_raid_health
+from homelab_helper.engine.stray_export import host_exports, reconcile_stray_exports
 
 if TYPE_CHECKING:
     import uuid
@@ -90,6 +92,10 @@ if TYPE_CHECKING:
 _DIMMS_KEY = "host.memory.dimms"
 _STORAGE_DEVICES_KEY = "host.storage.devices"
 _INTERFACES_KEY = "host.network.interfaces"
+_RAID_ARRAYS_KEY = "host.raid.arrays"
+_SHARES_KEY = "host.shares.exports"
+_SHARE_FOLDERS_KEY = "host.shares.folders"
+_SHARE_FS_KEY = "host.shares.filesystems"
 
 # Multi-source precedence: when two sources report the same (host, key), the
 # higher-confidence observation wins regardless of recency — kernel probes write
@@ -285,6 +291,14 @@ _GPU_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.gpu.vendors", capability="gpu_vendors"),
 )
 
+# RAID: a compact per-array summary from host.raid. Health findings for
+# degraded / rebuilding / inactive arrays come from host.raid.arrays via
+# engine/raid_health.py, not from these projections.
+_RAID_RULES: tuple[HostProjectionRule, ...] = (
+    HostProjectionRule(key="host.raid.array_count", capability="raid_array_count"),
+    HostProjectionRule(key="host.raid.summary", capability="raid"),
+)
+
 _K8S_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.k8s.node_name", capability="k8s_node_name"),
     HostProjectionRule(key="host.k8s.kubelet_version", capability="k8s_kubelet_version"),
@@ -299,6 +313,7 @@ _HOST_RULES: tuple[HostProjectionRule, ...] = (
     + _STORAGE_RULES
     + _NETWORK_RULES
     + _GPU_RULES
+    + _RAID_RULES
     + _K8S_RULES
 )
 
@@ -428,7 +443,36 @@ class Reconciler:
         # Phase 3: Auto-resolve findings whose conditions are no longer present.
         await self._auto_resolve_findings(session, host_id, ledger)
 
-        lineage_seen = sum(1 for raw in (dimms_raw, storage_raw, nic_raw) if raw is not None)
+        # Phase 4: RAID health. Only when host.raid has reported for this host —
+        # its findings resolve per host, never from another host's silence.
+        raid_raw = await self._latest_observation_value(session, host_id, _RAID_ARRAYS_KEY)
+        if isinstance(raid_raw, list):
+            raid = await reconcile_raid_health(session, str(host_id), host.hostname, raid_raw)
+            ledger["findings_opened"] += raid.fingerprints["opened"] + raid.fingerprints["reopened"]
+            ledger["findings_updated"] += raid.fingerprints["updated"]
+            ledger["findings_resolved"] += raid.fingerprints["resolved"]
+
+        # Phase 5: host shares → the same stray-export check OMV gets, scoped to
+        # this host so its paths never share a finding with another machine's.
+        shares_raw = await self._latest_observation_value(session, host_id, _SHARES_KEY)
+        if isinstance(shares_raw, list):
+            folders = await self._latest_observation_value(session, host_id, _SHARE_FOLDERS_KEY)
+            mounted = await self._latest_observation_value(session, host_id, _SHARE_FS_KEY)
+            stray = await reconcile_stray_exports(
+                session,
+                mounted if isinstance(mounted, list) else [],
+                folders if isinstance(folders, list) else [],
+                host_exports(shares_raw),
+                appliance=host.hostname,
+                scope=f"host:{host.hostname}",
+            )
+            ledger["findings_opened"] += stray.opened + stray.reopened
+            ledger["findings_updated"] += stray.updated
+            ledger["findings_resolved"] += stray.resolved
+
+        lineage_seen = sum(
+            1 for raw in (dimms_raw, storage_raw, nic_raw, raid_raw, shares_raw) if raw is not None
+        )
         if latest or lineage_seen:
             now_ts = datetime.now(UTC)
             host.discovery_last_run = now_ts

@@ -15,9 +15,6 @@ Before any non-trivial change, skim:
 - `docs/live-validation.md` — the live-fleet runbook; the suite is all
   mocks, so this is the only place the ACs meet real infrastructure
 - `docs/harness-schema-slice1.md` — DB schema + forward-spec for L2 trust tables
-- `docs/handoff-phase-9.5.md` — **transient**, if it exists: what the previous
-  session learned that the docs above do not say yet. Delete it in the PR
-  that closes 9.5.
 - `docs/stability.md` — the public surfaces and what is promised about each;
   a change to a surface it names updates it in the same PR, and
   `tests/test_stability_doc.py` holds its CLI and MCP tables to the code
@@ -50,6 +47,7 @@ src/homelab_helper/
 │                   storage (8.5 headroom trends, stale snapshots, clutter),
 │                   usage (8.3 history: RRD rollups, retention, p95 summary),
 │                   rightsizing (8.4: cores/memory from history),
+│                   raid_health (9.5: host.raid → storage-health findings),
 │                   suggestions (8.7 idle capability, missing blocks),
 │                   cluster_nodes (9.2: the one rule for "is this host a
 │                   placement target"; rebalance/surplus/bottlenecks read it),

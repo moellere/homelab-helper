@@ -537,14 +537,26 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [x] **Per-assertion arch filter** — capability assertions take an optional
   `arch:` scope (`verifier_spec.applies_to_arch`); off-arch hosts SKIP rather
   than FAIL, so the library binds cleanly to mixed amd64/arm fleets.
-- [ ] **`host.raid` / `host.shares` probes** — mdraid composition
-  (`/proc/mdstat` + `mdadm --detail`) so the reconciler models an array as a
-  volume over its member parts; NFS/SMB share enumeration. Phase 9.5; the
-  design notes are in `docs/handoff-phase-9.5.md`.
-- [ ] **`talos.host` CPU/DIMM depth** — SMBIOS `processors`/`memorymodules` can
-  be sparse (cores/flags come from `/proc/cpuinfo`); DIMM lineage isn't
-  populated without a per-module serial. Phase 9.5; probe-side only, the
-  adapter's `get_resources` is already generic.
+- [x] **`host.raid` / `host.shares` probes** (Phase 9.5) — `host.raid` reads
+  `/proc/mdstat` (+ `mdadm --detail` for the UUID when sudo allows): level,
+  state, members and roles, `[n/m]` slots, recovery/resync/reshape/check. The
+  reconciler projects a summary onto `capabilities["raid"]` and raises
+  `storage-health` findings (`raid-degraded` HIGH, `raid-rebuilding` MEDIUM,
+  `raid-inactive` HIGH; a scrub raises nothing), resolved per host. Level 1 by
+  the operator's choice; the volume model is a GitHub issue. `host.shares` reads
+  `exportfs -v` (or `/etc/exports`) and `testparm -s`, plus fstab/findmnt, and
+  feeds the existing stray-export check scoped `host:<name>` — fstab **bind**
+  mounts count as declared backing, which is how OpenMediaVault serves NFS.
+  Live 10/09/2026: covomv md0 raid5 3/3 healthy; 21 exports, 16 of 17 paths
+  judgeable, no strays.
+- [x] **`talos.host` CPU/DIMM depth** (Phase 9.5) — `memorymodules` → the
+  canonical `host.memory.dimms` (`sizeMiB` → bytes; placeholder serials → a
+  gap, not a part); `processors` → sockets/cores/threads/max MHz. CPU model and
+  vendor now come from `/proc/cpuinfo` — they were read from
+  `systeminformation`, i.e. the chassis (bmax4's "CPU" was `LENOVO
+  10MUS0BV00`), and threads equalled cores. Hardware resources are best
+  effort. Live: bmax4 i5-6500T 4c, two serialled Micron DIMMs; talos-cp1 (VM)
+  one serial-less DIMM.
 
 
 ### P2 — strengthens, doesn't block
@@ -1058,15 +1070,11 @@ real for someone other than its author. Slices in delivery order.
   the existing required check keeps its name.
   - [ ] Postgres in CI: the `postgres` extra is supported but the suite only
     runs against SQLite there; the stability page says so until it is fixed.
-- [ ] **9.5 The last Phase-1 probes** — two, not three: the roadmap's
-  "dmidecode DIMM depth" was already done (a serialled module *is* a
-  `PhysicalPart` + `Placement`; verified against the bundled `asymmetric` lab,
-  see the P2 row above). Left: `host.raid` / `host.shares`, and `talos.host`
-  CPU/DIMM depth by projecting `memorymodules` onto `host.memory.dimms` so the
-  existing lineage serves Talos nodes. Design notes, the volume-model decision
-  to make with the operator, and the test fakes to mirror are in
-  `docs/handoff-phase-9.5.md` (transient; delete it in the PR that closes
-  this).
+- [x] **9.5 The last Phase-1 probes** — `host.raid`, `host.shares`, and
+  `talos.host` CPU/DIMM depth (see the P1 rows); dmidecode DIMM depth was
+  already done. Phase 9 AC #5 met: a host with an mdraid array reports its
+  composition, and a serialled DIMM becomes a `PhysicalPart` + `Placement` —
+  now for Talos nodes too.
 - [ ] **9.6 Finish the Phase-2 tail** — probe-level schedules and assertion
   cadences inside `helper daemon`, so "continuous" is per-probe rather than one
   discovery interval for everything.

@@ -111,12 +111,35 @@ def _folder_is_backed(folder: dict[str, Any], filesystems: list[dict[str, Any]])
     return False
 
 
+def host_exports(exports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``host.shares`` exports in this module's vocabulary (path → shared folder)."""
+    return [
+        {
+            "protocol": e.get("protocol"),
+            "shared_folder": e.get("path"),
+            "name": e.get("name"),
+            "client": e.get("client") if e.get("protocol") == "nfs" else None,
+        }
+        for e in exports
+    ]
+
+
+def _scoped(scope: str | None, label: str) -> str:
+    return f"{scope}/{label}" if scope else label
+
+
 def detect_stray_exports(
     filesystems: list[dict[str, Any]],
     shared_folders: list[dict[str, Any]],
     exports: list[dict[str, Any]],
+    *,
+    scope: str | None = None,
 ) -> tuple[list[StrayExport], int]:
-    """Pure cross-reference: ``(strays, folders skipped for lack of a device)``."""
+    """Pure cross-reference: ``(strays, folders skipped for lack of a device)``.
+
+    ``scope`` prefixes every label (e.g. ``host:nas1``) so the same path on two
+    machines, or on a host and an OMV appliance, never shares a finding.
+    """
     by_name = {_norm(f.get("name")): f for f in shared_folders if f.get("name")}
     by_uuid = {_norm(f.get("uuid")): f for f in shared_folders if f.get("uuid")}
     backing: dict[str, bool | None] = {}
@@ -130,7 +153,7 @@ def detect_stray_exports(
     strays: list[StrayExport] = []
     for export in exports:
         protocol = str(export.get("protocol") or "?")
-        label = _export_label(export)
+        label = _scoped(scope, _export_label(export))
         ref = _norm(export.get("shared_folder"))
         folder: dict[str, Any] | None = by_name.get(ref) or by_uuid.get(ref)
         if folder is None:
@@ -178,16 +201,18 @@ async def reconcile_stray_exports(
     *,
     appliance: str = "openmediavault",
     when: datetime | None = None,
+    scope: str | None = None,
 ) -> StrayExportResult:
     """Open/resolve STRAY_CONFIG findings for exports with nothing behind them."""
     now_ts = when or datetime.now(UTC)
-    strays, skipped = detect_stray_exports(filesystems, shared_folders, exports)
+    strays, skipped = detect_stray_exports(filesystems, shared_folders, exports, scope=scope)
     result = StrayExportResult(hits=strays, skipped_no_device=skipped)
     stray_by_target = {s.target_id: s for s in strays}
 
+    evidence_type = "host_export" if scope else "omv_export"
     for export in exports:
         protocol = str(export.get("protocol") or "?")
-        label = _export_label(export)
+        label = _scoped(scope, _export_label(export))
         target_id = f"{protocol}:{label}"
         probe = StrayExport(protocol, label, None, "", "")
         existing = await _find_by_fingerprint(session, probe.fingerprint)
@@ -209,7 +234,7 @@ async def reconcile_stray_exports(
                         title=title,
                         description=description,
                         affected=affected,
-                        evidence_refs=[{"type": "omv_export", "id": target_id}],
+                        evidence_refs=[{"type": evidence_type, "id": target_id}],
                         proposed_actions=[
                             {
                                 "summary": f"Remove the {protocol.upper()} export {label!r} from {appliance}"
@@ -252,5 +277,6 @@ __all__ = [
     "StrayExport",
     "StrayExportResult",
     "detect_stray_exports",
+    "host_exports",
     "reconcile_stray_exports",
 ]

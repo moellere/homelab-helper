@@ -2042,6 +2042,7 @@ async def test_finding_description_refreshes_on_re_run(sessionmaker) -> None:
             {"host.memory.dimms": [_dimm("DIMM_A1", serial=None)]},
         )
         await Reconciler().reconcile_host(s, host.id)
+        await s.commit()  # a second connection must see the finding (Postgres)
 
         # Mutate the description in-place to simulate a stale wording.
         async with sessionmaker() as s2:

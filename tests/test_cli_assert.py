@@ -220,6 +220,7 @@ def test_assert_run_pass_after_fail_resolves_finding(assert_db_url: str) -> None
     assert "still failing" in r2.stdout.lower()
 
 
+@pytest.mark.sqlite_only
 def test_assert_list_with_all_includes_disabled(assert_db_url: str, tmp_path: Path) -> None:
     # The --all flag toggles enabled-only filtering. Disable one assertion
     # via direct DB write and confirm default hides it but --all shows it.

@@ -51,6 +51,7 @@ def _table_names(db_path: Path) -> set[str]:
         con.close()
 
 
+@pytest.mark.sqlite_only
 def test_alembic_upgrade_creates_all_eleven_tables(alembic_db) -> None:
     cfg, db_path = alembic_db
     command.upgrade(cfg, "head")
@@ -80,6 +81,7 @@ def _columns(db_path: Path, table: str) -> set[str]:
         con.close()
 
 
+@pytest.mark.sqlite_only
 def test_migrated_schema_covers_every_model(alembic_db) -> None:
     """``upgrade head`` must produce every table *and column* the models declare.
 
@@ -105,6 +107,7 @@ def test_migrated_schema_covers_every_model(alembic_db) -> None:
     assert not missing, f"migrated schema is missing columns: {missing}"
 
 
+@pytest.mark.sqlite_only
 def test_alembic_downgrade_drops_application_tables(alembic_db) -> None:
     cfg, db_path = alembic_db
     command.upgrade(cfg, "head")

@@ -89,6 +89,11 @@ def _bucket_start(epoch: float, seconds: int) -> datetime:
     return datetime.fromtimestamp(int(epoch) // seconds * seconds, tz=UTC).replace(tzinfo=None)
 
 
+def _naive_utc(ts: datetime) -> datetime:
+    """Rows come back naive from SQLite and aware from Postgres; buckets are naive UTC."""
+    return ts.astimezone(UTC).replace(tzinfo=None) if ts.tzinfo is not None else ts
+
+
 def _mean(xs: list[float]) -> float | None:
     return sum(xs) / len(xs) if xs else None
 
@@ -162,7 +167,7 @@ async def record_usage(
     if not buckets:
         return result
     existing = {
-        row.ts: row
+        _naive_utc(row.ts): row
         for row in (
             await session.execute(
                 select(UsageSample).where(

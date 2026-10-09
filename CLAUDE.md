@@ -42,6 +42,8 @@ src/homelab_helper/
 │                   usage (8.3 history: RRD rollups, retention, p95 summary),
 │                   rightsizing (8.4: cores/memory from history),
 │                   suggestions (8.7 idle capability, missing blocks),
+│                   cluster_nodes (9.2: the one rule for "is this host a
+│                   placement target"; rebalance/surplus/bottlenecks read it),
 │                   playbooks (finding → proposal, deterministic), listener
 │                   (asks about agent/playbook proposals), k8s_workloads,
 │                   manifest (authoring schema for ProposalLog.artifact)
@@ -274,7 +276,7 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
-| 9 — Road to 1.0 | 9.1 in progress: `fixtures/asymmetric-lab.yaml` closes P5-AC4 and P4-AC2's derivation through the real CLI; the rest of 9.1 is operator time on hardware. 9.2–9.7 planned (`roadmap.md` Phase 9) |
+| 9 — Road to 1.0 | 9.1: `fixtures/asymmetric-lab.yaml` closes P5-AC4 and P4-AC2's derivation through the real CLI; the rest is operator time on hardware. 9.2 done: placement targets are cluster nodes by one shared rule, daemon defaults follow `helper config`, examples carry no lab names. 9.3–9.7 planned (`roadmap.md` Phase 9) |
 | 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F), agent-side `propose_action` + manifest schema + secret references (agent-access items 4–6). All six ACs implemented; live-fleet validation outstanding |
 
 Live-fleet validation: Phases 4–7 have run against the operator's lab

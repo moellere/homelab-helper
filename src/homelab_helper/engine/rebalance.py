@@ -34,6 +34,7 @@ from sqlalchemy import select
 
 from homelab_helper.db.enums import PartKind
 from homelab_helper.db.models import Cluster, Host, PhysicalPart, Placement, VirtualMachine
+from homelab_helper.engine.cluster_nodes import cluster_nodes
 from homelab_helper.engine.network_path import Topology, load_topology
 from homelab_helper.engine.retire import retired_host_ids
 from homelab_helper.engine.rightsizing import MIN_SAMPLES as USAGE_MIN_SAMPLES
@@ -174,18 +175,12 @@ async def _load_fleet(
             unknown.append(h.hostname)
         by_id[h.id] = load
 
-    # Membership comes from the cluster's own node list when discovery recorded
-    # one, and otherwise from the guests a host is already running. A host that
-    # runs nothing and is on no node list is not a hypervisor the planner may
-    # fill — a NAS or a Pi with free RAM is not a migration target.
-    by_name = {load.hostname: load for load in by_id.values()}
-    for cluster in (await session.execute(select(Cluster))).scalars().all():
-        for node in (cluster.attributes or {}).get("nodes") or []:
-            if node in by_name:
-                by_name[node].clusters.add(cluster.id)
+    # Membership is the shared rule in engine/cluster_nodes.py — a NAS or a Pi
+    # with free RAM is not a migration target.
+    nodes = await cluster_nodes(session, hosts)
+    for host_id, load in by_id.items():
+        load.clusters = set(nodes.of(host_id))
     for vm in (await session.execute(select(VirtualMachine))).scalars().all():
-        if vm.node_host_id in by_id:
-            by_id[vm.node_host_id].clusters.add(vm.cluster_id)
         if vm.status != "running" or vm.node_host_id not in by_id or not vm.memory_bytes:
             continue
         load = by_id[vm.node_host_id]

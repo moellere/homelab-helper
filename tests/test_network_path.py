@@ -137,7 +137,7 @@ def test_example_topology_file_parses() -> None:
 
     topology = load_topology(P("fixtures/network-topology.example.yaml"))
     assert topology is not None
-    assert topology.site_of("wyhome") == "wyola"
+    assert topology.site_of("remote-node0") == "remote"
 
 
 # ---------------------------------------------------------------------------

@@ -87,7 +87,7 @@ class UniFiConfig:
     def all_from_env(cls) -> list[UniFiConfig]:
         """Every configured controller, for labs with more than one gateway.
 
-        ``HOMELAB_HELPER_UNIFI_CONTROLLERS=covington,wyola`` opts in; each name
+        ``HOMELAB_HELPER_UNIFI_CONTROLLERS=main,remote`` opts in; each name
         then reads ``HOMELAB_HELPER_UNIFI_<NAME>_URL`` / ``_API_KEY`` (and
         optional ``_SITE`` / ``_VERIFY_SSL``). An API key is per-controller —
         one gateway's key is rejected by another. With the list unset this is

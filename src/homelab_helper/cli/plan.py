@@ -20,6 +20,7 @@ from rich.table import Table
 from homelab_helper import mcp_server
 from homelab_helper.config import database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker
+from homelab_helper.engine.cluster_nodes import PLACEMENT_TARGET_RULE
 from homelab_helper.engine.network_path import (
     TOPOLOGY_ENV_VAR,
     TopologyError,
@@ -31,7 +32,7 @@ from homelab_helper.engine.placement import (
     recommend_placement,
 )
 from homelab_helper.engine.rebalance import RebalanceReport, plan_rebalance
-from homelab_helper.engine.reconfigure import SurplusHit, analyze_surplus
+from homelab_helper.engine.reconfigure import SurplusReport, analyze_surplus
 from homelab_helper.engine.workloads import (
     WorkloadLibraryError,
     WorkloadProfile,
@@ -279,11 +280,10 @@ def plan_rebalance_cmd(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
-def _print_surplus(hits: list[SurplusHit]) -> None:
-    if not hits:
+def _print_surplus(report: SurplusReport) -> None:
+    if not report.hits:
         console.print("[green]no surplus capacity worth reconfiguring[/green]")
-        return
-    for hit in hits:
+    for hit in report.hits:
         cpu = f", {hit.cpu_model}" if hit.cpu_model else ""
         console.print(
             f"[bold]{hit.hostname}[/bold]: {hit.ram_gb:.0f} GiB RAM at "
@@ -297,6 +297,10 @@ def _print_surplus(hits: list[SurplusHit]) -> None:
         for i, option in enumerate(hit.options, 1):
             console.print(f"  {i}. {option}")
         console.print()
+    if report.not_nodes:
+        skipped = ", ".join(f"{host} ({reason})" for host, reason in report.not_nodes)
+        console.print(f"[dim]not a placement target: {escape(skipped)}[/dim]")
+        console.print(f"[dim]{PLACEMENT_TARGET_RULE}[/dim]")
 
 
 @plan_app.command(name="surplus")
@@ -310,16 +314,16 @@ def plan_surplus(
         try:
             sm = make_sessionmaker(engine)
             async with sm() as session:
-                hits = await analyze_surplus(session)
+                report = await analyze_surplus(session)
         finally:
             await engine.dispose()
 
-        _print_surplus(hits)
-        if not narrate or not hits:
+        _print_surplus(report)
+        if not narrate or not report.hits:
             return 0
         router = _load_router()
         try:
-            result = await narrate_surplus(router, hits)
+            result = await narrate_surplus(router, report.hits)
         except RouterRefusal as refusal:
             console.print(f"[yellow]narration unavailable:[/yellow] {refusal}")
             return 0

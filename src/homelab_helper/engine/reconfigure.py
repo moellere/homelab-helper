@@ -13,6 +13,11 @@ Options are generated from the detected facts (which VMs, which DIMMs, which
 loaded host would benefit); an "accept" option is always present because a
 deliberate reserve is a legitimate configuration, and declaring it
 (``OperationalIntent`` / stopped-by-design) is how it stops resurfacing.
+
+Only cluster nodes are candidates (``engine/cluster_nodes.py``). A NAS running
+Docker has free RAM and spare DIMMs by the harness's lights — it sees no guests
+there — and was called surplus for it. It is not a placement target, so it is
+reported as skipped with the reason, never as surplus.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from sqlalchemy import select
 
 from homelab_helper.db.enums import PartKind
 from homelab_helper.db.models import Host, PhysicalPart, Placement, VirtualMachine
+from homelab_helper.engine.cluster_nodes import NOT_A_NODE, cluster_nodes
 from homelab_helper.engine.retire import retired_host_ids
 
 if TYPE_CHECKING:
@@ -51,14 +57,32 @@ class SurplusHit:
         return asdict(self)
 
 
-async def analyze_surplus(session: AsyncSession) -> list[SurplusHit]:
-    """Hosts with capacity to spare and something reconfigurable about it."""
+@dataclass
+class SurplusReport:
+    hits: list[SurplusHit] = field(default_factory=list)
+    not_nodes: list[tuple[str, str]] = field(default_factory=list)
+    """``(hostname, reason)`` for hosts that are not placement targets."""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "hits": [h.as_dict() for h in self.hits],
+            "not_placement_targets": [{"hostname": h, "reason": r} for h, r in self.not_nodes],
+        }
+
+
+async def analyze_surplus(session: AsyncSession) -> SurplusReport:
+    """Cluster nodes with capacity to spare and something reconfigurable about it."""
     retired = await retired_host_ids(session)
-    hosts = [
+    every = [
         h
         for h in (await session.execute(select(Host).order_by(Host.hostname))).scalars().all()
         if h.id not in retired
     ]
+    nodes = await cluster_nodes(session, every)
+    hosts = [h for h in every if nodes.is_node(h.id)]
+    report = SurplusReport(
+        not_nodes=[(h.hostname, NOT_A_NODE) for h in every if not nodes.is_node(h.id)]
+    )
 
     committed: dict[Any, int] = {}
     stopped: dict[Any, list[str]] = {}
@@ -125,7 +149,8 @@ async def analyze_surplus(session: AsyncSession) -> list[SurplusHit]:
             "stopped VMs stopped-by-design (OperationalIntent) so this stops resurfacing"
         )
         hits.append(hit)
-    return hits
+    report.hits = hits
+    return report
 
 
-__all__ = ["SurplusHit", "analyze_surplus"]
+__all__ = ["SurplusHit", "SurplusReport", "analyze_surplus"]

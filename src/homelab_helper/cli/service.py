@@ -54,7 +54,7 @@ def service_resolvers() -> None:
 
 @service_app.command(name="retire-resolver")
 def service_retire_resolver(
-    resolver: str = typer.Argument(..., help="Resolver tag, e.g. 'unifi' or 'unifi:covington'."),
+    resolver: str = typer.Argument(..., help="Resolver tag, e.g. 'unifi' or 'unifi:main'."),
     scope: str | None = typer.Option(None, "--scope", help="internal | external (default: both)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
 ) -> None:

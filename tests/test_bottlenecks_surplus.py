@@ -25,6 +25,7 @@ from homelab_helper.db.models import (
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.bottlenecks import analyze_bottlenecks, persist_bottlenecks
+from homelab_helper.engine.cluster_nodes import NOT_A_NODE
 from homelab_helper.engine.reconfigure import analyze_surplus
 from tests.test_cli_chat import EchoRouter
 
@@ -139,27 +140,34 @@ async def test_symmetric_cluster_is_clean(sessionmaker) -> None:
     assert all(h.pattern != "cluster-link-asymmetry" for h in hits)
 
 
+async def _seed_memory_pressure(s, *, cold_is_node: bool) -> None:
+    """hot runs one 14 GiB guest of 16 GiB; cold is roomy and idle. Whether cold
+    is a node of the cluster is the whole question."""
+    hot = _host("hot", mem_gb=16)
+    cold = _host("cold", mem_gb=32)
+    s.add_all([hot, cold])
+    await s.flush()
+    nodes = ["cold", "hot"] if cold_is_node else ["hot"]
+    cluster = Cluster(name="lab", kind="proxmox", attributes={"nodes": nodes})
+    s.add(cluster)
+    await s.flush()
+    s.add(
+        VirtualMachine(
+            cluster_id=cluster.id,
+            vmid=1,
+            name="bigvm",
+            kind="qemu",
+            status="running",
+            node_name="hot",
+            node_host_id=hot.id,
+            memory_bytes=14 * _GB,
+        )
+    )
+
+
 async def test_memory_pressure_names_largest_vm(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
-        hot = _host("hot", mem_gb=16)
-        cold = _host("cold", mem_gb=32)
-        s.add_all([hot, cold])
-        await s.flush()
-        cluster = Cluster(name="lab", kind="proxmox")
-        s.add(cluster)
-        await s.flush()
-        s.add(
-            VirtualMachine(
-                cluster_id=cluster.id,
-                vmid=1,
-                name="bigvm",
-                kind="qemu",
-                status="running",
-                node_name="hot",
-                node_host_id=hot.id,
-                memory_bytes=14 * _GB,
-            )
-        )
+        await _seed_memory_pressure(s, cold_is_node=True)
     async with sessionmaker() as s:
         hits = await analyze_bottlenecks(s)
     pressure = [h for h in hits if h.pattern == "memory-pressure"]
@@ -168,6 +176,19 @@ async def test_memory_pressure_names_largest_vm(sessionmaker) -> None:
     joined = " ".join(pressure[0].mitigations)
     assert "bigvm" in joined  # the actual largest VM
     assert "cold" in joined  # the actual idle destination
+
+
+async def test_memory_pressure_never_offers_a_host_outside_the_cluster(sessionmaker) -> None:
+    """A NAS with free RAM is not where a guest can go (Phase 9.2)."""
+    async with session_scope(sessionmaker) as s:
+        await _seed_memory_pressure(s, cold_is_node=False)
+    async with sessionmaker() as s:
+        hits = await analyze_bottlenecks(s)
+    pressure = [h for h in hits if h.pattern == "memory-pressure"]
+    assert len(pressure) == 1
+    joined = " ".join(pressure[0].mitigations)
+    assert "cold" not in joined
+    assert "add RAM to hot" in joined
 
 
 async def test_storage_single_uplink_detected(sessionmaker) -> None:
@@ -306,7 +327,7 @@ async def test_surplus_flags_node2_with_three_options(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         await _seed_surplus(s)
     async with sessionmaker() as s:
-        hits = await analyze_surplus(s)
+        hits = (await analyze_surplus(s)).hits
     assert len(hits) == 1
     hit = hits[0]
     assert hit.hostname == "node2"
@@ -325,7 +346,7 @@ async def test_surplus_keeps_at_least_one_dimm(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         await _seed_surplus(s)
     async with sessionmaker() as s:
-        hits = await analyze_surplus(s)
+        hits = (await analyze_surplus(s)).hits
     # 3 DIMMs placed; only 2 offered as spare.
     assert len(hits[0].spare_dimm_gb) == 2
 
@@ -334,8 +355,28 @@ async def test_busy_host_is_not_surplus(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         await _seed_surplus(s)
     async with sessionmaker() as s:
-        hits = await analyze_surplus(s)
+        hits = (await analyze_surplus(s)).hits
     assert all(h.hostname != "busy" for h in hits)
+
+
+async def _add_nas(s) -> None:
+    """A NAS running Docker: 64 GiB, four DIMMs, no guest — surplus by the old rule."""
+    nas = _host("nas", mem_gb=64, disk_tb=8)
+    s.add(nas)
+    await s.flush()
+    for n in range(4):
+        await _add_dimm(s, nas, f"NAS-{n}", 16)
+
+
+async def test_a_nas_with_spare_dimms_is_not_surplus(sessionmaker) -> None:
+    """Phase 9.2: free RAM the harness cannot place a guest into is not surplus."""
+    async with session_scope(sessionmaker) as s:
+        await _seed_surplus(s)
+        await _add_nas(s)
+    async with sessionmaker() as s:
+        report = await analyze_surplus(s)
+    assert [h.hostname for h in report.hits] == ["node2"]
+    assert report.not_nodes == [("nas", NOT_A_NODE)]
 
 
 async def test_idle_host_without_slack_is_quiet(sessionmaker) -> None:
@@ -343,7 +384,7 @@ async def test_idle_host_without_slack_is_quiet(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         s.add(_host("plain-idle", mem_gb=16))
     async with sessionmaker() as s:
-        hits = await analyze_surplus(s)
+        hits = (await analyze_surplus(s)).hits
     assert hits == []
 
 
@@ -366,6 +407,9 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: str) -> None:
                 await _seed_ceph_asymmetry(s)
             elif seed == "surplus":
                 await _seed_surplus(s)
+            elif seed == "surplus-nas":
+                await _seed_surplus(s)
+                await _add_nas(s)
         await engine.dispose()
 
     asyncio.run(_init())
@@ -399,6 +443,19 @@ def test_cli_surplus_prints_options(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert "24 GiB RAM" in result.stdout
     assert "old-plex" in result.stdout
     assert "stopped-by-design" in result.stdout
+
+
+def test_cli_surplus_says_what_a_placement_target_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 9 AC3: the NAS is not called surplus, and the rule is on screen."""
+    _db(tmp_path, monkeypatch, "surplus-nas")
+    result = runner.invoke(app, ["plan", "surplus"])
+    assert result.exit_code == 0, result.output
+    assert "not a placement target: nas" in result.stdout
+    assert "node2" in result.stdout
+    assert result.stdout.index("node2") < result.stdout.index("not a placement target")
+    assert "placement target when it is a node of a cluster" in result.stdout
 
 
 def test_cli_bottlenecks_narrate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

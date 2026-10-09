@@ -156,11 +156,11 @@ never in a checkout, never in an MCP client's config block.
 ### Keeping the inventory honest
 
 Hardware gets reflashed, moved, and renamed; nothing in discovery can prove
-that "the drive that used to be in `pi-cp1`" is "the drive now in `wyhome`",
+that "the drive that used to be in `pi-cp1`" is "the drive now in `pi-cp2`",
 so the cleanup verbs are explicit and operator-driven:
 
 ```bash
-helper host retire pi-cp1 -r "reflashed as wyhome"   # records the intent, closes its placements, resolves its findings
+helper host retire pi-cp1 -r "reflashed as pi-cp2"   # records the intent, closes its placements, resolves its findings
 helper part show SSD-A                               # a part's identity and placement history
 helper part merge 0x5000c500deadbeef --into SSD-A    # same drive under a second identity: fold it in
 helper service resolvers                             # every (scope, resolver) endpoint slice
@@ -211,7 +211,7 @@ network-aware: a path inherits **the worst of its links**, so sync-replicated
 workloads (Ceph, etcd) are refused across a VPN, with the reason spelled out.
 
 ```bash
-helper plan path node0 wyhome --workload ceph-osd   # path verdict
+helper plan path node0 remote-node0 --workload ceph-osd   # path verdict
 helper plan workloads                    # browse the library
 helper plan add-workload immich          # ranked hosts + reasons
 helper plan add-workload immich --narrate

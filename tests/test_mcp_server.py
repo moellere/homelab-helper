@@ -605,6 +605,8 @@ async def test_analyze_bottlenecks_and_surplus_return_hit_lists(seeded_db: str) 
     assert set(persisted["findings"]) == {"opened", "reopened", "updated", "resolved"}
     surplus = await analyze_surplus()
     assert isinstance(surplus["hits"], list)
+    assert isinstance(surplus["not_placement_targets"], list)
+    assert "node of a cluster" in surplus["rule"]
 
 
 async def test_network_path_without_topology(monkeypatch: pytest.MonkeyPatch) -> None:

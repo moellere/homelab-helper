@@ -4,7 +4,7 @@
 ``ha.lan`` (UniFi) and ``ha.example.com`` (Cloudflare) attach to one ``Service``
 called ``ha``. That heuristic is right often enough for a homelab and wrong in
 two ways: two distinct services can share a short name (``grafana.lan`` at one
-site, ``grafana.wyola.lan`` at another), and one service can span unrelated
+site, ``grafana.remote.lan`` at another), and one service can span unrelated
 names (``ha.lan`` and ``homeassistant.example.com``). This file lets the
 operator say which is which.
 
@@ -13,8 +13,8 @@ operator say which is which.
     services:
       home-assistant:
         hostnames: [ha.lan, homeassistant.example.com]
-      grafana-wyola:
-        hostnames: ["grafana.wyola.lan", "*.grafana.wyola.lan"]
+      grafana-remote:
+        hostnames: ["grafana.remote.lan", "*.grafana.remote.lan"]
 
 A hostname maps to exactly one service; a glob (``*``/``?``) is matched with
 ``fnmatch`` after exact names. Anything not listed keeps the leftmost-label

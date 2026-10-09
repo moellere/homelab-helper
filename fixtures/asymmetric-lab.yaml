@@ -20,9 +20,10 @@
 #   - storage-single-uplink: no node carries the 2 TiB a bulk-storage host needs.
 #   - INVENTORY_GAP: every disk has a WWN, every NIC a MAC, every DIMM a serial.
 #
-# Cluster membership is read off the guest rows, not the cluster's node list —
-# a node with no guest is not a member as far as the analysers are concerned.
-# That is why each node here runs one.
+# Cluster membership follows engine/cluster_nodes.py: the cluster's node list
+# (`nodes:` below, persisted the way Proxmox discovery persists it), or the
+# nodes its guests run on when a fixture gives none. Each node here runs one
+# guest as well, so the memory-pressure and surplus views have something to say.
 
 version: 1
 
@@ -90,6 +91,7 @@ clusters:
   - name: ceph-lab
     kind: proxmox
     quorate: true
+    nodes: [ceph-a, ceph-b, ceph-c]
     guests:
       - { name: svc-a, vmid: 201, node: ceph-a, kind: qemu, status: running,
           vcpus: 2, memory_bytes: 8589934592 }

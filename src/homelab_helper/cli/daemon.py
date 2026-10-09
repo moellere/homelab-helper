@@ -26,7 +26,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
-from homelab_helper.config import database_url
+from homelab_helper.config import config_status, database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.approval import (
     ApprovalConfigError,
@@ -48,7 +48,6 @@ daemon_app = typer.Typer(
 )
 console = Console(soft_wrap=True)
 
-DEFAULT_SOURCES = "argocd,k8s,proxmox"
 MIN_DIGEST_DAYS = 6.0
 """A digest covering less than this is not due yet — so a restart, or a
 15-minute cron tick, cannot turn a weekly summary into a stream."""
@@ -66,6 +65,15 @@ async def _adapters_for(manifest: ActionManifest) -> tuple[Any, Any, Any, Any, A
     if problem is not None or adapters is None:
         return problem or "adapters unavailable"
     return adapters.proxmox, adapters.k8s, adapters.argocd, adapters.unifi, adapters.ssh
+
+
+def configured_sources() -> list[str]:
+    """The discovery sources ``helper config`` reports configured — the default
+    when ``--sources`` is not given, so a lab without Argo CD is never asked
+    about Argo CD every hour because the author's lab had it."""
+    from homelab_helper.mcp_server import _DISCOVERERS  # noqa: PLC0415 - interface→interface
+
+    return [s for s in config_status()["configured_sources"] if s in _DISCOVERERS]
 
 
 async def run_discovery_pass(sources: list[str]) -> dict[str, Any]:
@@ -158,8 +166,11 @@ def _report(job: str, result: dict[str, Any]) -> None:
 
 @daemon_app.command(name="run")
 def daemon_run(
-    sources: str = typer.Option(
-        DEFAULT_SOURCES, "--sources", help="Comma-separated discovery sources; '' to disable."
+    sources: str | None = typer.Option(
+        None,
+        "--sources",
+        help="Comma-separated discovery sources; default: every source `helper config` "
+        "reports configured; '' to disable.",
     ),
     discovery_every: int = typer.Option(
         60, "--discovery-every", help="Minutes between discovery passes."
@@ -179,7 +190,11 @@ def daemon_run(
     once: bool = typer.Option(False, "--once", help="One pass of each enabled job, then exit."),
 ) -> None:
     """Discovery → playbooks → listener, on cadences (or once with --once)."""
-    source_list = [s.strip() for s in sources.split(",") if s.strip()]
+    source_list = (
+        configured_sources()
+        if sources is None
+        else [s.strip() for s in sources.split(",") if s.strip()]
+    )
 
     async def _pass(job: str) -> None:
         try:
@@ -237,4 +252,10 @@ def daemon_run(
     asyncio.run(_once() if once else _forever())
 
 
-__all__ = ["daemon_app", "run_discovery_pass", "run_listen_pass", "run_playbook_pass"]
+__all__ = [
+    "configured_sources",
+    "daemon_app",
+    "run_discovery_pass",
+    "run_listen_pass",
+    "run_playbook_pass",
+]

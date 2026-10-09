@@ -24,7 +24,11 @@ from homelab_helper.db.enums import FindingKind, FindingSeverity
 from homelab_helper.db.models import Cluster, ReconciliationFinding, VirtualMachine
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.bottlenecks import analyze_bottlenecks
-from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
+from homelab_helper.engine.lab_replay import (
+    LabFixtureError,
+    load_lab_fixture,
+    parse_lab_fixture,
+)
 
 if TYPE_CHECKING:
     from homelab_helper.engine.bottlenecks import BottleneckHit
@@ -83,6 +87,9 @@ async def test_fixture_seeds_the_cluster_its_guests_imply(sessionmaker) -> None:
         cluster = (await s.execute(select(Cluster))).scalar_one()
         assert cluster.name == "ceph-lab"
         assert cluster.node_count == 3
+        # Persisted the way Proxmox discovery persists it, so every planner
+        # that reads the node list sees a replayed cluster the same way.
+        assert cluster.attributes["nodes"] == ["ceph-a", "ceph-b", "ceph-c"]
         guests = (await s.execute(select(VirtualMachine))).scalars().all()
         # Membership is read off the guests, so each must resolve to a real host.
         assert all(g.node_host_id is not None for g in guests)
@@ -119,6 +126,28 @@ async def test_asymmetric_fixture_derives_the_four_mitigations(sessionmaker) -> 
     assert "2.5 GbE" in uplink
     assert relocate.endswith("to ceph-a")
     assert accept.startswith("accept:")
+
+
+async def test_a_listed_node_counts_even_when_it_runs_nothing(sessionmaker) -> None:
+    """The node list, not the guests, decides membership: drain ceph-c and the
+    asymmetry it causes is still reported, because it is still an OSD host."""
+    data = _fixture_data()
+    data["clusters"][0]["guests"] = [
+        g for g in data["clusters"][0]["guests"] if g["node"] != _SLOW_NODE
+    ]
+
+    hits = await _asymmetry_hits(sessionmaker, data)
+
+    assert len(hits) == 1
+    assert _SLOW_NODE in hits[0].title
+
+
+async def test_a_declared_node_must_be_a_host_in_the_fixture(sessionmaker) -> None:
+    data = _fixture_data()
+    data["clusters"][0]["nodes"].append("ceph-z")
+    async with session_scope(sessionmaker) as s:
+        with pytest.raises(LabFixtureError, match="ceph-z"):
+            await load_lab_fixture(s, data)
 
 
 async def test_a_symmetric_fleet_silences_the_pattern(sessionmaker) -> None:

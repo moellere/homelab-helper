@@ -93,6 +93,7 @@ from homelab_helper.engine.backups import (
 from homelab_helper.engine.bottlenecks import analyze_bottlenecks as _analyze_bottlenecks
 from homelab_helper.engine.bottlenecks import persist_bottlenecks
 from homelab_helper.engine.category_findings import reconcile_category_findings
+from homelab_helper.engine.cluster_nodes import PLACEMENT_TARGET_RULE
 from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
@@ -1581,15 +1582,16 @@ async def analyze_bottlenecks(persist: bool = False) -> dict[str, Any]:
 
 @server.tool()
 async def analyze_surplus() -> dict[str, Any]:
-    """Hosts with capacity to spare and something reconfigurable about it
-    (stopped VMs, spare DIMMs), each with the honest options: use it, move it,
-    or declare the reserve deliberate."""
+    """Cluster nodes with capacity to spare and something reconfigurable about
+    it (stopped VMs, spare DIMMs), each with the honest options: use it, move
+    it, or declare the reserve deliberate. Hosts that are not placement targets
+    (a NAS, a Pi) are listed under ``not_placement_targets`` with the reason."""
     engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
-            hits = await _analyze_surplus(session)
-        return {"hits": [h.as_dict() for h in hits]}
+            report = await _analyze_surplus(session)
+        return {**report.as_dict(), "rule": PLACEMENT_TARGET_RULE}
     finally:
         await engine.dispose()
 

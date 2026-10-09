@@ -13,7 +13,7 @@ reconcile pass owns (``docs/backlog.md``, "Host retire + part merge"):
   different identity (a USB enclosure forging a WWN, Talos vs. Ubuntu naming
   serials differently). No heuristic links them; :func:`merge_parts` moves the
   duplicate's placement history onto the survivor and deletes it.
-- A DNS resolver is renamed (``unifi`` → ``unifi:covington``) and its old
+- A DNS resolver is renamed (``unifi`` → ``unifi:main``) and its old
   ``ServiceEndpoint`` slice is orphaned. :func:`retire_resolver_slice` deletes
   a slice and the services left empty by it.
 

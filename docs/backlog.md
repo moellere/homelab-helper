@@ -1002,12 +1002,27 @@ real for someone other than its author. Slices in delivery order.
     guest rows, so a fixture without guests has no cluster.
     - [ ] P4-AC2's narration half: one `helper bottlenecks --narrate` against
       the fixture and the operator's own router. No hardware, but not a test.
-- [ ] **9.2 De-assume the lab**
-  - [ ] Hosts gain a role, or it derives from cluster membership plus
-    capability, so `plan surplus` stops calling covomv surplus (a NAS running
-    Docker) — the mirror of the `plan rebalance` targets defect fixed in #51.
-  - [ ] Runbook text that still assumes the day-one 1 GbE / 2.5 GbE asymmetry.
-  - [ ] Sweep for other places the fleet's shape became logic rather than data.
+- [x] **9.2 De-assume the lab**
+  - [x] Derived, not stored: `engine/cluster_nodes.py` is the one rule for "is
+    this host a placement target" — a node of a cluster, by the cluster's node
+    list or by the guests it runs — and `plan rebalance`, `plan surplus` and the
+    memory-pressure pattern all read it. The NAS is reported as *not a
+    placement target* with the reason, never as surplus; `plan surplus` prints
+    the rule. No role column: NetBox owns `role`, and a stored role that
+    disagreed with what a host runs would be the worse signal.
+  - [x] Runbook text: the P4-AC2/P5-AC4 sections name no speeds of their own
+    (done with 9.1); the remaining "USB 2.5GbE" remedy is now "upgrade the
+    slow link".
+  - [x] Sweep: the memory-pressure pattern offered any roomy host as a
+    migration destination (the test asserted it); link-asymmetry membership
+    came from guests only, so a drained OSD host vanished from the pattern;
+    the daemon's default discovery sources were the author's stack
+    (`argocd,k8s,proxmox`) — now whatever `helper config` reports configured;
+    the example topology and alias fixtures, four docstrings and three README
+    examples named the lab's sites and hosts. Replay fixtures can declare a
+    cluster's `nodes:` the way discovery persists it. Written down rather than
+    changed: `plan placement` is deliberately *not* restricted to cluster
+    nodes — a Docker host is a legitimate target for a container.
 - [ ] **9.3 Docs site** (mkdocs-material) — getting-started **led by
   `helper discover replay`**, which already produces 13 findings with no
   hardware and is currently undocumented as the on-ramp; CLI reference; probe

@@ -540,3 +540,28 @@ def test_daemon_once_runs_each_job(tmp_path, monkeypatch) -> None:
     result = CliRunner().invoke(app, ["daemon", "run", "--once", "--sources", "", "--no-ask"])
     assert result.exit_code == 0
     assert seen[-1] == "playbooks"
+
+
+def test_daemon_default_sources_are_the_configured_ones(tmp_path, monkeypatch) -> None:
+    """Phase 9.2: no --sources means what `helper config` says is configured —
+    not the author's stack. conftest strips every HOMELAB_HELPER_* variable, so
+    Argo CD is unconfigured here; k8s needs no variables and is always listed."""
+    from typer.testing import CliRunner
+
+    from homelab_helper.cli import daemon as mod
+    from homelab_helper.cli.main import app
+
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/d.db")
+    monkeypatch.setenv("HOMELAB_HELPER_PROXMOX_URL", "https://pve.test")
+    monkeypatch.setenv("HOMELAB_HELPER_PROXMOX_TOKEN_ID", "u@pve!t")
+    monkeypatch.setenv("HOMELAB_HELPER_PROXMOX_TOKEN_SECRET", "s")
+    seen: list[list[str]] = []
+
+    async def fake_discovery(sources):
+        seen.append(list(sources))
+        return {}
+
+    monkeypatch.setattr(mod, "run_discovery_pass", fake_discovery)
+    result = CliRunner().invoke(app, ["daemon", "run", "--once", "--no-ask", "--no-playbooks"])
+    assert result.exit_code == 0, result.output
+    assert seen == [["proxmox", "k8s"]]

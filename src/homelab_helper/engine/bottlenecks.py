@@ -13,7 +13,8 @@ Patterns in this slice:
   reweight data away from the slow node, upgrade its link to the fleet speed,
   relocate storage daemons to a full-speed node, or accept it as a tier.
 - **memory-pressure** → ``CHOKEPOINT``. A host committed past 90%: migrate the
-  named largest VM, add RAM, or accept.
+  named largest VM to an idle cluster node (``engine/cluster_nodes.py`` — never
+  a NAS with free RAM), add RAM, or accept.
 - **storage-single-uplink** → ``CHOKEPOINT``. A bulk-storage host on a single
   ≤1 GbE uplink serving a multi-node fleet: every consumer shares that link.
 
@@ -40,6 +41,7 @@ from homelab_helper.db.models import (
     ReconciliationFinding,
     VirtualMachine,
 )
+from homelab_helper.engine.cluster_nodes import cluster_nodes
 from homelab_helper.engine.fingerprint import make_fingerprint
 from homelab_helper.engine.retire import retired_host_ids
 
@@ -93,6 +95,7 @@ class BottleneckHit:
 @dataclass
 class _Fleet:
     hosts: list[Host]
+    node_ids: frozenset[Any]  # hosts that are a node of some cluster
     nic_speed: dict[Any, int]  # host_id -> fastest NIC Mbps
     nic_count: dict[Any, int]
     cluster_nodes: dict[str, list[Host]]  # cluster name -> member hosts
@@ -123,15 +126,17 @@ async def _load_fleet(session: AsyncSession) -> _Fleet:
             nic_speed[placement.host_id] = max(current, int(part.speed_mbps))
 
     clusters = {c.id: c.name for c in (await session.execute(select(Cluster))).scalars().all()}
+    nodes = await cluster_nodes(session, hosts)
     cluster_hosts: dict[str, dict[Any, Host]] = {}
+    for cluster_id, host_ids in nodes.by_cluster().items():
+        cluster_name = clusters.get(cluster_id)
+        if cluster_name is not None:
+            cluster_hosts[cluster_name] = {hid: by_id[hid] for hid in host_ids}
     committed: dict[Any, int] = {}
     largest_vm: dict[Any, tuple[str, int]] = {}
     for vm in (await session.execute(select(VirtualMachine))).scalars().all():
         if vm.node_host_id not in by_id:
             continue
-        cluster_name = clusters.get(vm.cluster_id)
-        if cluster_name is not None:
-            cluster_hosts.setdefault(cluster_name, {})[vm.node_host_id] = by_id[vm.node_host_id]
         if vm.status == "running" and vm.memory_bytes:
             committed[vm.node_host_id] = committed.get(vm.node_host_id, 0) + int(vm.memory_bytes)
             best = largest_vm.get(vm.node_host_id)
@@ -140,6 +145,7 @@ async def _load_fleet(session: AsyncSession) -> _Fleet:
 
     return _Fleet(
         hosts=hosts,
+        node_ids=frozenset(nodes.members),
         nic_speed=nic_speed,
         nic_count=nic_count,
         cluster_nodes={
@@ -205,7 +211,8 @@ def _detect_memory_pressure(fleet: _Fleet) -> list[BottleneckHit]:
     idle_hosts = [
         h.hostname
         for h in fleet.hosts
-        if _cap(h, "mem_total_bytes")
+        if h.id in fleet.node_ids
+        and _cap(h, "mem_total_bytes")
         and fleet.committed.get(h.id, 0)
         / max(int(_cap(h, "mem_total_bytes")) - _OS_RESERVE_BYTES, 1)
         < _IDLE_RATIO

@@ -185,7 +185,7 @@ and forth between hosts is the bug this AC exists to catch.
 ### P5-AC4 · Ceph mitigations are generated
 
 Compare `helper bottlenecks` output against the day-one report's four
-mitigations (CRUSH reweight, USB 2.5GbE, OSD relocate, accept).
+mitigations (reweight, upgrade the slow link, relocate OSDs, accept).
 
 **Pass:** the framework derives them from your topology.
 **Fail if:** they look hardcoded — change a link speed and confirm the
@@ -516,7 +516,7 @@ shape — see the asymmetric fixture under P4-AC2.
 | P5-AC2 placement | ✅ 10/03/2026 | `immich` → bmax0 with RAM headroom, threads, GPU optionality and photo-library data gravity; arm/RAM rejections explained. |
 | P5-AC3 rebalance | ✅ after fix 10/03/2026 | First run: no migrations-only plan. Then: Proxmox guests planned onto a NAS, arm64 Pis and Talos workers, one VM ping-ponging. Three defects fixed (PR #51); now three plan classes, all moves within bmax0–3, no repeated VM. |
 | P5-AC4 Ceph mitigations | ✅ 10/09/2026 | Against the asymmetric fixture: all four mitigations derived from its facts — CRUSH-reweight away from `ceph-c`, bring it 1000→2500 Mbps, relocate its OSDs to `ceph-a`, accept it as a cold tier. The runbook's "fail if they look hardcoded" check is now a test rather than a manual step: change `ceph-c`'s speed and the recommendation moves with it; make it symmetric and the pattern goes quiet. |
-| P5-AC5 surplus | ✅ 10/03/2026 | bmax0: three stopped guests, 32 GiB spare DIMMs, three options. Gap: covomv (a NAS running Docker) is also called surplus — the planner has no "not a hypervisor" notion; same root as the P5-AC3 targets defect, noted in backlog. |
+| P5-AC5 surplus | ✅ 10/03/2026 | bmax0: three stopped guests, 32 GiB spare DIMMs, three options. Gap: covomv (a NAS running Docker) is also called surplus — the planner has no "not a hypervisor" notion; same root as the P5-AC3 targets defect. Fixed in Phase 9.2: only cluster nodes are candidates and the NAS is listed as not a placement target with the reason (`test_a_nas_with_spare_dimms_is_not_surplus`); re-run to confirm on the fleet. |
 | P5-AC6 VPN path refused | ✅ 10/03/2026 | Needed a topology file (none existed): two sites, VPN 6 ms RTT measured, bandwidth a placeholder. `plan path wynode2 bmax0` → LAN-grade: no. |
 | P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 (a *dispatch failure* demotes) and step 6 (kill switch mid-flight) were exercised by tests only. |
 | P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |

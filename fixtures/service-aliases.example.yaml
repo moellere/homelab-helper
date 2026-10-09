@@ -20,7 +20,7 @@ services:
 
   # Two distinct services that share a short name: keep the primary site's
   # grafana as "grafana" (default) and split the second site off.
-  grafana-wyola:
+  grafana-remote:
     hostnames:
-      - grafana.wyola.lan
-      - "*.grafana.wyola.lan"
+      - grafana.remote.lan
+      - "*.grafana.remote.lan"

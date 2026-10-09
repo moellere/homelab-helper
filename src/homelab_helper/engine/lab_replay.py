@@ -19,6 +19,7 @@ Fixture schema (v1)::
     clusters:                       # optional — Cluster + VirtualMachine rows
       - name: lab-ceph
         kind: proxmox
+        nodes: [lab-a, lab-b]       # optional; else the nodes the guests run on
         guests:
           - { name: vm-100, vmid: 100, node: lab-a, status: running,
               memory_bytes: 4294967296 }
@@ -26,9 +27,10 @@ Fixture schema (v1)::
       - { name: lab-a.mem, host: lab-a, description: ..., verifier_spec: { ... } }
 
 A ``clusters`` block is what lets the fleet-shape analysers (``helper
-bottlenecks``, ``helper plan rebalance``) run with no live management plane:
-those patterns read cluster membership off the guest rows, so a node with no
-guest is not a cluster member as far as they are concerned.
+bottlenecks``, ``helper plan rebalance``, ``helper plan surplus``) run with no
+live management plane. Membership follows ``engine/cluster_nodes.py``: the
+cluster's node list (``nodes:``, persisted the way Proxmox discovery persists
+it), or the nodes its guests run on when the fixture gives none.
 """
 
 from __future__ import annotations
@@ -123,6 +125,12 @@ async def _resolve_host(session: AsyncSession, hostname: str, primary_ip: str | 
     return host
 
 
+async def _host_named(session: AsyncSession, hostname: str) -> Host | None:
+    return (
+        await session.execute(select(Host).where(Host.hostname == hostname))
+    ).scalar_one_or_none()
+
+
 async def _resolve_cluster(session: AsyncSession, entry: dict[str, Any]) -> Cluster:
     name = entry.get("name")
     if not isinstance(name, str) or not name:
@@ -171,9 +179,7 @@ async def _resolve_guest(session: AsyncSession, cluster: Cluster, entry: dict[st
     node = entry.get("node")
     if isinstance(node, str) and node:
         vm.node_name = node
-        host = (
-            await session.execute(select(Host).where(Host.hostname == node))
-        ).scalar_one_or_none()
+        host = await _host_named(session, node)
         if host is None:
             raise LabFixtureError(
                 f"guest {name!r} names node {node!r}, which is not a host in this fixture"
@@ -197,7 +203,18 @@ async def _load_clusters(session: AsyncSession, data: dict[str, Any]) -> tuple[i
             n_guests += int(await _resolve_guest(session, cluster, guest))
             if isinstance(guest.get("node"), str):
                 nodes.add(guest["node"])
-        cluster.node_count = len(nodes) or cluster.node_count
+        declared = entry.get("nodes")
+        if isinstance(declared, list):
+            nodes = {str(n) for n in declared}
+            for node in nodes:
+                if await _host_named(session, node) is None:
+                    raise LabFixtureError(
+                        f"cluster {cluster.name!r} names node {node!r}, "
+                        "which is not a host in this fixture"
+                    )
+        if nodes:
+            cluster.attributes = {**(cluster.attributes or {}), "nodes": sorted(nodes)}
+            cluster.node_count = len(nodes)
         n_clusters += 1
     return n_clusters, n_guests
 

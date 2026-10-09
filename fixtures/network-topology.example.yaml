@@ -16,14 +16,14 @@
 # whole path VPN-grade, which is why sync-replicated workloads refuse to span it.
 
 sites:
-  covington:
+  main:
     hosts: [node0, node1, node2, nas]
-  wyola:
-    hosts: [wyhome, wynode2, wynode3]
+  remote:
+    hosts: [remote-node0, remote-node1]
 
 links:
-  - a: covington
-    b: wyola
+  - a: main
+    b: remote
     kind: vpn
     bandwidth_mbps: 40
     latency_ms: 28

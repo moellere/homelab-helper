@@ -10,6 +10,7 @@ this only writes harness rows from what the adapter already read.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from homelab_helper.adapters.proxmox import ProxmoxAdapter
 
 # VM fields compared to decide created/updated/unchanged.
 _VM_FIELDS = (
@@ -48,6 +51,60 @@ class VirtReconcileResult:
 
 
 LEGACY_STANDALONE = "(standalone)"
+
+
+_DISK_KEY = re.compile(r"^(scsi|virtio|ide|sata|efidisk|tpmstate|unused|rootfs|mp)\d*$")
+
+
+def disk_storages(config: dict[str, Any]) -> list[str]:
+    """Storage names a guest's disks (and mounted ISOs) live on, from its config.
+
+    Every ``storage:volume,...`` disk entry counts, a CD-ROM ISO included: a
+    guest with any volume on a node-local storage cannot live-migrate.
+    """
+    names: set[str] = set()
+    for key, value in config.items():
+        if not _DISK_KEY.match(str(key)) or not isinstance(value, str):
+            continue
+        volume = value.split(",", 1)[0]
+        if volume in ("none", "") or ":" not in volume:
+            continue
+        names.add(volume.split(":", 1)[0])
+    return sorted(names)
+
+
+async def annotate_guest_storage(adapter: ProxmoxAdapter, vms: list[dict[str, Any]]) -> None:
+    """Add ``storages`` and ``shared_storage`` to each discovered guest in place.
+
+    ``shared_storage`` is True when every storage a guest's volumes live on is
+    cluster-shared (Ceph, NFS, ...), False when any is node-local, None when
+    the guest has no volumes or a config could not be read. The rebalance
+    planner refuses to propose migrating a guest that is not on shared storage.
+    """
+    shared: dict[str, bool] = {}
+    for row in await adapter.list_storage():
+        name = str(row.get("storage") or "")
+        if name:
+            shared[name] = shared.get(name, False) or bool(row.get("shared"))
+    for vm in vms:
+        node, vmid, kind = vm.get("node"), vm.get("vmid"), vm.get("type") or "qemu"
+        if not node or vmid is None:
+            continue
+        try:
+            config = await adapter.vm_config(str(node), int(vmid), str(kind))
+        except Exception:
+            continue
+        storages = disk_storages(config)
+        vm["storages"] = storages
+        vm["shared_storage"] = all(shared.get(s, False) for s in storages) if storages else None
+
+
+def _vm_attributes(vm: dict[str, Any], current: dict[str, Any] | None) -> dict[str, Any]:
+    attrs = dict(current or {})
+    if "storages" in vm:
+        attrs["storages"] = list(vm["storages"])
+        attrs["shared_storage"] = vm.get("shared_storage")
+    return attrs
 
 
 def _vm_fields_from_discovery(vm: dict[str, Any]) -> dict[str, Any]:
@@ -181,18 +238,21 @@ async def reconcile_proxmox_cluster(
                     cluster_id=cluster.id,
                     vmid=vmid,
                     discovery_source=DiscoverySource.PROXMOX,
+                    attributes=_vm_attributes(vm, None),
                     **fields,
                 )
             )
             result.vms_created.append(fields["name"])
             continue
 
+        attrs = _vm_attributes(vm, row.attributes)
         changed = any(getattr(row, f) != fields[f] for f in (*_VM_FIELDS, "node_host_id"))
-        if not changed:
+        if not changed and attrs == dict(row.attributes or {}):
             result.vms_unchanged.append(fields["name"])
             continue
         for f, value in fields.items():
             setattr(row, f, value)
+        row.attributes = attrs  # JSON column: reassign, never mutate in place
         result.vms_updated.append(fields["name"])
 
     await session.flush()
@@ -202,6 +262,8 @@ async def reconcile_proxmox_cluster(
 __all__ = [
     "LEGACY_STANDALONE",
     "VirtReconcileResult",
+    "annotate_guest_storage",
+    "disk_storages",
     "reconcile_proxmox_cluster",
     "standalone_cluster_name",
 ]

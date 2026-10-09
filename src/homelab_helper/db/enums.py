@@ -139,6 +139,7 @@ class IntentState(StrEnum):
     RUNNING = "running"
     STOPPED_BY_DESIGN = "stopped-by-design"
     DECOMMISSIONING = "decommissioning"
+    NO_NEW_GUESTS = "no-new-guests"  # HOST: keep what runs here, never a migration target
     REALIZED = "realized"
     STRAY = "stray"
     UNKNOWN = "unknown"

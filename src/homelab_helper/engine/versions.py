@@ -19,6 +19,9 @@ or did not:
   the state between the first and last node of an upgrade. MEDIUM.
 - ``k8s-skew`` / ``talos-skew`` — Kubernetes nodes on different kubelet
   versions, or Talos nodes on different Talos releases. LOW.
+- ``k8s-eol`` / ``talos-eol`` — a Kubernetes minor past (or within 180 days
+  of) upstream patch support, or a Talos minor two releases behind, from the
+  same table (``kubernetes:`` and ``talos:`` sections). MEDIUM, HIGH once past.
 - ``hass-updates`` — Home Assistant ``update.*`` entities that are ``on``,
   summarised per instance. MEDIUM when core, OS or supervisor is behind, LOW
   for add-ons and device firmware.
@@ -63,6 +66,8 @@ CATEGORIES = (
     "os-eol",
     "k8s-skew",
     "talos-skew",
+    "k8s-eol",
+    "talos-eol",
     "hass-updates",
 )
 
@@ -300,6 +305,80 @@ def _talos_release(caps: dict[str, Any]) -> str | None:
     return m.group(0) if m else None
 
 
+def _minor(version: str) -> str | None:
+    m = re.search(r"(\d+\.\d+)", version)
+    return m.group(1) if m else None
+
+
+def _eol_issue(
+    category: str, product: str, minor: str, nodes: list[str], entry: dict[str, Any], today: date
+) -> CategoryIssue | None:
+    eol = entry["eol"] if isinstance(entry["eol"], date) else date.fromisoformat(entry["eol"])
+    remaining = eol - today
+    if remaining > EOL_WARNING_WINDOW:
+        return None
+    past = remaining.days < 0
+    name = f"{product} {minor}"
+    return VersionIssue(
+        category=category,
+        target_type="cluster",
+        target_id=f"kubernetes/{product.split(maxsplit=1)[0].lower()}-{minor}",  # one per minor in use
+        severity=FindingSeverity.HIGH if past else FindingSeverity.MEDIUM,
+        title=(
+            f"{name} is past end of support ({len(nodes)} node(s))"
+            if past
+            else f"{name} reaches end of support in {remaining.days} days"
+        ),
+        description=(
+            f"{name} {entry.get('basis', 'support')} is {eol.isoformat()}; "
+            + ("no longer receives patches." if past else "plan the upgrade before then.")
+            + f" Nodes: {', '.join(nodes)}."
+        ),
+        evidence={
+            "product": product,
+            "minor": minor,
+            "eol": eol.isoformat(),
+            "days_remaining": remaining.days,
+            "nodes": nodes,
+        },
+    )
+
+
+def k8s_eol_issues(
+    hosts: Iterable[tuple[str, str, dict[str, Any]]],
+    table: dict[str, Any],
+    today: date,
+) -> tuple[list[CategoryIssue], set[str]]:
+    """Kubernetes and Talos minors past (or near) their support end, one finding
+    per minor in use; the categories that had data count as observed."""
+    kubelet: dict[str, list[str]] = {}
+    talos: dict[str, list[str]] = {}
+    for _host_id, hostname, caps in hosts:
+        k = _minor(str(caps.get("k8s_kubelet_version") or ""))
+        if k:
+            kubelet.setdefault(k, []).append(hostname)
+        release = _talos_release(caps)
+        t = _minor(release) if release else None
+        if t:
+            talos.setdefault(t, []).append(hostname)
+    observed: set[str] = set()
+    issues: list[CategoryIssue] = []
+    for category, product, key, minors in (
+        ("k8s-eol", "Kubernetes", "kubernetes", kubelet),
+        ("talos-eol", "Talos Linux", "talos", talos),
+    ):
+        if not minors:
+            continue
+        observed.add(category)
+        for minor, nodes in sorted(minors.items()):
+            entry = (table.get(key) or {}).get(minor)
+            if entry:
+                issue = _eol_issue(category, product, minor, sorted(nodes), entry, today)
+                if issue is not None:
+                    issues.append(issue)
+    return issues, observed
+
+
 def k8s_issues(
     hosts: Iterable[tuple[str, str, dict[str, Any]]],
 ) -> tuple[list[CategoryIssue], set[str]]:
@@ -406,6 +485,7 @@ __all__ = [
     "ceph_daemon_versions",
     "ceph_issues",
     "hass_update_issues",
+    "k8s_eol_issues",
     "k8s_issues",
     "load_eol_table",
     "os_eol_issues",

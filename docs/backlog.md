@@ -1117,6 +1117,19 @@ from 1.0.0 is the operator-time list under 9.1.
   `HOMELAB_HELPER_STATUS_TOKEN`) for a Homepage `customapi` tile or a Home
   Assistant REST sensor; GET-only and executor-free by test. The UI *is* the
   operator's existing dashboard, which is why there is no 9.7b yet.
+- [x] **9.8 Planner constraints from the live review (10/09/2026)** — the first
+  `plan rebalance` against the full inventory proposed migrating the Talos
+  control planes (node-local disks) and filling the one node the operator keeps
+  light. Two constraints, both explained in the plan's caveats: Proxmox
+  discovery now records each guest's `storages` and `shared_storage`
+  (`annotate_guest_storage`, one `vm_config` read per guest; an ISO on `local`
+  counts) and the planner never migrates a guest that is not on shared
+  storage; `helper host intent <host> --no-new-guests` records a host-level
+  `OperationalIntent` (new `IntentState`, Postgres enum value via migration
+  `d2e7f1a9b4c6`) that rebalance never fills and `plan add-workload` rejects.
+  Also `k8s-eol` / `talos-eol` version-currency categories from `kubernetes:`
+  and `talos:` sections of `os-eol.yaml` (one finding per minor in use), so a
+  cluster two Talos minors behind is a finding rather than a surprise.
 - [ ] **9.7b Web UI (the deferred 4.5)** — optional and last: chat, findings
   browser, trust surface read-only. Not needed for 1.0; the CLI, MCP tools and
   the status tile cover it.

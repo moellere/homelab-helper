@@ -74,7 +74,7 @@ every option.
 | `discover` | `argocd` `backups` `cloudflare` `hass` `host` `import` `k8s` `mikrotik` `network` `omv` `proxmox` `replay` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
 | `exec` | `accept` `list` `receipts` `reject` `rollback` `run` |
 | `findings` | `ack` `list` `narrate` `resolve` `show` `suppress` |
-| `host` | `retire` `show` |
+| `host` | `intent` `retire` `show` |
 | `mcp` | `serve` `tools` |
 | `netbox` | `bootstrap` `health` `sync-cluster` `sync-host` |
 | `onboard` | — |

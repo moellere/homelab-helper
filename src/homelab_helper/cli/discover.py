@@ -75,6 +75,7 @@ from homelab_helper.engine.stray_export import (
 )
 from homelab_helper.engine.talos_probe import TalosProbeRequest, probe_talos, select_talos_probes
 from homelab_helper.engine.virt_reconcile import (
+    annotate_guest_storage,
     reconcile_proxmox_cluster,
     standalone_cluster_name,
 )
@@ -489,6 +490,8 @@ def discover_proxmox(
                 return 1
             status = await adapter.cluster_status()
             vms = await adapter.list_vms()
+            if persist:
+                await annotate_guest_storage(adapter, vms)
 
             cluster_label = status["name"] or standalone_cluster_name(status, vms)
             console.print(

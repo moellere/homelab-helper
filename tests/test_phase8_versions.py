@@ -15,6 +15,8 @@ from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus
 from homelab_helper.db.models import ReconciliationFinding
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.versions import (
+    ceph_daemon_versions,
+    ceph_issues,
     hass_update_issues,
     k8s_issues,
     load_eol_table,
@@ -265,3 +267,74 @@ async def test_proxmox_reads_are_plain_gets() -> None:
         ("GET", "/api2/json/nodes/pve0/version"),
         ("GET", "/api2/json/nodes/pve0/apt/update"),
     ]
+
+
+# ---------------------------------------------------------------------- ceph
+
+
+def _ceph_meta(versions: dict[str, str]) -> dict[str, Any]:
+    """Build /cluster/ceph/metadata from ``{"mon.a": "19.2.6", "osd.0": "19.2.5"}``."""
+    meta: dict[str, Any] = {"mon": {}, "mgr": {}, "mds": {}, "osd": [], "node": {}}
+    for daemon, v in versions.items():
+        kind, name = daemon.split(".", 1)
+        entry = {"ceph_version": f"ceph version {v} (deadbeef) squid (stable)"}
+        if kind == "osd":
+            meta["osd"].append({"id": int(name), **entry})
+        else:
+            meta[kind][name] = entry
+    return meta
+
+
+def test_ceph_daemon_versions_cover_every_daemon_kind() -> None:
+    meta = _ceph_meta({"mon.a": "19.2.6", "mgr.a": "19.2.6", "mds.a": "19.2.6", "osd.0": "19.2.5"})
+    meta["mon"]["a"]["ceph_version_short"] = "19.2.6"  # the short form wins when present
+    assert ceph_daemon_versions(meta) == {
+        "mon.a": "19.2.6",
+        "mgr.a": "19.2.6",
+        "mds.a": "19.2.6",
+        "osd.0": "19.2.5",
+    }
+    assert ceph_daemon_versions({}) == {}
+
+
+def test_ceph_eol_and_mixed_versions() -> None:
+    table = load_eol_table()
+    assert table["ceph"]["19"]["codename"] == "squid"
+    # Squid, 22 days before its 2026-10-31 EOL, mid-upgrade.
+    mixed = _ceph_meta({"mon.a": "19.2.6", "mon.b": "19.2.5", "osd.0": "19.2.6"})
+    issues, observed = ceph_issues("lab", mixed, table, date(2026, 10, 9))
+    assert observed == {"ceph-eol", "ceph-mixed"}
+    by = {i.category: i for i in issues}
+    assert by["ceph-mixed"].severity is FindingSeverity.MEDIUM
+    assert by["ceph-mixed"].evidence["versions"] == {
+        "19.2.5": ["mon.b"],
+        "19.2.6": ["mon.a", "osd.0"],
+    }
+    assert by["ceph-eol"].severity is FindingSeverity.MEDIUM
+    assert by["ceph-eol"].evidence == {
+        "version": "19.2.6",
+        "eol": "2026-10-31",
+        "days_remaining": 22,
+    }
+    assert "2026-10-31" in by["ceph-eol"].description
+    # Past EOL is HIGH; a current release far from EOL is silent; no Ceph observes nothing.
+    past, _ = ceph_issues("lab", _ceph_meta({"mon.a": "18.2.4"}), table, date(2026, 10, 9))
+    assert [i.severity for i in past] == [FindingSeverity.HIGH]
+    quiet, _ = ceph_issues("lab", _ceph_meta({"mon.a": "20.2.4"}), table, date(2026, 10, 9))
+    assert quiet == []
+    assert ceph_issues("lab", {}, table, date(2026, 10, 9)) == ([], set())
+
+
+async def test_proxmox_ceph_metadata_is_a_plain_get() -> None:
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        return httpx.Response(200, json={"data": {"mon": {}, "osd": []}})
+
+    adapter = _adapter(handler)
+    try:
+        assert (await adapter.ceph_metadata())["osd"] == []
+    finally:
+        await adapter.aclose()
+    assert seen == [("GET", "/api2/json/cluster/ceph/metadata")]

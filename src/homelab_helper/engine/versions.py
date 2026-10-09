@@ -13,6 +13,10 @@ or did not:
 - ``os-eol`` — a host whose OS release is past (HIGH) or within 180 days of
   (MEDIUM) the end-of-support date in ``data/os-eol.yaml``. The table is the
   only authority; no date is guessed.
+- ``ceph-eol`` — the Ceph release the cluster runs is past (HIGH) or within 180
+  days of (MEDIUM) its upstream end of life, from the ``ceph`` section of the
+  same table. ``ceph-mixed`` — daemons on different Ceph versions, which is
+  the state between the first and last node of an upgrade. MEDIUM.
 - ``k8s-skew`` / ``talos-skew`` — Kubernetes nodes on different kubelet
   versions, or Talos nodes on different Talos releases. LOW.
 - ``hass-updates`` — Home Assistant ``update.*`` entities that are ``on``,
@@ -51,7 +55,16 @@ PENDING_MEDIUM_THRESHOLD = 50
 _LISTED_UPDATES = 8
 _CORE_UPDATE_MARKERS = ("home_assistant_core", "home_assistant_operating_system", "supervisor")
 
-CATEGORIES = ("pve-updates", "pve-mixed", "os-eol", "k8s-skew", "talos-skew", "hass-updates")
+CATEGORIES = (
+    "pve-updates",
+    "pve-mixed",
+    "ceph-eol",
+    "ceph-mixed",
+    "os-eol",
+    "k8s-skew",
+    "talos-skew",
+    "hass-updates",
+)
 
 
 def VersionIssue(**kw: Any) -> CategoryIssue:
@@ -114,6 +127,95 @@ def proxmox_issues(cluster: str, nodes: list[dict[str, Any]]) -> list[CategoryIs
             )
         )
     return issues
+
+
+# -------------------------------------------------------------------- ceph
+
+_CEPH_VERSION = re.compile(r"ceph version (\d+\.\d+\.\d+)")
+
+
+def ceph_daemon_versions(metadata: dict[str, Any]) -> dict[str, str]:
+    """``{"mon.bmax0": "19.2.6", "osd.2": "19.2.6", …}`` from ``/cluster/ceph/metadata``."""
+    out: dict[str, str] = {}
+    for kind in ("mon", "mgr", "mds"):
+        entries = metadata.get(kind) or {}
+        for name, meta in entries.items() if isinstance(entries, dict) else []:
+            if isinstance(meta, dict):
+                version = meta.get("ceph_version_short") or _short(meta.get("ceph_version"))
+                if version:
+                    out[f"{kind}.{name}"] = version
+    for meta in metadata.get("osd") or []:
+        if isinstance(meta, dict):
+            version = meta.get("ceph_version_short") or _short(meta.get("ceph_version"))
+            if version and meta.get("id") is not None:
+                out[f"osd.{meta['id']}"] = version
+    return out
+
+
+def _short(text: Any) -> str | None:
+    m = _CEPH_VERSION.search(str(text or ""))
+    return m.group(1) if m else None
+
+
+def ceph_issues(
+    cluster: str, metadata: dict[str, Any], table: dict[str, Any], today: date
+) -> tuple[list[CategoryIssue], set[str]]:
+    """EOL and mixed-version findings for the Ceph cluster ``metadata`` describes."""
+    versions = ceph_daemon_versions(metadata)
+    if not versions:
+        return [], set()
+    issues: list[CategoryIssue] = []
+    distinct = sorted(set(versions.values()))
+    if len(distinct) > 1:
+        by_version = {v: sorted(d for d, dv in versions.items() if dv == v) for v in distinct}
+        listing = "; ".join(f"{v}: {', '.join(ds)}" for v, ds in by_version.items())
+        issues.append(
+            VersionIssue(
+                category="ceph-mixed",
+                target_type="cluster",
+                target_id=f"ceph:{cluster}",
+                severity=FindingSeverity.MEDIUM,
+                title=f"Ceph on {cluster}: daemons on {len(distinct)} versions",
+                description=f"Ceph daemons run different versions — {listing}. Finish the rolling upgrade.",
+                evidence={"versions": by_version},
+            )
+        )
+    newest = max(distinct, key=lambda v: tuple(int(x) for x in v.split(".")))
+    major = newest.split(".")[0]
+    entry = (table.get("ceph") or {}).get(major)
+    if entry:
+        eol = entry["eol"] if isinstance(entry["eol"], date) else date.fromisoformat(entry["eol"])
+        remaining = eol - today
+        if remaining <= EOL_WARNING_WINDOW:
+            past = remaining.days < 0
+            name = f"Ceph {newest} ({entry.get('codename', major)})"
+            issues.append(
+                VersionIssue(
+                    category="ceph-eol",
+                    target_type="cluster",
+                    target_id=f"ceph:{cluster}",
+                    severity=FindingSeverity.HIGH if past else FindingSeverity.MEDIUM,
+                    title=(
+                        f"{name} is past end of life"
+                        if past
+                        else f"{name} reaches end of life in {remaining.days} days"
+                    ),
+                    description=(
+                        f"{name} {entry.get('basis', 'end of life')} is {eol.isoformat()}; "
+                        + (
+                            "it no longer receives upstream fixes."
+                            if past
+                            else "plan the upgrade to the next release before then."
+                        )
+                    ),
+                    evidence={
+                        "version": newest,
+                        "eol": eol.isoformat(),
+                        "days_remaining": remaining.days,
+                    },
+                )
+            )
+    return issues, {"ceph-eol", "ceph-mixed"}
 
 
 # ------------------------------------------------------------------ os eol
@@ -301,6 +403,8 @@ __all__ = [
     "CATEGORIES",
     "EOL_TABLE_PATH",
     "VersionIssue",
+    "ceph_daemon_versions",
+    "ceph_issues",
     "hass_update_issues",
     "k8s_issues",
     "load_eol_table",

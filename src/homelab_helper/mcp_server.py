@@ -141,6 +141,11 @@ from homelab_helper.engine.storage import (
 )
 from homelab_helper.engine.stray_config import reconcile_stray_config
 from homelab_helper.engine.stray_export import reconcile_stray_exports
+from homelab_helper.engine.suggestions import (
+    building_block_issues,
+    idle_gpu_issues,
+    present_names,
+)
 from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
 from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
@@ -857,6 +862,44 @@ async def _discover_backups(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _discover_suggestions(session: AsyncSession) -> dict[str, Any]:
+    """Phase 8.7: capability the lab owns but does not use, from stored facts only.
+
+    Reads the harness DB and the workload library — no adapter calls, so it
+    cannot fail for a source being down and both categories are always
+    observed.
+    """
+    retired = await retired_host_ids(session)
+    hosts = [
+        (str(h.id), h.hostname, dict(h.capabilities or {}))
+        for h in (await session.execute(select(Host))).scalars().all()
+        if h.id not in retired
+    ]
+    guests = (
+        (await session.execute(select(VirtualMachine.name).where(~VirtualMachine.template)))
+        .scalars()
+        .all()
+    )
+    services = (await session.execute(select(Service.name))).scalars().all()
+    endpoints = (await session.execute(select(ServiceEndpoint.hostname))).scalars().all()
+    present = present_names(guests, services, endpoints)
+
+    library = load_workload_library()
+    issues = idle_gpu_issues(hosts, library, present) + building_block_issues(library, present)
+    result = await reconcile_category_findings(
+        session,
+        FindingKind.SERVICE_SUGGESTION,
+        issues,
+        {"capability-idle-gpu", "building-block-missing"},
+    )
+    return {
+        "findings": result.counts(),
+        "issues": len(issues),
+        "known_names": len(present),
+        "errors": {},
+    }
+
+
 async def _proxmox_storage_facts(
     adapter: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, str], list[dict[str, Any]]]:
@@ -1065,6 +1108,7 @@ _DISCOVERERS = {
     "versions": _discover_versions,
     "backups": _discover_backups,
     "usage": _discover_usage,
+    "suggestions": _discover_suggestions,
     "storage": _discover_storage,
 }
 

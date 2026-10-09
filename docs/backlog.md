@@ -544,8 +544,6 @@ The rest of Phase 1, and all of Phase 6, is below.
 
 ### P2 — strengthens, doesn't block
 
-- [ ] **`host.pci` probe** — PCI device enumeration (currently absent from entry points)
-- [ ] **`host.gpu` probe** — GPU detection/capabilities (currently absent)
 - [ ] Verify `host.memory` emits per-DIMM identity (`dmidecode` slot topology) sufficient for `PhysicalPart`/`Placement` creation; extend if not (the roadmap names this `host.memory.dmidecode`)
 - [ ] Docs site scaffold (mkdocs-material): getting-started, CLI reference, probe SDK guide, NetBox custom-field reference
 
@@ -898,7 +896,28 @@ See `roadmap.md` Phase 8. Slices land in this order.
   - [ ] Follow-ups: LLM narration of the page (the contents are already fixed,
     so this is presentation only); a digest-scoped `--since <receipt>` for
     re-reading an old window; HTML output if the Markdown page wants a browser.
-- [ ] 8.7 Service suggestions.
+- [x] 8.7 Service suggestions — `engine/suggestions.py`,
+  `helper discover suggestions`, `run_discovery("suggestions")`,
+  `FindingKind.SERVICE_SUGGESTION`. Two categories, both INFO:
+  - `capability-idle-gpu` — a host reporting display/compute adapters
+    (`gpu_count`/`gpu_vendors`, from the `host.gpu` probe) while nothing the
+    library knows as GPU-capable appears to run. The suggestion names each
+    candidate's `gpu_purpose`, so it says what the silicon would be *for*.
+  - `building-block-missing` — the three the roadmap names (metrics, alerting,
+    and the local model the LLM router prefers), each a set of library entries;
+    missing when none is present. Grafana counts for metrics and alerting both.
+  - **Presence is decided by name**, because the harness tracks guests,
+    services and endpoints rather than installed software: a guest called
+    `media` running Plex is invisible here. Every finding says it matched on
+    names only, and both categories are INFO rather than problems. Containment
+    is word-level, so `plexiglass-inventory` is not Plex.
+  - The pass reads stored facts only (no adapter calls), so it cannot fail for
+    a source being down and both categories are always observed.
+  - [ ] Follow-ups: match on the `host.services` probe's unit names and on
+    container image names (K8s + Proxmox LXC) so presence stops depending on
+    what a guest was called; `depends_on` chains (suggest `mosquitto` when
+    `zigbee2mqtt` is present without it); accelerator kinds beyond PCI
+    display-class (Coral TPU on USB).
 - [ ] Update orchestration (first Phase 8 write path, at PROPOSE) — after 8.1 has run a while.
 
 ---

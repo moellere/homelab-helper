@@ -41,6 +41,7 @@ src/homelab_helper/
 │                   storage (8.5 headroom trends, stale snapshots, clutter),
 │                   usage (8.3 history: RRD rollups, retention, p95 summary),
 │                   rightsizing (8.4: cores/memory from history),
+│                   suggestions (8.7 idle capability, missing blocks),
 │                   playbooks (finding → proposal, deterministic), listener
 │                   (asks about agent/playbook proposals), k8s_workloads,
 │                   manifest (authoring schema for ProposalLog.artifact)

@@ -207,6 +207,7 @@ class FindingKind(StrEnum):
     BACKUP_GAP = "backup-gap"
     RIGHTSIZING = "rightsizing"
     SERVICE_SUGGESTION = "service-suggestion"
+    STORAGE_EFFICIENCY = "storage-efficiency"
     """A Kubernetes workload has fewer ready replicas than it asks for, with its rollout settled (Phase 7)."""
     STORAGE_PROVENANCE_DELTA = "storage-provenance-delta"
     DISCOVERY_AGENTLESS_NEEDED = "discovery-agentless-needed"

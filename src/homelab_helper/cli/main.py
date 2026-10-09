@@ -30,6 +30,7 @@ from homelab_helper.cli.config import config_app
 from homelab_helper.cli.daemon import daemon_app
 from homelab_helper.cli.db import db_app
 from homelab_helper.cli.diff import diff_app
+from homelab_helper.cli.digest import digest_app
 from homelab_helper.cli.discover import discover_app
 from homelab_helper.cli.execute import exec_app
 from homelab_helper.cli.findings import findings_app
@@ -49,6 +50,7 @@ from homelab_helper.config import load_env
 
 app = typer.Typer(name="helper", no_args_is_help=True)
 app.add_typer(db_app)
+app.add_typer(digest_app)
 app.add_typer(discover_app)
 app.add_typer(findings_app)
 app.add_typer(host_app)

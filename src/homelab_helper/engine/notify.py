@@ -149,6 +149,38 @@ class HomeAssistantNotifier:
             )
 
 
+async def send_digest(config: HomeAssistantApprovalConfig, title: str, message: str) -> None:
+    """One plain notification carrying a digest. Same channel as a run notice,
+    its own tag so a digest never replaces a run's notification."""
+    domain, _, service = config.notify_service.partition(".")
+    if domain != "notify" or not service:
+        raise ApprovalConfigError(
+            f"notify service must look like notify.<name>, not {config.notify_service!r}"
+        )
+    payload: dict[str, Any] = {
+        "title": title,
+        "message": message,
+        "data": {
+            "tag": "helper-digest",
+            "group": "homelab-helper",
+            "channel": "homelab-helper digest",
+            "notification_icon": "mdi:calendar-text",
+            "clickAction": "noAction",
+        },
+    }
+    async with httpx.AsyncClient(
+        base_url=config.url,
+        verify=config.verify_ssl,
+        timeout=15,
+        headers={"Authorization": f"Bearer {config.token}"},
+    ) as client:
+        response = await client.post(f"/api/services/notify/{service}", json=payload)
+    if response.status_code >= _HTTP_ERROR_THRESHOLD:
+        raise RuntimeError(
+            f"Home Assistant refused the digest: {response.status_code} {response.text[:200]}"
+        )
+
+
 def notifier_from_env() -> HomeAssistantNotifier | None:
     """The configured notifier, or ``None`` when the HA approval variables are unset."""
     try:
@@ -178,5 +210,6 @@ __all__ = [
     "notifier_from_env",
     "notify_after_run",
     "render",
+    "send_digest",
     "should_notify",
 ]

@@ -105,6 +105,7 @@ def test_show_renders_the_page_without_recording(digest_db: str) -> None:
     assert "not recorded" in result.output
 
 
+@pytest.mark.sqlite_only
 def test_show_does_not_move_the_window(digest_db: str) -> None:
     runner.invoke(app, ["digest", "show"])
     assert _runs(digest_db) == [], "looking must not eat a week of changes"
@@ -125,6 +126,7 @@ def test_send_without_a_channel_records_unconfigured(digest_db: str) -> None:
     assert "not sent" in result.output
 
 
+@pytest.mark.sqlite_only
 def test_send_records_the_window(digest_db: str) -> None:
     runner.invoke(app, ["digest", "send"])
     runs = _runs(digest_db)
@@ -133,6 +135,7 @@ def test_send_records_the_window(digest_db: str) -> None:
     assert json.loads(runs[0]["counts"])["opened"] == 1
 
 
+@pytest.mark.sqlite_only
 def test_a_second_send_covers_only_the_new_window(digest_db: str) -> None:
     runner.invoke(app, ["digest", "send"])
     runner.invoke(app, ["digest", "send"])
@@ -149,11 +152,13 @@ def test_dry_run_neither_sends_nor_records(digest_db: str) -> None:
     assert "dry run" in result.output
 
 
+@pytest.mark.sqlite_only
 def test_dry_run_leaves_no_row(digest_db: str) -> None:
     runner.invoke(app, ["digest", "send", "--dry-run"])
     assert _runs(digest_db) == []
 
 
+@pytest.mark.sqlite_only
 def test_quiet_window_is_recorded_but_not_sent(
     empty_db: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

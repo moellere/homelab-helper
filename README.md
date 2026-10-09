@@ -82,7 +82,8 @@ directory: the database under `~/.local/share/homelab-helper/` and your
 credentials under `~/.config/homelab-helper/.env` (XDG variables are honoured;
 `HOMELAB_HELPER_HOME` puts both in one place, e.g. a container volume).
 `HOMELAB_HELPER_DATABASE_URL` overrides the database entirely; a `postgres`
-extra is available.
+extra is available (`postgresql+asyncpg://user:pw@host/db`), and CI runs the
+suite against Postgres as well as SQLite.
 
 ```bash
 helper config init         # writes the commented .env template

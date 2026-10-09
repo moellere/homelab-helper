@@ -5,13 +5,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
 
 from homelab_helper.cli.config import render_env_template
 from homelab_helper.cli.main import app
@@ -85,6 +85,7 @@ def test_env_search_includes_config_dir_between_project_and_home(
     assert find_env_files(tmp_path / "elsewhere") == [cfg / ".env", home / ".env"]
 
 
+@pytest.mark.sqlite_only
 def test_db_init_creates_the_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "fresh" / "nested"
     monkeypatch.setenv("HOMELAB_HELPER_HOME", str(home))

@@ -318,6 +318,10 @@ class ProxmoxAdapter:
         )
         return await self._request("GET", path, params={"timeframe": timeframe, "cf": cf}) or []
 
+    async def ceph_metadata(self) -> dict[str, Any]:
+        """``/cluster/ceph/metadata``: per-daemon metadata incl. ``ceph_version``; ``{}`` without Ceph."""
+        return await self._request("GET", "/cluster/ceph/metadata") or {}
+
     async def version(self) -> dict[str, Any]:
         return await self._request("GET", "/version") or {}
 

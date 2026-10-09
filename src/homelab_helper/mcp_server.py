@@ -164,6 +164,7 @@ from homelab_helper.engine.usage import (
 )
 from homelab_helper.engine.usage import rollup as usage_rollup
 from homelab_helper.engine.versions import (
+    ceph_issues,
     hass_update_issues,
     k8s_issues,
     load_eol_table,
@@ -758,6 +759,20 @@ async def _discover_mikrotik(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _ceph_version_issues(cluster: str) -> tuple[list[CategoryIssue], set[str], str | None]:
+    """Ceph EOL / mixed-version checks; a cluster without Ceph observes nothing."""
+    try:
+        adapter = _load_proxmox_adapter()
+        try:
+            metadata = await adapter.ceph_metadata()
+        finally:
+            await adapter.aclose()
+    except Exception as exc:
+        return [], set(), redact(str(exc))
+    issues, observed = ceph_issues(cluster, metadata, load_eol_table(), datetime.now(UTC).date())
+    return issues, observed, None
+
+
 async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
     """Phase 8.1: version currency from Proxmox, stored host facts and Home Assistant.
 
@@ -767,11 +782,13 @@ async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
     issues: list[CategoryIssue] = []
     observed: set[str] = set()
     errors: dict[str, str] = {}
+    cluster_name = "proxmox"
 
     try:
         adapter = _load_proxmox_adapter()
         try:
             status = await adapter.cluster_status()
+            cluster_name = str(status.get("name") or cluster_name)
             nodes = []
             for n in await adapter.list_nodes():
                 if n.get("status") != "online":
@@ -787,10 +804,16 @@ async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
                 )
         finally:
             await adapter.aclose()
-        issues += proxmox_issues(str(status.get("name") or "proxmox"), nodes)
+        issues += proxmox_issues(cluster_name, nodes)
         observed |= {"pve-updates", "pve-mixed"}
     except Exception as exc:  # one dead source must not sink the others
         errors["proxmox"] = redact(str(exc))
+
+    ceph, ceph_observed, ceph_error = await _ceph_version_issues(cluster_name)
+    issues += ceph
+    observed |= ceph_observed
+    if ceph_error:
+        errors["ceph"] = ceph_error
 
     retired = await retired_host_ids(session)
     hosts = [

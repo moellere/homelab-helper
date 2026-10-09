@@ -22,3 +22,10 @@ ubuntu:
   "25.04": {codename: plucky, eol: 2026-01-31, basis: "end of standard support"}
   "25.10": {codename: questing, eol: 2026-07-31, basis: "end of standard support"}
   "26.04": {codename: resolute, eol: 2031-04-30, basis: "end of standard support"}
+
+# Ceph releases, by major version (upstream "estimated end-of-life" from
+# docs.ceph.com/en/latest/releases/). Proxmox tracks upstream here.
+ceph:
+  "18": {codename: reef, eol: 2026-03-20, basis: "upstream end of life"}
+  "19": {codename: squid, eol: 2026-10-31, basis: "upstream end of life"}
+  "20": {codename: tentacle, eol: 2027-06-01, basis: "upstream end of life"}

@@ -197,3 +197,78 @@ async def test_legacy_standalone_guests_are_adopted_per_node(sessionmaker) -> No
         )
     assert clusters == ["(standalone) pve-a", "(standalone) pve-b"]
     assert vms == [("pve-a", 101, "nas"), ("pve-b", 103, "docker-a")]
+
+
+def test_disk_storages_reads_every_volume_including_the_iso() -> None:
+    from homelab_helper.engine.virt_reconcile import disk_storages
+
+    config = {
+        "scsi0": "Pool0:vm-100-disk-0,iothread=1,size=32G",
+        "ide2": "local:iso/talos.iso,media=cdrom",
+        "efidisk0": "Pool0:vm-100-disk-1,efitype=4m",
+        "net0": "virtio=BC:24:11:00:00:01,bridge=vmbr0",
+        "scsi1": "none,media=cdrom",
+        "rootfs": "local-lvm:vm-200-disk-0,size=8G",
+        "mp0": "/mnt/host/path,mp=/data",
+    }
+    assert disk_storages(config) == ["Pool0", "local", "local-lvm"]
+
+
+class _FakeProxmox:
+    def __init__(self, configs: dict[int, dict[str, Any]], failing: set[int] = frozenset()):
+        self.configs, self.failing = configs, failing
+
+    async def list_storage(self) -> list[dict[str, Any]]:
+        return [
+            {"storage": "Pool0", "node": "pve-a", "shared": 1},
+            {"storage": "Pool0", "node": "pve-b", "shared": 1},
+            {"storage": "local", "node": "pve-a", "shared": 0},
+        ]
+
+    async def vm_config(self, node: str, vmid: int, kind: str) -> dict[str, Any]:
+        if vmid in self.failing:
+            raise RuntimeError("boom")
+        return self.configs[vmid]
+
+
+async def test_annotate_guest_storage_marks_shared_and_local(sessionmaker) -> None:
+    from homelab_helper.engine.virt_reconcile import annotate_guest_storage
+
+    vms = [
+        _vm(101, "ceph-only", "pve-a"),
+        _vm(102, "has-iso", "pve-a"),
+        _vm(103, "unreadable", "pve-a"),
+        _vm(104, "diskless", "pve-a"),
+    ]
+    fake = _FakeProxmox(
+        {
+            101: {"scsi0": "Pool0:vm-101-disk-0,size=8G"},
+            102: {"scsi0": "Pool0:vm-102-disk-0,size=8G", "ide2": "local:iso/x.iso,media=cdrom"},
+            104: {"net0": "virtio=..,bridge=vmbr0"},
+        },
+        failing={103},
+    )
+    await annotate_guest_storage(fake, vms)  # type: ignore[arg-type]
+    assert vms[0]["shared_storage"] is True
+    assert vms[0]["storages"] == ["Pool0"]
+    assert vms[1]["shared_storage"] is False
+    assert vms[1]["storages"] == ["Pool0", "local"]
+    assert "storages" not in vms[2]  # unreadable config: left alone, discovery goes on
+    assert vms[3]["shared_storage"] is None
+    assert vms[3]["storages"] == []
+
+    async with session_scope(sessionmaker) as s:
+        await reconcile_proxmox_cluster(s, _STATUS, vms, when=_WHEN)
+    async with sessionmaker() as s:
+        rows = {
+            r.name: r.attributes for r in (await s.execute(select(VirtualMachine))).scalars().all()
+        }
+    assert rows["has-iso"] == {"storages": ["Pool0", "local"], "shared_storage": False}
+    assert rows["unreadable"] == {}
+    # A second pass with the same answers changes nothing; a storage move is an update.
+    async with session_scope(sessionmaker) as s:
+        again = await reconcile_proxmox_cluster(s, _STATUS, vms, when=_WHEN)
+        assert "has-iso" in again.vms_unchanged
+        vms[1]["storages"], vms[1]["shared_storage"] = ["Pool0"], True
+        moved = await reconcile_proxmox_cluster(s, _STATUS, vms, when=_WHEN)
+        assert "has-iso" in moved.vms_updated

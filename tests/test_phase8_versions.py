@@ -18,6 +18,7 @@ from homelab_helper.engine.versions import (
     ceph_daemon_versions,
     ceph_issues,
     hass_update_issues,
+    k8s_eol_issues,
     k8s_issues,
     load_eol_table,
     os_eol_issues,
@@ -338,3 +339,53 @@ async def test_proxmox_ceph_metadata_is_a_plain_get() -> None:
     finally:
         await adapter.aclose()
     assert seen == [("GET", "/api2/json/cluster/ceph/metadata")]
+
+
+def test_kubernetes_and_talos_minors_past_support_are_findings() -> None:
+    hosts = [
+        (
+            "a",
+            "cp1",
+            {
+                "k8s_kubelet_version": "v1.34.12",
+                "os_id": "talos",
+                "os_pretty_name": "Talos Linux v1.12.6",
+            },
+        ),
+        ("b", "w1", {"k8s_kubelet_version": "v1.34.12"}),
+        ("c", "ubuntu-box", {"os_id": "ubuntu", "os_version_id": "24.04"}),
+    ]
+    table = load_eol_table()
+    # 10/05/2026: Kubernetes 1.34 ends 10/27/2026 (22 days), Talos 1.12 ended 09/03/2026.
+    issues, observed = k8s_eol_issues(hosts, table, TODAY)
+    assert observed == {"k8s-eol", "talos-eol"}
+    by_cat = {i.category: i for i in issues}
+    assert by_cat["k8s-eol"].severity is FindingSeverity.MEDIUM
+    assert "22 days" in by_cat["k8s-eol"].title
+    assert by_cat["k8s-eol"].evidence["nodes"] == ["cp1", "w1"]
+    assert by_cat["talos-eol"].severity is FindingSeverity.HIGH
+    assert "past end of support" in by_cat["talos-eol"].title
+    assert by_cat["k8s-eol"].fingerprint != by_cat["talos-eol"].fingerprint
+
+    # A current minor is quiet; an unknown one is observed but silent, never invented.
+    current = [
+        (
+            "a",
+            "cp1",
+            {
+                "k8s_kubelet_version": "v1.37.1",
+                "os_pretty_name": "Talos Linux v1.14.2",
+                "os_id": "talos",
+            },
+        )
+    ]
+    issues, observed = k8s_eol_issues(current, table, TODAY)
+    assert issues == []
+    assert observed == {"k8s-eol", "talos-eol"}
+    # Two minors in use give two findings with distinct identities.
+    mixed = [
+        ("a", "cp1", {"k8s_kubelet_version": "v1.33.9"}),
+        ("b", "w1", {"k8s_kubelet_version": "v1.34.1"}),
+    ]
+    issues, _ = k8s_eol_issues(mixed, table, TODAY)
+    assert len({i.fingerprint for i in issues}) == 2

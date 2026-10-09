@@ -166,13 +166,14 @@ from homelab_helper.engine.usage import rollup as usage_rollup
 from homelab_helper.engine.versions import (
     ceph_issues,
     hass_update_issues,
+    k8s_eol_issues,
     k8s_issues,
     load_eol_table,
     os_eol_issues,
     proxmox_issues,
     reconcile_version_findings,
 )
-from homelab_helper.engine.virt_reconcile import reconcile_proxmox_cluster
+from homelab_helper.engine.virt_reconcile import annotate_guest_storage, reconcile_proxmox_cluster
 from homelab_helper.engine.workloads import WorkloadLibraryError, load_workload_library
 from homelab_helper.secrets import redact
 
@@ -645,6 +646,7 @@ async def _discover_proxmox(session: AsyncSession) -> dict[str, Any]:
     try:
         status = await adapter.cluster_status()
         vms = await adapter.list_vms()
+        await annotate_guest_storage(adapter, vms)
     finally:
         await adapter.aclose()
     vr = await reconcile_proxmox_cluster(session, status, vms, when=datetime.now(UTC))
@@ -773,6 +775,19 @@ async def _ceph_version_issues(cluster: str) -> tuple[list[CategoryIssue], set[s
     return issues, observed, None
 
 
+def _host_version_issues(
+    hosts: list[tuple[str, str, dict[str, Any]]],
+) -> tuple[list[CategoryIssue], set[str]]:
+    """OS end of support, kubelet/Talos skew, Kubernetes/Talos end of support."""
+    eol_table, today = load_eol_table(), datetime.now(UTC).date()
+    issues: list[CategoryIssue] = list(os_eol_issues(hosts, eol_table, today))
+    observed = {"os-eol"}
+    for extra, seen in (k8s_issues(hosts), k8s_eol_issues(hosts, eol_table, today)):
+        issues += extra
+        observed |= seen
+    return issues, observed
+
+
 async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
     """Phase 8.1: version currency from Proxmox, stored host facts and Home Assistant.
 
@@ -821,11 +836,9 @@ async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
         for h in (await session.execute(select(Host))).scalars().all()
         if h.id not in retired
     ]
-    issues += os_eol_issues(hosts, load_eol_table(), datetime.now(UTC).date())
-    observed.add("os-eol")
-    skew, skew_observed = k8s_issues(hosts)
-    issues += skew
-    observed |= skew_observed
+    host_issues, host_observed = _host_version_issues(hosts)
+    issues += host_issues
+    observed |= host_observed
 
     try:
         hass = _load_hass_adapter()

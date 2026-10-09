@@ -248,15 +248,16 @@ async def recommend_placement(
         if vm.node_host_id is not None and vm.status == "running":
             guests[vm.node_host_id] = guests.get(vm.node_host_id, 0) + 1
 
-    decommissioning = {
-        i.target_id
+    intents = {
+        i.target_id: i.intent
         for i in (await session.execute(select(OperationalIntent))).scalars().all()
-        if i.intent == IntentState.DECOMMISSIONING
+        if i.intent in (IntentState.DECOMMISSIONING, IntentState.NO_NEW_GUESTS)
     }
 
     for host in hosts:
-        if str(host.id) in decommissioning:
-            report.rejected.append((host.hostname, "host intent is decommissioning"))
+        intent = intents.get(str(host.id))
+        if intent is not None:
+            report.rejected.append((host.hostname, f"host intent is {intent.value}"))
             continue
         outcome = _evaluate(host, profile, guests.get(host.id, 0))
         if isinstance(outcome, PlacementCandidate):

@@ -20,9 +20,10 @@ from rich.table import Table
 from sqlalchemy import select
 
 from homelab_helper.config import database_url as _database_url
-from homelab_helper.db.enums import FindingStatus
+from homelab_helper.db.enums import FindingStatus, IntentState, IntentTargetType
 from homelab_helper.db.models import (
     Host,
+    OperationalIntent,
     PhysicalPart,
     Placement,
     ReconciliationFinding,
@@ -140,6 +141,78 @@ def host_retire(
             console.print(f"  [dim]- placement[/dim] {serial or '?'} @ {slot}")
         for fingerprint in result.findings_resolved:
             console.print(f"  [dim]- finding[/dim] {fingerprint}")
+
+    asyncio.run(_go())
+
+
+@host_app.command(name="intent")
+def host_intent(
+    hostname: str = typer.Argument(..., help="Hostname (must already exist in the harness DB)."),
+    no_new_guests: bool = typer.Option(
+        False,
+        "--no-new-guests",
+        help="Keep this host as it is: planners never propose moving or placing a guest onto it.",
+    ),
+    clear: bool = typer.Option(False, "--clear", help="Remove the host's placement intent."),
+    rationale: str | None = typer.Option(
+        None, "--rationale", "-r", help="Why (recorded on the intent)."
+    ),
+) -> None:
+    """Show or set the operator's placement intent for a host."""
+    if no_new_guests and clear:
+        console.print("[red]--no-new-guests and --clear are exclusive[/red]")
+        raise typer.Exit(code=2)
+
+    async def _go() -> None:
+        engine = make_engine(_database_url())
+        try:
+            sm = make_sessionmaker(engine)
+            async with session_scope(sm) as session:
+                host = await _load_host(session, hostname)
+                row = (
+                    await session.execute(
+                        select(OperationalIntent).where(
+                            OperationalIntent.target_type == IntentTargetType.HOST,
+                            OperationalIntent.target_id == str(host.id),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if clear:
+                    if row is not None and row.intent == IntentState.NO_NEW_GUESTS:
+                        await session.delete(row)
+                        console.print(f"[green]cleared[/green] {host.hostname}: no-new-guests")
+                    else:
+                        console.print(f"{host.hostname}: no placement intent to clear")
+                    return
+                if no_new_guests:
+                    if row is None:
+                        session.add(
+                            OperationalIntent(
+                                target_type=IntentTargetType.HOST,
+                                target_id=str(host.id),
+                                intent=IntentState.NO_NEW_GUESTS,
+                                declared_by=operator_identity(),
+                                rationale=rationale,
+                            )
+                        )
+                    elif row.intent == IntentState.DECOMMISSIONING:
+                        console.print(f"[yellow]{host.hostname} is decommissioning[/yellow]")
+                        return
+                    else:
+                        row.intent = IntentState.NO_NEW_GUESTS
+                        row.declared_by = operator_identity()
+                        row.rationale = rationale
+                    console.print(f"[green]recorded[/green] {host.hostname}: no-new-guests")
+                    return
+                if row is None:
+                    console.print(f"{host.hostname}: no intent recorded")
+                else:
+                    why = f" — {row.rationale}" if row.rationale else ""
+                    console.print(
+                        f"{host.hostname}: {row.intent.value} (by {row.declared_by}{why})"
+                    )
+        finally:
+            await engine.dispose()
 
     asyncio.run(_go())
 

@@ -224,6 +224,10 @@ def _print_rebalance(report: RebalanceReport) -> None:
     console.print(table)
     for name in report.unknown_hosts:
         console.print(f"[dim]{name}: RAM unknown (not deep-probed) — excluded[/dim]")
+    for name in report.closed_hosts:
+        console.print(f"[dim]{name}: no-new-guests (operator intent) — never a destination[/dim]")
+    for line in report.unmovable:
+        console.print(f"[dim]not migratable: {escape(line)}[/dim]")
 
     if report.balanced:
         console.print("[green]fleet is balanced — no plan needed[/green]")

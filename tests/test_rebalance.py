@@ -15,8 +15,15 @@ import asyncio
 
 from homelab_helper.cli.main import app
 from homelab_helper.db.base import Base
-from homelab_helper.db.enums import Architecture, PartKind
-from homelab_helper.db.models import Cluster, Host, PhysicalPart, Placement, VirtualMachine
+from homelab_helper.db.enums import Architecture, IntentState, IntentTargetType, PartKind
+from homelab_helper.db.models import (
+    Cluster,
+    Host,
+    OperationalIntent,
+    PhysicalPart,
+    Placement,
+    VirtualMachine,
+)
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.network_path import Link, Topology
 from homelab_helper.engine.rebalance import plan_rebalance
@@ -304,3 +311,74 @@ def test_cli_rebalance_narrate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     prompt = router.messages[0][0]["content"]
     assert "PLAN 1" in prompt
     assert "FLEET LOAD" in prompt
+
+
+async def test_a_guest_on_node_local_storage_is_never_migrated(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await _seed_imbalanced(s)
+        big = (
+            await s.execute(select(VirtualMachine).where(VirtualMachine.name == "vm100"))
+        ).scalar_one()
+        big.attributes = {"storages": ["local"], "shared_storage": False}
+    async with sessionmaker() as s:
+        report = await plan_rebalance(s, topology=None)
+    assert report.unmovable == ["vm100 on node1 (volume on node-local storage)"]
+    assert "unmovable" in report.as_dict()
+    moves = report.plans[0]
+    assert moves.name == "current-hardware"
+    assert all("vm100" not in step.description for step in moves.steps)
+    assert any("vm101" in step.description for step in moves.steps)
+
+
+async def test_a_no_new_guests_host_is_never_a_destination(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await _seed_imbalanced(s)
+        node2 = (await s.execute(select(Host).where(Host.hostname == "node2"))).scalar_one()
+        s.add(
+            OperationalIntent(
+                target_type=IntentTargetType.HOST,
+                target_id=str(node2.id),
+                intent=IntentState.NO_NEW_GUESTS,
+                declared_by="tester",
+                rationale="runs hot",
+            )
+        )
+    async with sessionmaker() as s:
+        report = await plan_rebalance(s, topology=None)
+    assert report.closed_hosts == ["node2"]
+    # node2 was the only legal destination, so no migration plan can be made.
+    assert not any(p.name == "current-hardware" for p in report.plans)
+    assert all("to node2" not in step.description for p in report.plans for step in p.steps)
+
+
+def test_cli_host_intent_records_shows_and_clears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = f"sqlite+aiosqlite:///{tmp_path / 'intent.db'}"
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
+
+    async def seed() -> None:
+        engine = make_engine(url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with session_scope(make_sessionmaker(engine)) as s:
+            s.add(_host("node9", 16))
+        await engine.dispose()
+
+    asyncio.run(seed())
+    r = runner.invoke(app, ["host", "intent", "node9"])
+    assert r.exit_code == 0
+    assert "no intent recorded" in r.output
+    r = runner.invoke(app, ["host", "intent", "node9", "--no-new-guests", "-r", "runs hot"])
+    assert r.exit_code == 0
+    assert "recorded" in r.output
+    r = runner.invoke(app, ["host", "intent", "node9"])
+    assert "no-new-guests" in r.output
+    assert "runs hot" in r.output
+    r = runner.invoke(app, ["plan", "rebalance"])
+    assert "node9: no-new-guests" in r.output
+    r = runner.invoke(app, ["host", "intent", "node9", "--clear"])
+    assert r.exit_code == 0
+    assert "cleared" in r.output
+    r = runner.invoke(app, ["host", "intent", "node9", "--clear", "--no-new-guests"])
+    assert r.exit_code == 2

@@ -19,8 +19,14 @@ CP solver earns its way in; the plan/step shapes here are solver-agnostic.)
 
 Migrations respect the same physics as placement: only within a cluster, and
 never across a non-LAN-grade path (live migration over a VPN is how you get a
-split cluster). Hosts with unknown RAM are excluded from the math and listed
-as caveats — "we don't know" must not read as "empty."
+split cluster). Two more constraints come from the fleet itself: a guest with
+a volume on node-local storage cannot live-migrate and is never proposed to
+(``VirtualMachine.attributes["shared_storage"]`` is False), and a host the
+operator has marked ``no-new-guests`` (an ``OperationalIntent``) is never a
+destination — what runs there may leave, nothing arrives. Both are listed as
+caveats so a plan says what it refused to touch. Hosts with unknown RAM are
+excluded from the math and listed as caveats — "we don't know" must not read
+as "empty."
 
 The framework proposes; the operator migrates/moves/buys by hand (L1).
 """
@@ -32,8 +38,15 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from homelab_helper.db.enums import PartKind
-from homelab_helper.db.models import Cluster, Host, PhysicalPart, Placement, VirtualMachine
+from homelab_helper.db.enums import IntentState, IntentTargetType, PartKind
+from homelab_helper.db.models import (
+    Cluster,
+    Host,
+    OperationalIntent,
+    PhysicalPart,
+    Placement,
+    VirtualMachine,
+)
 from homelab_helper.engine.cluster_nodes import cluster_nodes
 from homelab_helper.engine.network_path import Topology, load_topology
 from homelab_helper.engine.retire import retired_host_ids
@@ -60,6 +73,8 @@ class VMLoad:
     memory_bytes: int
     cluster_id: Any
     vmid: int | None
+    local_storage: bool = False
+    """A volume on node-local storage: the guest cannot live-migrate."""
 
 
 @dataclass
@@ -72,6 +87,8 @@ class HostLoad:
     dimms: list[tuple[str, int]] = field(default_factory=list)  # (label, bytes)
     clusters: set[Any] = field(default_factory=set)
     """Clusters this host is a node of — the only places its guests may be sent."""
+    no_new_guests: bool = False
+    """Operator intent: never a destination; its own guests may still leave."""
 
     @property
     def capacity(self) -> int | None:
@@ -106,6 +123,10 @@ class RebalanceReport:
     unknown_hosts: list[str] = field(default_factory=list)
     plans: list[RebalancePlan] = field(default_factory=list)
     balanced: bool = False
+    unmovable: list[str] = field(default_factory=list)
+    """Guests the plans will not migrate, each with the reason."""
+    closed_hosts: list[str] = field(default_factory=list)
+    """Hosts marked no-new-guests: never a destination."""
 
     @property
     def spread(self) -> float:
@@ -133,6 +154,8 @@ class RebalanceReport:
                 for h in self.hosts
             ],
             "unknown_hosts": list(self.unknown_hosts),
+            "unmovable": list(self.unmovable),
+            "closed_hosts": list(self.closed_hosts),
             "plans": [
                 {
                     "name": p.name,
@@ -180,6 +203,21 @@ async def _load_fleet(
     nodes = await cluster_nodes(session, hosts)
     for host_id, load in by_id.items():
         load.clusters = set(nodes.of(host_id))
+    closed = {
+        i.target_id
+        for i in (
+            await session.execute(
+                select(OperationalIntent).where(
+                    OperationalIntent.target_type == IntentTargetType.HOST,
+                    OperationalIntent.intent == IntentState.NO_NEW_GUESTS,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+    for host_id, load in by_id.items():
+        load.no_new_guests = str(host_id) in closed
     for vm in (await session.execute(select(VirtualMachine))).scalars().all():
         if vm.status != "running" or vm.node_host_id not in by_id or not vm.memory_bytes:
             continue
@@ -197,6 +235,7 @@ async def _load_fleet(
                 memory_bytes=memory,
                 cluster_id=vm.cluster_id,
                 vmid=vm.vmid,
+                local_storage=(vm.attributes or {}).get("shared_storage") is False,
             )
         )
 
@@ -215,8 +254,11 @@ async def _load_fleet(
 
 
 def _movable(vm: VMLoad, src: HostLoad, dst: HostLoad, topology: Topology | None) -> bool:
-    """A migration the plan may propose: a node of the same cluster, LAN-grade path, fits."""
-    if vm.cluster_id not in dst.clusters:
+    """A migration the plan may propose: a node of the same cluster, LAN-grade path, fits.
+
+    Never a guest on node-local storage, never into a ``no-new-guests`` host.
+    """
+    if vm.local_storage or dst.no_new_guests or vm.cluster_id not in dst.clusters:
         return False
     if topology is not None:
         path = topology.path(src.hostname, dst.hostname)
@@ -260,6 +302,7 @@ def _greedy_moves(
                 committed=committed[candidate.hostname],
                 vms=placed_vms[candidate.hostname],
                 clusters=candidate.clusters,
+                no_new_guests=candidate.no_new_guests,
             )
             for vm in sorted(placed_vms[src.hostname], key=lambda v: -v.memory_bytes):
                 if id(vm) in moved or not _movable(vm, src, probe_dst, topology):
@@ -332,6 +375,7 @@ def _shifted(
                 vms=list(h.vms),
                 dimms=list(h.dimms),
                 clusters=set(h.clusters),
+                no_new_guests=h.no_new_guests,
             )
         )
     return out
@@ -434,6 +478,13 @@ async def plan_rebalance(
         topology = load_topology()
     hosts, unknown = await _load_fleet(session, basis)
     report = RebalanceReport(hosts=hosts, unknown_hosts=unknown)
+    report.unmovable = [
+        f"{vm.name} on {h.hostname} (volume on node-local storage)"
+        for h in hosts
+        for vm in h.vms
+        if vm.local_storage
+    ]
+    report.closed_hosts = [h.hostname for h in hosts if h.no_new_guests]
 
     ratios = [h.ratio for h in hosts if h.ratio is not None]
     if not ratios or (max(ratios) <= _TARGET_MAX_RATIO and report.spread <= _TARGET_SPREAD):

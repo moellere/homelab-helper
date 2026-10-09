@@ -171,6 +171,7 @@ to reason about:
 ```bash
 helper plan placement immich        # where would this workload go, and why not elsewhere
 helper plan rebalance               # three candidate plans with their trade-offs
+helper host intent bmax0 --no-new-guests -r "runs hot"   # a host the plans must not fill
 helper bottlenecks                  # known patterns, with mitigations derived from your facts
 helper plan surplus                 # capacity nothing is using, and what it could do
 helper chat "what's wrong with my lab?"

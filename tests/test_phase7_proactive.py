@@ -251,7 +251,12 @@ async def test_findings_without_a_playbook_are_left_alone(sessionmaker) -> None:
         r = await run_playbooks(s, min_age=NOW)
         assert r.drafted == []
         assert r.no_playbook == 1
-    assert {pb.name for pb in PLAYBOOKS} == {"argocd-resync", "workload-restart", "rightsize"}
+    assert {pb.name for pb in PLAYBOOKS} == {
+        "argocd-resync",
+        "workload-restart",
+        "rightsize",
+        "node-update",
+    }
 
 
 # ----------------------------------------------------------------- listener
@@ -302,7 +307,7 @@ async def test_listener_asks_once_and_executes_on_approve(sessionmaker) -> None:
     channel = _Channel(answer=True)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake(calls), None, None
+        return _proxmox_fake([]), _k8s_fake(calls), None, None, None
 
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)
@@ -335,7 +340,7 @@ async def test_listener_never_reasks_a_denied_proposal(sessionmaker) -> None:
     channel = _Channel(answer=False)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
 
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)
@@ -399,7 +404,7 @@ async def test_every_prompt_goes_out_before_any_waits_out(sessionmaker) -> None:
             return ApprovalResult(approved=True, channel="fake", responder="phone")
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
 
     async with session_scope(sessionmaker) as s:
         await _two_pending_restarts(s)
@@ -419,7 +424,7 @@ async def test_an_expired_prompt_is_asked_again_later_but_not_forever(sessionmak
             )
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
 
     channel = _Unseen(answer=False)
     async with session_scope(sessionmaker) as s:
@@ -479,7 +484,7 @@ async def test_listener_ignores_operator_authored_proposals(sessionmaker) -> Non
     channel = _Channel(answer=True)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
 
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)

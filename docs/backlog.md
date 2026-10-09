@@ -941,7 +941,37 @@ See `roadmap.md` Phase 8. Slices land in this order.
     what a guest was called; `depends_on` chains (suggest `mosquitto` when
     `zigbee2mqtt` is present without it); accelerator kinds beyond PCI
     display-class (Coral TPU on USB).
-- [ ] Update orchestration (first Phase 8 write path, at PROPOSE) — after 8.1 has run a while.
+- [x] Update orchestration — the `node-update` action kind, the first Phase-8
+  write path and the first action with **no inverse at all**.
+  - `KernelSSHAdapter.apt_dist_upgrade` is the only write on that adapter and
+    runs a **fixed** command (`DEBIAN_FRONTEND=noninteractive apt-get -y
+    --force-confold --force-confdef dist-upgrade`, via `sudo -n` for a non-root
+    user). The manifest names a node and nothing else: `NodeTarget` forbids
+    extra fields and `parse_manifest` re-checks, so a proposal can never become
+    remote code execution gated by one cell. In `WRITE_METHODS`.
+  - **An undrained node is refused at dispatch, before any write** — a
+    dist-upgrade restarts cluster services and usually wants a reboot, so
+    running it under live guests risks them. Stopped guests and guests on other
+    nodes don't block.
+  - Rollback is the new `no-inverse` strategy: the verifier always reports
+    unverified *with the reason*, and `restore` refuses rather than pretending.
+    So AUTONOMOUS degrades to CONFIRM, and `node-update` is deliberately absent
+    from `REVERSIBLE_ACTION_KINDS` — it can never be auto-promoted, which is
+    how it "lands at PROPOSE" and stays there.
+  - `node-update` playbook drafts one update per `pve-updates` finding (never
+    for `pve-mixed`: that is fixed by updating each node, which the per-node
+    draft already covers). The draft states the drain prerequisite and the
+    absence of a rollback, so the proposal is honest before it is run.
+  - Sequencing is an operator procedure, not one action: drain with `migrate`
+    proposals → `node-update` → reboot → verify → next node. Written up in
+    `docs/live-validation.md`. One action = one decision = one receipt is the
+    gradient's unit, and a composite action would hide which step failed.
+  - [ ] Follow-ups: a `node-reboot` action kind (today the operator reboots,
+    which is one click and keeps the hairiest failure mode — a node that does
+    not come back — outside an action whose receipt would already say
+    "succeeded"); a `maintenance_run` row to sequence drain → update → reboot
+    across a cluster with its own state, each step still gated individually;
+    `pvesh`-based update once Proxmox exposes an install endpoint.
 
 ---
 

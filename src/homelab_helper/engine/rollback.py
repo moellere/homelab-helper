@@ -52,6 +52,10 @@ ROLLOUT_UNDO = "rollout-undo"
 PRIOR_CONFIG = "prior-config"
 ARGOCD_HISTORY = "argocd-history"
 PRIOR_DNS_RECORD = "prior-dns-record"
+NO_INVERSE = "no-inverse"
+"""Named rather than implied: some actions genuinely cannot be undone, and
+a strategy that says so is better than one that quietly fails to verify."""
+
 STRATEGIES: frozenset[str] = frozenset(
     {
         PRIOR_POWER_STATE,
@@ -62,6 +66,7 @@ STRATEGIES: frozenset[str] = frozenset(
         PRIOR_CONFIG,
         ARGOCD_HISTORY,
         PRIOR_DNS_RECORD,
+        NO_INVERSE,
     }
 )
 
@@ -75,6 +80,7 @@ _DEFAULT_STRATEGY = {
     "dns-record": PRIOR_DNS_RECORD,
     "workload-scale": PRIOR_REPLICAS,
     "workload-restart": ROLLOUT_UNDO,
+    "node-update": NO_INVERSE,
 }
 _SNAPSHOT_PREFIX = "helper"
 _TARGET_KEYS = (
@@ -423,6 +429,24 @@ async def _verify_prior_dns_record(
     )
 
 
+async def _verify_no_inverse(manifest: ActionManifest) -> tuple[bool, str, dict[str, Any]]:
+    """Always unverified, with the reason — the point of the strategy.
+
+    A package upgrade has no inverse worth offering: apt can downgrade only
+    where every old version is still in a cache or a snapshot of one, and a
+    half-downgraded hypervisor is worse than the upgrade. So this returns
+    false, the gate degrades AUTONOMOUS to CONFIRM, and the action kind stays
+    out of ``REVERSIBLE_ACTION_KINDS`` so it can never be auto-promoted.
+    """
+    return (
+        False,
+        f"{manifest.action_kind} has no inverse: package upgrades are not reliably "
+        "reversible, so this action is not undoable once it starts. Roll the node "
+        "back from a backup or reinstall if it goes wrong.",
+        {"inverse": None},
+    )
+
+
 async def verify_rollback(
     adapter: ProxmoxAdapter,
     manifest: ActionManifest,
@@ -451,6 +475,8 @@ async def verify_rollback(
         verified, evidence, probe = await _verify_argocd_history(argocd, manifest)
     elif strategy == PRIOR_DNS_RECORD:
         verified, evidence, probe = await _verify_prior_dns_record(unifi, manifest)
+    elif strategy == NO_INVERSE:
+        verified, evidence, probe = await _verify_no_inverse(manifest)
     else:
         verified, evidence, probe = (
             False,
@@ -695,11 +721,17 @@ async def restore(
         return await _restore_argocd_history(argocd, plan)
     if plan.strategy == PRIOR_DNS_RECORD:
         return await _restore_prior_dns_record(unifi, plan)
+    if plan.strategy == NO_INVERSE:
+        raise RollbackError(
+            "this action was recorded as having no inverse, so there is nothing to "
+            "restore — recover the node from a backup instead"
+        )
     raise RollbackError(f"no restore path for strategy {plan.strategy!r}")
 
 
 __all__ = [
     "ARGOCD_HISTORY",
+    "NO_INVERSE",
     "PRIOR_CONFIG",
     "PRIOR_DNS_RECORD",
     "PRIOR_NODE",

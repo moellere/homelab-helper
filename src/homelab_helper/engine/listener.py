@@ -54,8 +54,8 @@ DEFAULT_SOURCES: tuple[str, ...] = ("playbook:", "agent:")
 REASK_AFTER = timedelta(hours=2)
 MAX_ASKS = 3
 
-AdaptersFor = Callable[[ActionManifest], Awaitable["tuple[Any, Any, Any, Any] | str"]]
-"""Resolve ``(proxmox, k8s, argocd, unifi)`` for one manifest, or a message naming what is missing."""
+AdaptersFor = Callable[[ActionManifest], Awaitable["tuple[Any, Any, Any, Any, Any] | str"]]
+"""Resolve ``(proxmox, k8s, argocd, unifi, ssh)`` for one manifest, or a message naming what is missing."""
 
 
 @dataclass
@@ -138,7 +138,7 @@ async def ask_pending(
     ][:limit]
 
     now = datetime.now(UTC)
-    ready: list[tuple[ProposalLog, ActionManifest, Decision, tuple[Any, Any, Any, Any]]] = []
+    ready: list[tuple[ProposalLog, ActionManifest, Decision, tuple[Any, Any, Any, Any, Any]]] = []
     for proposal in candidates:
         pid = str(proposal.id)
         if await _ask_state(session, proposal, now) != "ask":
@@ -179,7 +179,7 @@ async def ask_pending(
                 result.errors.append(f"{pid[:8]}: approval channel failed: {answer}")
                 continue
             result.asked.append(pid[:8])
-            proxmox, k8s, argocd, unifi = adapters
+            proxmox, k8s, argocd, unifi, ssh = adapters
 
             async def _confirm(
                 m: ActionManifest, d: Decision, _answer: ApprovalResult = answer
@@ -197,6 +197,7 @@ async def ask_pending(
                     k8s_adapter=k8s,
                     argocd_adapter=argocd,
                     unifi_adapter=unifi,
+                    ssh_adapter=ssh,
                     notifier=notifier,
                 )
             except ExecutionRefused as exc:
@@ -205,7 +206,7 @@ async def ask_pending(
             note = f" ({outcome.notification})" if outcome.notification else ""
             result.executed.append(f"{pid[:8]} {_manifest.cell_key} -> {outcome.outcome}{note}")
     finally:
-        for _p, _m, _d, (proxmox, _k8s, argocd, unifi) in ready:
+        for _p, _m, _d, (proxmox, _k8s, argocd, unifi, _ssh) in ready:
             for a in (proxmox, argocd, unifi):
                 close = getattr(a, "aclose", None)
                 if close is not None:

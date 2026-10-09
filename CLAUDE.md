@@ -25,8 +25,8 @@ when making implementation decisions.
 src/homelab_helper/
 ├── adapters/       NetBox, KernelSSH, Proxmox, K8s, UniFi, Cloudflare,
 │                   Argo CD, OpenMediaVault — read-only at L1, except the
-│                   Proxmox guest, K8s workload, Argo CD sync and UniFi DNS
-│                   writes reserved for the executor
+│                   Proxmox guest, K8s workload, Argo CD sync, UniFi DNS and
+│                   KernelSSH node-update writes reserved for the executor
 ├── cli/            Typer apps; entry point in main.py (26 verbs incl.
 │                   approvals, daemon, usage, digest)
 ├── db/             Models, enums, async session
@@ -154,7 +154,8 @@ transitively imports `homelab_helper.llm`.
 Every write path routes through `engine/executor.py`, which is the only caller
 of an adapter's mutate methods (Proxmox `vm_power`/snapshots/`migrate_guest`/
 `set_vm_config` (cpu-type, resize), K8s `rollout_restart`/`scale_workload`/`rollout_undo`, Argo CD
-`sync_application`/`rollback_application`, UniFi `create/update/delete_dns_record`);
+`sync_application`/`rollback_application`, UniFi `create/update/delete_dns_record`,
+KernelSSH `apt_dist_upgrade`);
 adapter writes carry a
 block comment saying so, and `tests/test_write_isolation.py` fails if any
 other module names one — add every new write method to its `WRITE_METHODS`.
@@ -180,7 +181,14 @@ narrate a finding but never drafts a remediation. The listener and the daemon
 When adding an action kind: manifest schema (`engine/manifest.py`) **and**
 `parse_manifest`, a rollback strategy with a read-only verifier in
 `engine/rollback.py`, `REVERSIBLE_ACTION_KINDS` in `engine/escalation.py` only
-once that inverse is a tested write path, and the write-isolation list. Two ordering rules in the executor are
+once that inverse is a tested write path, and the write-isolation list. An
+action whose inverse does not exist takes the `no-inverse` strategy, whose
+verifier always reports unverified *with the reason* — that degrades
+AUTONOMOUS to CONFIRM and, with the kind absent from
+`REVERSIBLE_ACTION_KINDS`, pins it below autonomy for good (`node-update` is
+the first). A node action's manifest carries a node name and nothing else:
+what it runs is fixed in code, or a proposal becomes remote code execution
+gated by one cell. Two ordering rules in the executor are
 load-bearing, not stylistic: the gate runs **pessimistically first** (assuming
 no rollback) so a refused action never touches the target even to probe it,
 and rollback **capture** (which may snapshot — a write) happens only after the

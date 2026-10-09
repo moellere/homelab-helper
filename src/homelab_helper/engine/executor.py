@@ -48,12 +48,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
+
 from homelab_helper.adapters.argocd import ArgoCDAPIError
 from homelab_helper.adapters.kubernetes import KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAPIError
 from homelab_helper.adapters.unifi import UniFiAPIError
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
-from homelab_helper.db.models import ExecutionReceipt, ProposalLog, TrustHistory
+from homelab_helper.db.models import ExecutionReceipt, Host, ProposalLog, TrustHistory
 from homelab_helper.engine.approval import ApprovalResult
 from homelab_helper.engine.escalation import (
     EscalationResult,
@@ -71,6 +73,8 @@ from homelab_helper.engine.manifest import (
     MAX_CORES,
     MAX_MEMORY_MIB,
     MIN_MEMORY_MIB,
+    NODE_ACTION_KINDS,
+    NODE_DOMAIN,
     VM_KIND_DOMAIN,
     WORKLOAD_ACTION_KINDS,
     WORKLOAD_DOMAIN,
@@ -100,6 +104,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from homelab_helper.adapters.argocd import ArgoCDAdapter
+    from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
     from homelab_helper.adapters.kubernetes import K8sAdapter
     from homelab_helper.adapters.proxmox import ProxmoxAdapter
     from homelab_helper.adapters.unifi import UniFiAdapter
@@ -163,6 +168,11 @@ class ActionManifest:
         return self.workload_name is not None
 
     @property
+    def is_node(self) -> bool:
+        """A node target: named node, no guest on it."""
+        return self.node is not None and self.vmid is None
+
+    @property
     def is_argocd(self) -> bool:
         return self.application is not None
 
@@ -170,8 +180,7 @@ class ActionManifest:
     def is_dns(self) -> bool:
         return self.dns_hostname is not None
 
-    @property
-    def target_label(self) -> str:
+    def _non_guest_label(self) -> str | None:
         if self.is_argocd:
             rev = f" @ {self.revision}" if self.revision else ""
             return f"argocd app {self.application}{rev}"
@@ -180,6 +189,14 @@ class ActionManifest:
             return f"dns {self.record_type} {self.dns_hostname} -> {self.dns_value}{where}"
         if self.is_workload:
             return f"{self.workload_kind}/{self.workload_name} in {self.namespace}"
+        return None
+
+    @property
+    def target_label(self) -> str:
+        if self.is_node:
+            return f"node {self.node}"
+        if special := self._non_guest_label():
+            return special
         label = f"{self.vm_kind}/{self.vmid} on {self.node}"
         if self.target_node:
             return f"{label} -> {self.target_node}"
@@ -263,6 +280,8 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
         "action_raw": action,
     }
 
+    if "node" in target and "vmid" not in target:
+        return _parse_node_target(action, target, domain, common)
     if "vmid" in target or "node" in target:
         return _parse_guest_target(action, target, domain, common)
     if "application" in target:
@@ -270,6 +289,30 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
     if "hostname" in target and "value" in target:
         return _parse_dns_target(action, target, domain, common)
     return _parse_workload_target(action, target, domain, common)
+
+
+def _parse_node_target(
+    action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
+) -> ActionManifest:
+    """A hypervisor node itself. The manifest carries a name and nothing else:
+    what a node action *does* is fixed in code, so an artifact cannot smuggle a
+    command past the gate."""
+    if common["action_kind"] not in NODE_ACTION_KINDS:
+        raise ManifestError(f"{common['action_kind']!r} is not a node action")
+    node = target.get("node")
+    if not node or not isinstance(node, str):
+        raise ManifestError("target.node is required")
+    unexpected = sorted(set(target) - {"node"})
+    if unexpected:
+        raise ManifestError(
+            f"a node target takes only 'node'; refusing extra field(s): {', '.join(unexpected)}"
+        )
+    if domain is not NODE_DOMAIN:
+        raise ManifestError(
+            f"declared domain {domain.value!r} does not match a hypervisor node "
+            f"(which is {NODE_DOMAIN.value!r}) — refusing"
+        )
+    return ActionManifest(**common, hostnames=tuple(action.get("hostnames") or (node,)), node=node)
 
 
 def _parse_argocd_target(
@@ -434,6 +477,72 @@ def _parse_workload_target(
     )
 
 
+def _ssh_credentials(host: Host) -> tuple[str, str | None]:
+    """``(user, key_path)`` from ``Host.credentials_ref`` (``ssh:<user>:<path>``).
+
+    The ref is the only place a node's login lives; a node the operator never
+    onboarded has none, and a node update is refused rather than guessed at.
+    """
+    ref = host.credentials_ref or ""
+    if not ref.startswith("ssh:"):
+        raise ValueError(
+            f"host {host.hostname} has no ssh credentials_ref "
+            "(expected 'ssh:<user>:<key-path>') — re-run `helper discover host` for it"
+        )
+    _, _, rest = ref.partition("ssh:")
+    user, _, key_path = rest.partition(":")
+    if not user:
+        raise ValueError(f"host {host.hostname} credentials_ref names no user")
+    return user, key_path or None
+
+
+async def _dispatch_node(
+    manifest: ActionManifest,
+    adapter: ProxmoxAdapter,
+    ssh: KernelSSHAdapter | None,
+    host: Host | None,
+) -> tuple[str, Any]:
+    """Apply a node's pending packages over SSH, refusing an undrained node.
+
+    The precondition is a refusal, not a warning: ``apt dist-upgrade`` on a
+    Proxmox node restarts cluster services and usually wants a reboot after,
+    so running it under live guests risks them. Checked here, before any
+    write, so an undrained node produces no change at all.
+    """
+    node = manifest.node
+    if node is None:
+        raise ManifestError("node target is incomplete")
+    if ssh is None:
+        raise ValueError("no SSH adapter is configured; a node update needs one")
+    if host is None:
+        raise ValueError(
+            f"{node} is not a known host, so the harness has no credentials for it — "
+            "add it with `helper discover host` first"
+        )
+    user, key_path = _ssh_credentials(host)
+
+    running = [
+        v
+        for v in await adapter.cluster_resources("vm")
+        if str(v.get("node")) == node and v.get("status") == "running" and not v.get("template")
+    ]
+    if running:
+        names = ", ".join(str(v.get("name") or v.get("vmid")) for v in running[:6])
+        raise ValueError(
+            f"{node} still runs {len(running)} guest(s) ({names}) — drain it first "
+            "(migrate them off), then update"
+        )
+
+    result = await ssh.apt_dist_upgrade(host.primary_ip or node, user=user, key_path=key_path)
+    if not result.ok:
+        raise ValueError(
+            f"dist-upgrade exited {result.exit_code}: "
+            f"{(result.stderr or result.stdout or '').strip()[:300]}"
+        )
+    tail = [line for line in result.stdout.splitlines() if line.strip()][-1:]
+    return "dist-upgrade", {"exit_code": result.exit_code, "tail": tail}
+
+
 async def _dispatch_argocd(
     manifest: ActionManifest, argocd: ArgoCDAdapter | None
 ) -> tuple[str, Any]:
@@ -552,6 +661,8 @@ async def _dispatch(
     k8s: K8sAdapter | None,
     argocd: ArgoCDAdapter | None = None,
     unifi: UniFiAdapter | None = None,
+    ssh: KernelSSHAdapter | None = None,
+    host: Host | None = None,
 ) -> tuple[str, Any]:
     """Run the one adapter write the manifest names; returns ``(verb, task-ish detail)``."""
     if manifest.is_argocd:
@@ -560,6 +671,8 @@ async def _dispatch(
         return await _dispatch_dns(manifest, unifi)
     if manifest.is_workload:
         return await _dispatch_workload(manifest, k8s)
+    if manifest.is_node:
+        return await _dispatch_node(manifest, adapter, ssh, host)
     return await _dispatch_guest(manifest, adapter)
 
 
@@ -647,6 +760,15 @@ async def _confirm(
     return None
 
 
+async def _node_host(session: AsyncSession, manifest: ActionManifest) -> Host | None:
+    """The ``Host`` row a node action needs credentials from, if there is one."""
+    if not manifest.is_node or manifest.node is None:
+        return None
+    return (
+        await session.execute(select(Host).where(Host.hostname == manifest.node))
+    ).scalar_one_or_none()
+
+
 async def execute_proposal(
     session: AsyncSession,
     proposal: ProposalLog,
@@ -658,6 +780,7 @@ async def execute_proposal(
     k8s_adapter: K8sAdapter | None = None,
     argocd_adapter: ArgoCDAdapter | None = None,
     unifi_adapter: UniFiAdapter | None = None,
+    ssh_adapter: KernelSSHAdapter | None = None,
     notifier: Notifier | None = None,
 ) -> ExecutionResult:
     """Gate, (maybe) confirm, dispatch, and receipt one pending action proposal.
@@ -752,7 +875,15 @@ async def execute_proposal(
     outcome, error, upid = "succeeded", None, None
     verb = manifest.action_kind
     try:
-        verb, upid = await _dispatch(manifest, adapter, k8s_adapter, argocd_adapter, unifi_adapter)
+        verb, upid = await _dispatch(
+            manifest,
+            adapter,
+            k8s_adapter,
+            argocd_adapter,
+            unifi_adapter,
+            ssh_adapter,
+            await _node_host(session, manifest),
+        )
     except (ProxmoxAPIError, KubeError, ArgoCDAPIError, UniFiAPIError, OSError, ValueError) as exc:
         outcome, error = "failed", str(exc)
     duration_ms = int((time.monotonic() - started) * 1000)

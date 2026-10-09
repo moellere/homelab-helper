@@ -43,6 +43,7 @@ from homelab_helper.engine.manifest import (
     ManifestError,
     build_argocd_artifact,
     build_artifact,
+    build_node_artifact,
     build_workload_artifact,
 )
 
@@ -177,6 +178,41 @@ def _rightsize(finding: ReconciliationFinding) -> Draft | None:
     )
 
 
+def _node_update(finding: ReconciliationFinding) -> Draft | None:
+    """A node with packages pending → an executable node update.
+
+    Only ``pve-updates``: a *mixed-versions* finding names the cluster, and the
+    fix is updating each node, which this playbook already drafts one at a
+    time. The draft says the node must be drained first, because the executor
+    refuses an undrained node at dispatch — the proposal is honest about the
+    prerequisite rather than failing when it is run.
+    """
+    if category_of(finding) != "pve-updates":
+        return None
+    node = _target(finding, "host")
+    if not node:
+        return None
+    ev: dict[str, Any] = next(
+        (dict(r) for r in finding.evidence_refs or [] if r.get("type") == "evidence"), {}
+    )
+    pending = ev.get("pending")
+    try:
+        artifact = build_node_artifact(node=node)
+    except ManifestError:
+        return None
+    count = f"{pending} package(s)" if isinstance(pending, int) else "pending packages"
+    return Draft(
+        artifact=artifact,
+        title=f"Update {node} ({count})",
+        blast_radius="single-host",
+        summary=(
+            f"Apply {node}'s pending packages with apt dist-upgrade. Drain the node first "
+            "(migrate its guests off) — the executor refuses an undrained node. There is no "
+            "rollback: a package upgrade has no inverse, so this never runs unattended."
+        ),
+    )
+
+
 PLAYBOOKS: tuple[Playbook, ...] = (
     Playbook(
         name="argocd-resync",
@@ -199,6 +235,13 @@ PLAYBOOKS: tuple[Playbook, ...] = (
         build=_rightsize,
         description="Usage history says a guest's cores or memory are wrong → resize to the proposed value.",
         redraft_after_success=False,
+    ),
+    Playbook(
+        name="node-update",
+        finding_kind=FindingKind.VERSION_DRIFT,
+        target_type="host",
+        build=_node_update,
+        description="A node has packages pending → apt dist-upgrade it, once drained.",
     ),
 )
 

@@ -400,6 +400,57 @@ unset the approval service if you do not want agents able to ask.
 
 ---
 
+## Part 3 — rolling a node update (Phase 8)
+
+`node-update` is the first action with **no inverse**. There is no rollback, no
+snapshot and no undo: if a dist-upgrade breaks a node, you recover it from a
+backup. So it can never be auto-promoted and never runs unattended — every one
+is a decision you make.
+
+Sequencing is **your** procedure, not one action. One action is one decision
+and one receipt, which is the gradient's unit; a composite drain-update-reboot
+action would hide which step failed. Do one node at a time, and never start the
+next until the last is verified.
+
+### Before the first one
+
+```bash
+uv run helper discover versions        # 8.1 names which nodes are behind
+uv run helper exec list                # the node-update drafts, if the daemon has run
+```
+
+Confirm `helper trust show` has **no** grant on `host-os/node-update/single-host`
+yet. Grant it when you are ready to do the first one by hand, and consider
+removing the grant afterwards until the next maintenance window.
+
+### Per node
+
+1. **Drain.** Migrate the node's running guests off it. `helper plan rebalance`
+   proposes targets; each move is a `migrate` proposal with a real rollback
+   (`prior-node`), so this step is the reversible one.
+2. **Confirm it is drained.** The executor refuses an undrained node, but check
+   first — a refusal costs you a round trip. Stopped guests are fine.
+3. **Update.** `helper exec run <id>` on the node-update proposal. It needs a
+   `CONFIRM` grant and your consent; expect minutes, not seconds, and watch the
+   receipt rather than the terminal.
+4. **Reboot.** By hand, from the Proxmox UI or console. Deliberately not an
+   action: a node that does not come back is the hairiest failure mode here, and
+   an action whose receipt already said "succeeded" would be a poor place for
+   it.
+5. **Verify.** The node is back, quorate, and `helper discover versions` no
+   longer names it. Migrate guests back if you want them there.
+6. **Next.** Only now.
+
+**Pass:** each node updates with a receipt naming the exit code, the undrained
+refusal produces no SSH call at all (check the node's auth log), and
+`helper discover versions` resolves that node's `pve-updates` finding on the
+next pass.
+
+**Stop if:** a node does not come back, a dist-upgrade exits non-zero, or
+quorum drops. There is no undo — recover that node before touching another.
+
+---
+
 ## Sign-off
 
 | Criterion | Result | Notes |
@@ -419,6 +470,7 @@ unset the approval service if you do not want agents able to ask.
 | P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 (a *dispatch failure* demotes) and step 6 (kill switch mid-flight) were exercised by tests only. |
 | P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 | P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
+| P8 node-update (rolling, per node) | ⏳ | Not yet run. No inverse: see Part 3 before the first one. |
 | P7 step 8 (unattended run notice) | ✅ 10/05/2026 | `containers/workload-restart/single-service` granted AUTONOMOUS; an agent-drafted restart of `homepage/deployment/homepage` ran from `helper daemon run --once` with no tap (rev 20 → 21, receipt actor `listener`, rollback `rollout-undo` verified); the phone showed the ✓ notice with `unattended` and the `helper exec rollback` line, after the receipt. Failure/demotion path not forced live — it needs a write that fails after a read that succeeds; pinned by tests. Cell left at AUTONOMOUS by the operator's choice. Found: the 15-min cron listener asked about the proposal while the cell was still CONFIRM, the ask timed out, and the listener then (correctly) refused to run it unattended after the grant — draft *after* granting. |
 
 Open as of 10/05/2026: P4-AC3 (interactive) and P6 steps 5–6 live. Phase 7 is

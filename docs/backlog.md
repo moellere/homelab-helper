@@ -975,6 +975,55 @@ See `roadmap.md` Phase 8. Slices land in this order.
 
 ---
 
+## Phase 9 — Road to 1.0
+
+See `roadmap.md` Phase 9. Adds no capability: it makes the existing capability
+real for someone other than its author. Slices in delivery order.
+
+- [ ] **9.1 Close the validation gate** — the `⏳` rows in
+  `docs/live-validation.md`.
+  - [ ] P4-AC3 onboarding, interactively, on a host the harness has never seen.
+  - [ ] P6 step 5 live: a *dispatch failure* demotes the cell. Needs a write
+    that fails after a read that succeeds — pinned by tests, never forced live.
+  - [ ] P6 step 6 live: the kill switch halts a run mid-flight at the
+    pre-dispatch checkpoint.
+  - [ ] Part 3 rolling `node-update` on one drained node, including the
+    zero-API-call check at the propose floor (read the node's auth log).
+  - [ ] P4-AC2 / P5-AC4 (`⚪ n/a` today): build a synthetic **asymmetric**
+    replay fixture so the Ceph derivation and its four mitigations run end to
+    end through the CLI, or write down why they stay unit-tested only. The
+    symmetric fleet cannot exercise them.
+- [ ] **9.2 De-assume the lab**
+  - [ ] Hosts gain a role, or it derives from cluster membership plus
+    capability, so `plan surplus` stops calling covomv surplus (a NAS running
+    Docker) — the mirror of the `plan rebalance` targets defect fixed in #51.
+  - [ ] Runbook text that still assumes the day-one 1 GbE / 2.5 GbE asymmetry.
+  - [ ] Sweep for other places the fleet's shape became logic rather than data.
+- [ ] **9.3 Docs site** (mkdocs-material) — getting-started **led by
+  `helper discover replay`**, which already produces 13 findings with no
+  hardware and is currently undocumented as the on-ramp; CLI reference; probe
+  SDK guide; adapter authoring guide; NetBox custom-field reference; an
+  operator's explainer for the trust gradient (what the levels mean, how to
+  raise a floor without regretting it).
+- [ ] **9.4 Declare the 1.0 surface** — `docs/stability.md` naming each public
+  surface and its promise: probe entry points, the `ProposalLog.artifact`
+  manifest schema, the DB through migrations, the CLI verbs, the MCP tool
+  names, plus a deprecation policy. Pin the Python matrix in CI (3.12 now;
+  3.13 once upstream deps settle).
+- [ ] **9.5 The last Phase-1 probes** — `host.raid` / `host.shares`, dmidecode
+  DIMM depth (a serialled module becomes a `PhysicalPart` + `Placement`),
+  `talos.host` CPU/DIMM depth.
+- [ ] **9.6 Finish the Phase-2 tail** — probe-level schedules and assertion
+  cadences inside `helper daemon`, so "continuous" is per-probe rather than one
+  discovery interval for everything.
+- [ ] **9.7 Web UI (the deferred 4.5)** — optional and last: chat, findings
+  browser, trust surface read-only.
+
+Not in Phase 9: new adapters, new action kinds, predictive work, hosted
+service. It earns its keep by finishing things rather than starting them.
+
+---
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but

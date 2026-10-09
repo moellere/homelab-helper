@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -16,6 +16,7 @@ from homelab_helper.db.enums import (
     FindingKind,
     FindingSeverity,
     FindingStatus,
+    ProposalOutcome,
     TrustDomain,
 )
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog, ReconciliationFinding
@@ -307,3 +308,29 @@ async def test_rightsize_playbook_drafts_a_resize_but_never_for_idle(sessionmake
     assert not any("esp" in t and "idle" in t for t in by_title)
     assert len(result.drafted) == len(proposals)
     assert {f.severity for f in findings} >= {FindingSeverity.MEDIUM}
+
+
+async def test_an_applied_resize_is_not_redrafted_while_its_finding_lags(sessionmaker) -> None:
+    """A VM resized but not yet restarted still measures as the old size; don't ask again."""
+    summary = {
+        "samples": 720,
+        "cpus": 2.0,
+        "cpu_p95": 0.62,
+        "cpu_peak": 1.04,
+        "mem_total": 12 * GIB,
+        "mem_p95": 11 * GIB,
+        "mem_peak": 11.5 * GIB,
+        "net_mean": 100.0,
+    }
+    issues = guest_issues("lab/105", "ha", "qemu", summary, 30, node="pve1")
+    async with session_scope(sessionmaker) as s:
+        await reconcile_category_findings(s, FindingKind.RIGHTSIZING, issues, {"cpu-grow"})
+        first = await run_playbooks(s, min_age=timedelta(0))
+        assert len(first.drafted) == 1
+        p = (await s.execute(select(ProposalLog))).scalar_one()
+        p.outcome = ProposalOutcome.USER_ACCEPTED
+        p.outcome_at = datetime.now(UTC) - timedelta(days=1)  # well past the cooldown
+        await s.flush()
+        later = await run_playbooks(s, min_age=timedelta(0))
+    assert later.drafted == []
+    assert len(later.skipped_done) == 1

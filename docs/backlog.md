@@ -835,6 +835,14 @@ fuse; the first two expired unseen and, as "answers", were never re-asked.
 - [x] An expired prompt is not an answer: re-asked after `REASK_AFTER` (2 h), at
   most `MAX_ASKS` (3) times; Approve / Deny stay final.
 
+- [x] Found 10/09/2026: approved VM resizes were **redrafted** six hours later —
+  a VM resized but not yet restarted still measures as the old size, so its
+  rightsizing finding stays open and the cooldown expired. Playbooks gain
+  `redraft_after_success` (False for `rightsize`): an action identical to one
+  already executed for the same finding is never drafted again
+  (`skipped_done`). The three duplicates were superseded and their findings
+  acknowledged by hand.
+
 ### Test hygiene (found during slice 1)
 
 - [x] `tests/test_mcp_server.py` flakes (one random failure or error per run):

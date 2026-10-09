@@ -2316,6 +2316,7 @@ async def draft_remediations() -> dict[str, Any]:
                 "skipped_cooldown": len(result.skipped_cooldown),
                 "skipped_young": len(result.skipped_young),
                 "withdrawn": result.withdrawn,
+                "skipped_done": len(result.skipped_done),
                 "findings_without_playbook": result.no_playbook,
                 "playbooks": [f"{pb.name}: {pb.description}" for pb in PLAYBOOKS],
             }

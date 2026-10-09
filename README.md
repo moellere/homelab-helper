@@ -3,16 +3,19 @@
 > An open-source framework for homelab inventory, audit, recommendations, and
 > operator-gated execution.
 
-**Status: beta.** The read-only product — discovery, inventory, audit, chat,
-MCP tools, placement and rebalancing recommendations — is complete, installs
-from PyPI, and has been run against a real multi-site lab. Execution (Phase 6,
-widened in Phase 7 to guest migration, Kubernetes workloads, and agent-triggered
-runs behind a phone-tap approval) is built and tested but **opt-in and off by
-default**: nothing runs until you
-raise a trust cell, and you should validate it against your own fleet before
-you do. Expect the CLI verbs, MCP tool names, and configuration variables to
-stay stable through the 0.1 series; database schema changes ship as Alembic
-migrations that `helper db init` applies.
+**Status: release candidate (1.0.0rc1).** Every planned phase is built and
+validated against a real two-site lab: discovery and inventory, audit, chat and
+MCP tools, placement / rebalancing / rightsizing recommendations, version
+currency and backup posture, per-probe cadences, a weekly digest, and a status
+endpoint for your dashboard. Execution (Phases 6–8: guest power, migration and
+resize, Kubernetes workloads, Argo CD syncs, DNS records, a rolling node update,
+agent-triggered runs behind a phone-tap approval) is **opt-in and off by
+default**: nothing runs until you raise a trust cell. What separates rc1 from
+1.0.0 is operator time on the last runbook rows, not code. The CLI verbs, MCP
+tool names, configuration variables and the probe contract are declared stable
+in [stability and deprecation](https://moellere.github.io/homelab-helper/stability/);
+schema changes ship as Alembic migrations that `helper db init` applies, on
+SQLite and Postgres alike.
 
 `homelab-helper` is for people who run their own infrastructure at home. It
 discovers what you have, maintains one coherent inventory across the many
@@ -40,8 +43,12 @@ See [`architecture.md`](./docs/architecture.md) for the design,
 - Run configuration assertions and produce reconciliation findings
 - Produce a day-one audit against a real homelab
 - Answer questions about the lab in chat (local Ollama by default, BYOK cloud opt-in) and expose everything as MCP tools
-- Recommend placement, rebalancing, and reconfiguration, and flag known bottleneck patterns
-- Execute a proposed guest power action only after you raise its trust cell — deterministic gate, receipts, snapshots, rollback, elevation windows, kill switch
+- Recommend placement, rebalancing, and reconfiguration, and flag known bottleneck patterns — respecting node-local storage and the hosts you mark `no-new-guests`
+- Keep usage history from Proxmox's RRDs and recommend cores and memory per guest from it
+- Check version currency (OS, Ceph, Kubernetes and Talos end of support, pending updates), backup posture, storage efficiency, and suggest services your hardware could run
+- Run probes and assertions on their own cadences from one daemon, draft remediations from findings through deterministic playbooks, and ask your phone before acting
+- Execute a proposed action only after you raise its trust cell — deterministic gate, receipts, snapshots, rollback, elevation windows, kill switch, and a notification after every run you were not asked about
+- Serve a one-screen status (`helper status`, `GET /status`) for Homepage or Home Assistant, and send a weekly digest
 
 ## Running it locally
 
@@ -66,9 +73,8 @@ helper --install-completion                          # bash / zsh / fish
 # bleeding edge: uv tool install git+https://github.com/moellere/homelab-helper
 ```
 
-Drop `--prerelease allow` / the version pin once a non-beta `0.1.0` is on
-PyPI; until then a plain `uv tool install homelab-helper` reports no matching
-version.
+Drop `--prerelease allow` / the version pin once `1.0.0` is on PyPI; until
+then a plain `uv tool install homelab-helper` reports no matching version.
 
 Or from a checkout for development (see [Development](#development)), where
 every command below is prefixed with `uv run`:
@@ -169,6 +175,7 @@ so the cleanup verbs are explicit and operator-driven:
 
 ```bash
 helper host retire pi-cp1 -r "reflashed as pi-cp2"   # records the intent, closes its placements, resolves its findings
+helper host intent node0 --no-new-guests -r "runs hot"  # keep what runs there; planners never send it more
 helper part show SSD-A                               # a part's identity and placement history
 helper part merge 0x5000c500deadbeef --into SSD-A    # same drive under a second identity: fold it in
 helper service resolvers                             # every (scope, resolver) endpoint slice
@@ -218,6 +225,11 @@ file — see `fixtures/network-topology.example.yaml` — and placement becomes
 network-aware: a path inherits **the worst of its links**, so sync-replicated
 workloads (Ceph, etcd) are refused across a VPN, with the reason spelled out.
 
+Two more constraints come from the fleet itself: a guest with a volume on
+node-local storage (an installer ISO on `local` counts) is never proposed for
+migration, and a host you mark `no-new-guests` is never a destination. Both
+are listed in the plan's caveats so it says what it refused to touch.
+
 ```bash
 helper plan path node0 remote-node0 --workload ceph-osd   # path verdict
 helper plan workloads                    # browse the library
@@ -250,6 +262,7 @@ Write surfaces today, each with a verified rollback path:
 | containers (Kubernetes) | `workload-restart`, `workload-scale` on a deployment / statefulset / daemonset | rollout undo, prior replicas |
 | containers (Argo CD) | `argocd-sync` (optionally pinned to a revision, optionally pruning) | Argo CD's own sync history |
 | dns (UniFi static DNS) | `dns-record` (create or update one name + type) | the prior record, or deleting the created one |
+| host-os (Proxmox nodes over SSH) | `node-update` (`apt dist-upgrade` on one named node; what runs is fixed in code) | **none** — reported as unverified, so the cell can never reach AUTONOMOUS |
 
 ```bash
 helper trust show                                   # every cell sits at PROPOSE by default
@@ -258,6 +271,8 @@ helper trust grant hypervisor migrate single-host confirm
 helper trust grant containers workload-restart single-service confirm
 helper trust grant containers argocd-sync single-service confirm
 helper trust grant dns dns-record single-service confirm
+helper trust grant hypervisor resize single-host confirm
+helper trust grant host-os node-update single-host confirm   # stays at CONFIRM for good: no inverse
 helper approvals show                               # channel status, what would ask you, who answered
 helper daemon run --once                            # discovery → playbooks → listener, one pass (cron-friendly)
 helper daemon run                                   # the same on cadences, until Ctrl-C
@@ -281,9 +296,11 @@ is out of date and records `version-drift` findings: Proxmox nodes with pending
 package updates or on mixed `pve-manager` versions, hosts whose OS is past or
 within 180 days of end of support, a Ceph release approaching or past its
 upstream end of life or a cluster mid-upgrade with daemons on different versions
-(all dates live in `data/os-eol.yaml`; nothing is guessed), Kubernetes/Talos
-version skew, and pending Home Assistant updates. A
-source that cannot be reached is reported and its findings are left alone.
+(all dates live in `data/os-eol.yaml`; nothing is guessed), Kubernetes nodes
+on different kubelet or Talos versions, a Kubernetes minor past upstream patch
+support or a Talos minor two releases behind, and pending Home Assistant
+updates. A source that cannot be reached is reported and its findings are left
+alone.
 
 ### Backup posture (Phase 8.2)
 
@@ -319,6 +336,30 @@ Like every other action it runs only through the trust gate: grant
 effect at its next stop/start, and `helper exec rollback` restores the prior
 values.
 
+### Storage efficiency, service suggestions, the weekly digest (Phase 8.5–8.7)
+
+`helper discover storage` reads every Proxmox storage and guest config and
+records `storage-efficiency` findings: pools trending toward full (time-to-full
+from the usage history), stale snapshots, orphaned disks and unreferenced
+images. `helper discover suggestions` compares what your hardware offers with
+what runs on it — an idle GPU, a missing building block the library knows
+(a local LLM when the chat router prefers one, say) — as `info` findings.
+`helper digest show` renders the week: what executed and how it ended, which
+findings opened and resolved, what changed in the trust gradient; `helper
+digest send` delivers it through the same phone notification service and moves
+the window.
+
+### Status endpoint (Phase 9.7a)
+
+`helper status show` is the one-screen answer to "is anything wrong, and is
+anything waiting on me?" — open findings by severity, proposals awaiting
+approval, discovery age, trust cells, the day's receipts, and a three-step
+`health`. `helper status serve` exposes the same object as `GET /status` (plus
+`GET /healthz`) for a Homepage `customapi` tile or a Home Assistant REST sensor;
+set `HOMELAB_HELPER_STATUS_TOKEN` when the LAN is not the boundary. Two GET
+routes, nothing that changes anything — see
+[the docs](https://moellere.github.io/homelab-helper/status-endpoint/).
+
 ### After the fact
 
 Every run you were *not* asked about tells you it happened: an AUTONOMOUS
@@ -346,15 +387,17 @@ from a 15-minute cron tick (`--once`) and from the long-lived daemon alike.
 `helper daemon run` closes the loop without anyone asking: discovery on a
 cadence (findings land in the harness DB), then **playbooks** turn the findings
 they cover into pending proposals, then the **listener** sends the ones policy
-would allow to your phone and executes on a tap. Two playbooks ship:
+would allow to your phone and executes on a tap. The playbooks:
 
 | Finding | Playbook | Proposal |
 |---|---|---|
 | `drift-candidate` (Argo CD reports an app out of sync or unhealthy) | `argocd-resync` | `argocd-sync` of that application |
 | `workload-unhealthy` (a settled Deployment / StatefulSet / DaemonSet has fewer ready replicas than desired) | `workload-restart` | `workload-restart` of that workload |
+| `rightsizing` (cores or memory recommendation from usage history) | `rightsize` | `resize` of that guest; never redrafted once applied |
+| `version-drift` (a Proxmox node with pending package updates) | `node-update` | `node-update` of that node, one at a time |
 
 Playbooks are a deterministic table, not a model: a finding's own fields pick
-the action; a finding must have persisted 15 minutes first (the platform's
+the action; four playbooks ship today. A finding must have persisted 15 minutes first (the platform's
 own self-heal gets first go); one live proposal per finding; a six-hour
 cooldown after any decision so a fix that did not clear the finding is not
 retried every pass; and a draft whose finding resolves is withdrawn.
@@ -380,8 +423,9 @@ harness-DB writes only), `run_discovery` over the management-plane sources
 (SSH deep discovery; key path or env reference only — no secrets through tool
 arguments) and `probe_talos` (the Talos machine API), and the Phase-5 planners
 as deterministic reports (`list_workloads`, `recommend_placement`,
-`plan_rebalance`, `analyze_bottlenecks`, `analyze_surplus`, `network_path`)
-that the client's own model narrates. Nothing writes to the lab itself.
+`plan_rebalance`, `analyze_bottlenecks`, `analyze_surplus`, `network_path`,
+`rightsizing`, `usage_summary`) that the client's own model narrates, and
+`retire_host` for the inventory itself. Nothing writes to the lab itself.
 
 ```bash
 helper mcp tools    # list the tool roster
@@ -434,25 +478,21 @@ enforce the absence — and that `execute_proposal` can never carry an override
 (as if reversibility were unverified), because verifying it means probing the
 target and a query tool has no business doing that.
 
-**Transport and trust.** The server speaks stdio only. It runs as you, in
+**Transport and trust.** The MCP server speaks stdio only. It runs as you, in
 your shell, and reads the same `.env` the CLI does, so put nothing secret in
-the client's config block: the command line above is all a client needs.
-There is no network transport. Remote MCP would need the HTTP API (a stub
-today) with token auth and TLS and per-token tool allowlists (a remote client
-should never see `probe_host`); neither is planned before live-fleet
-validation signs Phase 6 off.
+the client's config block: the command line above is all a client needs. The
+only network listener the harness has is the read-only status endpoint above.
+Remote MCP would need token auth, TLS and per-token tool allowlists (a remote
+client should never see `probe_host`), and is not planned for 1.0.
 
 ## Repo layout
 
 ```
 .
-├── docs/architecture.md            # System design and locked decisions, incl. the trust gradient
-├── docs/roadmap.md                 # Phased delivery plan
-├── docs/backlog.md                 # What's done and what's left, per phase
-├── docs/agent-access-scope.md      # How agents reach each service, and what stays operator-only
-├── docs/harness-schema-slice1.md   # DB schema spec + trust-gradient tables
-├── docs/releasing.md               # Tag-driven releases to PyPI
-├── fixtures/                       # Operator-editable examples: assertion library, topology, example lab
+├── docs/                           # The mkdocs site (moellere.github.io/homelab-helper): getting started,
+│                                   # CLI reference, trust gradient, stability, status endpoint, runbook,
+│                                   # architecture, roadmap, backlog, releasing
+├── fixtures/                       # Operator-editable examples: assertion library, topology, aliases, schedule
 ├── src/homelab_helper/
 │   ├── adapters/                   # NetBox, Kernel-SSH, Talos, Proxmox, K8s, UniFi, MikroTik, Cloudflare, Argo CD, OMV, Home Assistant
 │   ├── probes/                     # Probe plugin SDK + first-party host/network/talos probes
@@ -460,14 +500,15 @@ validation signs Phase 6 off.
 │   ├── llm/                        # LLM router + backends, chat context, narrator/planner/discovery agents
 │   ├── db/                         # Models, enums, async session
 │   ├── migrations/                 # Alembic env + versions (ship in the wheel)
-│   ├── data/                       # Starter workload library (ships in the wheel)
+│   ├── data/                       # Workload library, OS/Ceph/Kubernetes/Talos EOL table, replayable labs (ship in the wheel)
 │   ├── cli/                        # `helper` Typer app
 │   ├── mcp_server.py               # MCP tools over stdio
+│   ├── status_api.py               # GET /status + /healthz (FastAPI)
 │   ├── config.py                   # .env loading, per-user dirs, source status
 │   ├── secrets.py                  # Secret references (file/age/sops/keyring) + redaction
-│   └── api/                        # HTTP API — a stub; not part of the 0.1 product
-├── tests/                          # pytest suite (~880 tests, no live infrastructure)
-└── .github/workflows/              # CI gate on every PR; tag-driven release
+│   └── api/                        # HTTP API — a stub; not part of the product
+├── tests/                          # pytest suite (~1200 tests, no live infrastructure; runs on SQLite and Postgres)
+└── .github/workflows/              # CI gate on every PR (3.12, 3.13, Postgres, docs); tag-driven release; docs site
 ```
 
 ## Reporting issues
@@ -483,14 +524,16 @@ This project uses [uv](https://docs.astral.sh/uv/) for environment and dependenc
 management. Install uv first if you don't have it.
 
 ```bash
-uv sync --all-extras --group dev   # creates .venv with every extra and the dev group
-uv run helper --help               # the CLI from the checkout
+uv sync --all-extras --group dev --group docs   # creates .venv with every extra, the dev and docs groups
+uv run helper --help                            # the CLI from the checkout
 
-# The CI gate — run all four before pushing
+# The CI gate — run all five before pushing
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run mypy src
 uv run pytest -q
+uv run mkdocs build --strict
+# the same suite against Postgres: HELPER_TEST_DATABASE_URL=postgresql+asyncpg://... uv run pytest -q
 ```
 
 Tests never touch live infrastructure: adapters run against `httpx`
@@ -505,5 +548,5 @@ Apache License 2.0 — see [`LICENSE`](./LICENSE).
 
 ## Contributing
 
-See `CONTRIBUTING.md`: the four checks, the three invariants a change must not
-break, and the shape of a Phase-7 action-kind contribution.
+See `CONTRIBUTING.md`: the five checks, the invariants a change must not
+break, and the shape of an action-kind contribution.

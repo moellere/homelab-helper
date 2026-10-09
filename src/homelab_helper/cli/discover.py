@@ -53,7 +53,12 @@ from homelab_helper.engine.host_probe import (
 )
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.k8s_workloads import reconcile_workload_health
-from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
+from homelab_helper.engine.lab_replay import (
+    LabFixtureError,
+    load_lab_fixture,
+    parse_lab_fixture,
+    resolve_lab_fixture,
+)
 from homelab_helper.engine.reconciler import Reconciler, ReconcileResult
 from homelab_helper.engine.runner import ProbeRunner
 from homelab_helper.engine.scan_import import (
@@ -422,13 +427,22 @@ def discover_import(
 
 @discover_app.command(name="replay")
 def discover_replay(
-    fixture: Path = typer.Argument(..., help="Path to a lab-replay YAML fixture.", exists=True),
+    fixture: str | None = typer.Argument(
+        None,
+        help="A lab-replay YAML file, or a bundled lab: 'example' (default) or 'asymmetric'.",
+    ),
     no_assert: bool = typer.Option(
         False, "--no-assert", help="Skip the fixture's bundled assertion library."
     ),
 ) -> None:
-    """Replay a synthetic lab fixture (hosts + observations) — no live access."""
-    data = parse_lab_fixture(fixture.read_text())
+    """Replay a synthetic lab (hosts + observations) — no hardware, no credentials."""
+    try:
+        path = resolve_lab_fixture(fixture)
+        data = parse_lab_fixture(path.read_text())
+    except LabFixtureError as exc:
+        console.print(f"[red]replay:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[dim]lab: {path.name}[/dim]")
 
     async def _go() -> int:
         engine = make_engine(_database_url())

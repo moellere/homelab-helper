@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import typer
 from rich.console import Console
+from typer.main import get_command
 
 from homelab_helper import __version__
 from homelab_helper.cli.approvals import approvals_app
@@ -93,3 +94,7 @@ def version_cmd() -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     app()
+
+
+# The click view of the app, for the generated CLI reference (mkdocs-click).
+click_app = get_command(app)

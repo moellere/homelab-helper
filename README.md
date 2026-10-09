@@ -150,6 +150,11 @@ helper audit
 helper findings list
 ```
 
+No lab yet? `helper discover replay` loads a bundled three-host lab and
+produces thirteen findings with no hardware, credentials or SSH — the
+[getting-started guide](https://moellere.github.io/homelab-helper/getting-started/)
+walks through what each one means.
+
 Keep tokens and keys in the per-user `.env` or behind a secret reference —
 never in a checkout, never in an MCP client's config block.
 

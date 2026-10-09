@@ -12,15 +12,24 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
+from typer.testing import CliRunner
 
+from homelab_helper.cli.main import app
 from homelab_helper.db.base import Base
 from homelab_helper.db.enums import FindingKind, FindingStatus
 from homelab_helper.db.models import Host, ReconciliationFinding
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
-from homelab_helper.engine.lab_replay import load_lab_fixture, parse_lab_fixture
+from homelab_helper.engine.lab_replay import (
+    LabFixtureError,
+    bundled_labs,
+    load_lab_fixture,
+    parse_lab_fixture,
+    resolve_lab_fixture,
+)
 
-_FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "example-lab.yaml"
+_FIXTURE = resolve_lab_fixture("example")
 _MIN_FINDINGS = 11  # AC3: "at least eleven findings"
+_PACKAGE = Path(__file__).resolve().parent.parent / "src" / "homelab_helper"
 
 
 @pytest.fixture
@@ -82,3 +91,42 @@ async def test_lab_replay_is_idempotent(sessionmaker) -> None:
     assert first == second
     async with sessionmaker() as s:
         assert (await s.execute(select(func.count(Host.id)))).scalar_one() == 3
+
+
+def test_the_bundled_labs_ship_in_the_wheel() -> None:
+    """The on-ramp must work from a bare install: no checkout, no fixtures/ dir."""
+    labs = bundled_labs()
+    assert set(labs) == {"example", "asymmetric"}
+    assert all(path.is_relative_to(_PACKAGE) for path in labs.values())
+    assert resolve_lab_fixture(None) == labs["example"]
+    assert resolve_lab_fixture("asymmetric-lab") == labs["asymmetric"]
+    with pytest.raises(LabFixtureError, match="bundled: asymmetric, example"):
+        resolve_lab_fixture("nope")
+
+
+@pytest.fixture
+async def replay_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    url = f"sqlite+aiosqlite:///{tmp_path / 'replay.db'}"
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
+    eng = make_engine(url)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await eng.dispose()
+    return url
+
+
+def test_cli_replay_defaults_to_the_example_lab(replay_db_url: str) -> None:
+    """Getting-started step 3, verbatim: `helper discover replay` with no argument."""
+    result = CliRunner().invoke(app, ["discover", "replay"])
+    assert result.exit_code == 0, result.output
+    assert "lab: example-lab.yaml" in result.output
+    assert "3 host(s)" in result.output
+
+    by_name = CliRunner().invoke(app, ["discover", "replay", "asymmetric"])
+    assert by_name.exit_code == 0, by_name.output
+    assert "1 cluster(s), 3 guest(s)" in by_name.output
+
+    unknown = CliRunner().invoke(app, ["discover", "replay", "nope"])
+    assert unknown.exit_code == 1
+    # Rich wraps under CliRunner's narrow terminal; assert on the unwrappable part.
+    assert "neither a file nor a bundled lab" in unknown.output

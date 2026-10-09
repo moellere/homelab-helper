@@ -26,6 +26,12 @@ Fixture schema (v1)::
     assertions:                     # optional — same schema as the library loader
       - { name: lab-a.mem, host: lab-a, description: ..., verifier_spec: { ... } }
 
+Two labs ship in the wheel under ``data/labs/`` — ``example`` (the day-one
+audit: 13 findings from three hosts) and ``asymmetric`` (a cluster with one
+slow uplink, for ``helper bottlenecks``) — so ``helper discover replay`` works
+from a bare ``uv tool install`` with no checkout. :func:`resolve_lab_fixture`
+turns a path or a bundled name into a path; ``None`` means ``example``.
+
 A ``clusters`` block is what lets the fleet-shape analysers (``helper
 bottlenecks``, ``helper plan rebalance``, ``helper plan surplus``) run with no
 live management plane. Membership follows ``engine/cluster_nodes.py``: the
@@ -36,6 +42,7 @@ it), or the nodes its guests run on when the fixture gives none.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -59,12 +66,35 @@ if TYPE_CHECKING:
 
 _REPLAY_PROBE = "lab.replay"
 _SUPPORTED_VERSION = 1
+BUNDLED_LABS_DIR = Path(__file__).resolve().parent.parent / "data" / "labs"
+DEFAULT_LAB = "example"
 _CLUSTER_SOURCES = {"kubernetes": DiscoverySource.K8S}
 """A replayed cluster's kind decides its discovery source; Proxmox is the default."""
 
 
 class LabFixtureError(ValueError):
     """Raised when the fixture is malformed."""
+
+
+def bundled_labs() -> dict[str, Path]:
+    """``{name: path}`` for every lab that ships in the wheel (``example``, ``asymmetric``)."""
+    return {f.stem.removesuffix("-lab"): f for f in sorted(BUNDLED_LABS_DIR.glob("*-lab.yaml"))}
+
+
+def resolve_lab_fixture(spec: str | None) -> Path:
+    """A path on disk, or a bundled lab's name; ``None`` is the bundled ``example``."""
+    labs = bundled_labs()
+    if spec is None:
+        return labs[DEFAULT_LAB]
+    candidate = Path(spec).expanduser()
+    if candidate.is_file():
+        return candidate
+    name = spec.removesuffix("-lab")
+    if name in labs:
+        return labs[name]
+    raise LabFixtureError(
+        f"{spec!r} is neither a file nor a bundled lab (bundled: {', '.join(labs)})"
+    )
 
 
 def parse_lab_fixture(text: str) -> dict[str, Any]:
@@ -277,4 +307,13 @@ async def load_lab_fixture(
     return result
 
 
-__all__ = ["LabFixtureError", "ReplayResult", "load_lab_fixture", "parse_lab_fixture"]
+__all__ = [
+    "BUNDLED_LABS_DIR",
+    "DEFAULT_LAB",
+    "LabFixtureError",
+    "ReplayResult",
+    "bundled_labs",
+    "load_lab_fixture",
+    "parse_lab_fixture",
+    "resolve_lab_fixture",
+]

@@ -1,0 +1,67 @@
+site_name: homelab-helper
+site_description: Homelab inventory, audit and recommendations — propose, never apply, until you say so.
+site_url: https://moellere.github.io/homelab-helper/
+repo_url: https://github.com/moellere/homelab-helper
+repo_name: moellere/homelab-helper
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+strict: true
+
+# Internal working documents that are not site material.
+exclude_docs: |
+  google-weather-ha-integration-proposal.md
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue grey
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.details
+  - mkdocs-click
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Operating:
+      - CLI reference: cli.md
+      - The trust gradient, for operators: trust-gradient.md
+      - Live validation runbook: live-validation.md
+      - NetBox custom fields: netbox-custom-fields.md
+      - NetBox modelling walkthrough: netbox-modeling-walkthrough.md
+  - Extending:
+      - Writing a probe: writing-a-probe.md
+      - Writing an adapter: writing-an-adapter.md
+  - Project:
+      - Architecture: architecture.md
+      - Roadmap: roadmap.md
+      - Backlog: backlog.md
+      - Agent access scope: agent-access-scope.md
+      - Schema, slice 1: harness-schema-slice1.md
+      - Releasing: releasing.md

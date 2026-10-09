@@ -56,7 +56,9 @@ config.py           .env loading, per-user data/config dirs, source status
 tests/              pytest, asyncio_mode = "auto"
 ├── data/           starter workload library (ships in the wheel)
 fixtures/           operator-editable YAML examples (assertion starter,
-                    network topology, service aliases, example lab)
+                    network topology, service aliases, example lab, and the
+                    asymmetric lab that supplies the link asymmetry a symmetric
+                    fleet cannot — see `helper discover replay`)
 ```
 
 ## Toolchain — every command goes through `uv`
@@ -272,7 +274,7 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
-| 9 — Road to 1.0 | Planned (`roadmap.md` Phase 9): close the validation gate, de-assume the lab, docs site, declare the 1.0 surface, last Phase-1 probes, Phase-2 cadences |
+| 9 — Road to 1.0 | 9.1 in progress: `fixtures/asymmetric-lab.yaml` closes P5-AC4 and P4-AC2's derivation through the real CLI; the rest of 9.1 is operator time on hardware. 9.2–9.7 planned (`roadmap.md` Phase 9) |
 | 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F), agent-side `propose_action` + manifest schema + secret references (agent-access items 4–6). All six ACs implemented; live-fleet validation outstanding |
 
 Live-fleet validation: Phases 4–7 have run against the operator's lab

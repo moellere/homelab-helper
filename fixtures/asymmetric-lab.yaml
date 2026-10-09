@@ -1,0 +1,99 @@
+# homelab-helper — synthetic *asymmetric* lab fixture (committed, fully generic)
+#
+# Load with `helper discover replay fixtures/asymmetric-lab.yaml`, then run
+# `helper bottlenecks`. No hardware, no credentials, no SSH.
+#
+# Why this file exists. P4-AC2 (Ceph narration) and P5-AC4 (generated
+# mitigations) could not be validated against the author's own fleet: bmax0-3
+# are symmetric 1 GbE, so the analyser is correctly silent and there is nothing
+# to narrate. A criterion that only ever fails open is not validated. This
+# fixture supplies the asymmetry the fleet does not have, so the derivation runs
+# end-to-end through the real CLI.
+#
+# What it trips, deliberately:
+#   - cluster-link-asymmetry -> CEPH_BOTTLENECK, severity HIGH (2500 >= 2x1000),
+#     with all four mitigations named from these facts: ceph-c as the slow node,
+#     1000 and 2500 Mbps as the speeds, ceph-a as the relocation target.
+#
+# What it deliberately does NOT trip, so the Ceph assertion stays unambiguous:
+#   - memory-pressure: every node's running guests sit near half its RAM.
+#   - storage-single-uplink: no node carries the 2 TiB a bulk-storage host needs.
+#   - INVENTORY_GAP: every disk has a WWN, every NIC a MAC, every DIMM a serial.
+#
+# Cluster membership is read off the guest rows, not the cluster's node list —
+# a node with no guest is not a member as far as the analysers are concerned.
+# That is why each node here runs one.
+
+version: 1
+
+hosts:
+  # Two nodes at 2.5 GbE ...
+  - hostname: ceph-a
+    primary_ip: 192.0.2.20
+    arch: amd64
+    observations:
+      - { key: host.identity.hostname, value: ceph-a }
+      - { key: host.cpu.architecture, value: x86_64 }
+      - { key: host.cpu.cores, value: 8 }
+      - { key: host.memory.mem_total_bytes, value: 34359738368 }   # 32 GiB
+      - key: host.storage.devices
+        value:
+          - { name: nvme0n1, type: disk, model: GenericNVMe, size_bytes: 512110190592,
+              wwn: "naa.5000000000000201", serial: "SN-CEPH-A-1" }
+      - key: host.memory.dimms
+        value:
+          - { slot: DIMM_A1, size_bytes: 34359738368, serial: "DIMM-CEPH-A-1" }
+      - key: host.network.interfaces
+        value:
+          - { name: enp1s0, link_type: ether, mac: "02:00:00:00:02:01", speed_mbps: 2500 }
+
+  - hostname: ceph-b
+    primary_ip: 192.0.2.21
+    arch: amd64
+    observations:
+      - { key: host.identity.hostname, value: ceph-b }
+      - { key: host.cpu.architecture, value: x86_64 }
+      - { key: host.cpu.cores, value: 8 }
+      - { key: host.memory.mem_total_bytes, value: 34359738368 }   # 32 GiB
+      - key: host.storage.devices
+        value:
+          - { name: nvme0n1, type: disk, model: GenericNVMe, size_bytes: 512110190592,
+              wwn: "naa.5000000000000202", serial: "SN-CEPH-B-1" }
+      - key: host.memory.dimms
+        value:
+          - { slot: DIMM_A1, size_bytes: 34359738368, serial: "DIMM-CEPH-B-1" }
+      - key: host.network.interfaces
+        value:
+          - { name: enp1s0, link_type: ether, mac: "02:00:00:00:02:02", speed_mbps: 2500 }
+
+  # ... and one that never got its uplink upgraded. This is the whole point.
+  - hostname: ceph-c
+    primary_ip: 192.0.2.22
+    arch: amd64
+    observations:
+      - { key: host.identity.hostname, value: ceph-c }
+      - { key: host.cpu.architecture, value: x86_64 }
+      - { key: host.cpu.cores, value: 8 }
+      - { key: host.memory.mem_total_bytes, value: 34359738368 }   # 32 GiB
+      - key: host.storage.devices
+        value:
+          - { name: nvme0n1, type: disk, model: GenericNVMe, size_bytes: 512110190592,
+              wwn: "naa.5000000000000203", serial: "SN-CEPH-C-1" }
+      - key: host.memory.dimms
+        value:
+          - { slot: DIMM_A1, size_bytes: 34359738368, serial: "DIMM-CEPH-C-1" }
+      - key: host.network.interfaces
+        value:
+          - { name: enp1s0, link_type: ether, mac: "02:00:00:00:02:03", speed_mbps: 1000 }
+
+clusters:
+  - name: ceph-lab
+    kind: proxmox
+    quorate: true
+    guests:
+      - { name: svc-a, vmid: 201, node: ceph-a, kind: qemu, status: running,
+          vcpus: 2, memory_bytes: 8589934592 }
+      - { name: svc-b, vmid: 202, node: ceph-b, kind: qemu, status: running,
+          vcpus: 2, memory_bytes: 8589934592 }
+      - { name: svc-c, vmid: 203, node: ceph-c, kind: qemu, status: running,
+          vcpus: 2, memory_bytes: 8589934592 }

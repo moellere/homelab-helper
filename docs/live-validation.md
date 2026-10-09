@@ -6,15 +6,24 @@ probes. That is deliberate — the suite must run anywhere, and it must never
 touch someone's lab. It also means **no Phase 4, 5 or 6 acceptance criterion
 has yet met real infrastructure.**
 
-This runbook is that missing step. It runs on the operator's machine, inside
-the lab's network, against real credentials. It cannot run in CI, and it
-cannot run from a cloud agent session — that is the point.
+This runbook is that missing step. Almost all of it runs on the operator's
+machine, inside the lab's network, against real credentials: it cannot run in
+CI, and it cannot run from a cloud agent session — that is the point.
 
-Two parts, in order:
+The exception is worth naming, because it is not a loophole. A criterion that
+this particular fleet's *shape* hides — a cluster with no link asymmetry has no
+asymmetry to report — can never be exercised here no matter how much real
+hardware it meets. For those, a committed fixture supplies the shape and the
+derivation runs through the same verbs (see P4-AC2). That is validation of the
+derivation, not of the lab, and the table says which it got.
+
+Four parts, in order:
 
 1. **Phases 4–5** — read-only and advisory. Nothing here changes the lab.
 2. **Phase 6** — the first real execution, against a guest created to be
    destroyed. Do not start it until part 1 passes.
+3. **Phase 7** — an agent drafts, the daemon asks, you tap a phone.
+4. **Phase 8** — a rolling node update. It has no inverse; read it first.
 
 ---
 
@@ -52,20 +61,54 @@ uv run helper chat "what hosts do I have?"
 
 ### P4-AC2 · Ceph narration
 
-> On a fleet whose cluster nodes all share one link speed, `helper bottlenecks`
-> correctly reports nothing and this criterion cannot be exercised live —
-> record it as not applicable and rely on the analyser's unit tests (which
-> change a link speed and assert the mitigations change with it).
+> A fleet whose cluster nodes all share one link speed has no asymmetry to
+> report, so `helper bottlenecks` is correctly silent and this criterion cannot
+> be exercised against such a fleet at all. **Use the asymmetric fixture
+> instead** (below): it supplies the topology your lab does not have, so the
+> derivation runs through the same two verbs you would use live.
 
 ```bash
-uv run helper bottlenecks
+uv run helper bottlenecks                            # against your own fleet
 uv run helper chat "what's wrong with my ceph cluster?"
 ```
 
-**Pass:** cites the `CEPH_BOTTLENECK` finding, explains the 1 GbE / 2.5 GbE
-asymmetry, lists the four candidate mitigations.
+**Pass:** cites the `CEPH_BOTTLENECK` finding, explains the asymmetry in your
+own speeds, lists the four candidate mitigations.
 **Fail if:** the mitigations are generic advice rather than derived from your
 topology.
+
+#### The asymmetric fixture — when your own fleet is symmetric
+
+`fixtures/asymmetric-lab.yaml` is a three-node cluster with one node left at
+1 GbE while the others run at 2.5 GbE. It needs no hardware, no credentials and
+no SSH, so it runs in CI and in a cloud session as well as on your machine. Use
+a throwaway database — this seeds synthetic hosts:
+
+```bash
+export HOMELAB_HELPER_DATABASE_URL="sqlite+aiosqlite:///$HOME/.homelab-asym.db"
+uv run helper db init
+uv run helper discover replay fixtures/asymmetric-lab.yaml
+uv run helper bottlenecks
+```
+
+**Pass:** one `high` hit, `cluster-link-asymmetry` on cluster `ceph-lab`, naming
+`ceph-c` at 1000 Mbps against `ceph-a`/`ceph-b` at 2500, and four mitigations —
+CRUSH-reweight away from `ceph-c`, bring it to 2500 Mbps, relocate its OSDs to
+`ceph-a`, or accept it as a cold tier.
+
+The deterministic half of this is pinned by
+`tests/test_lab_replay_asymmetric.py`, including the anti-hardcoding check:
+change `ceph-c`'s `speed_mbps` and the recommendation moves with it; set it to
+2500 and the analyser goes quiet. What the tests cannot cover is the narration
+itself, so run that once against your own router:
+
+```bash
+uv run helper bottlenecks --narrate
+```
+
+**Pass:** the prose cites `ceph-c` and the measured speeds rather than
+describing a hypothetical cluster. Then unset the scratch database — the
+synthetic hosts must not reach your real inventory.
 
 ### P4-AC3 · conversational onboarding
 
@@ -145,8 +188,12 @@ Compare `helper bottlenecks` output against the day-one report's four
 mitigations (CRUSH reweight, USB 2.5GbE, OSD relocate, accept).
 
 **Pass:** the framework derives them from your topology.
-**Fail if:** they look hardcoded — change a link speed in the topology fixture
-and confirm the recommendation changes with it.
+**Fail if:** they look hardcoded — change a link speed and confirm the
+recommendation changes with it.
+
+On a symmetric fleet this is the same situation as P4-AC2: there is nothing to
+generate. The asymmetric fixture under P4-AC2 covers it, and the
+change-a-speed-and-watch-it-move check is a test rather than a manual step.
 
 ### P5-AC5 · surplus reasoning
 
@@ -400,7 +447,7 @@ unset the approval service if you do not want agents able to ask.
 
 ---
 
-## Part 3 — rolling a node update (Phase 8)
+## Part 4 — rolling a node update (Phase 8)
 
 `node-update` is the first action with **no inverse**. There is no rollback, no
 snapshot and no undo: if a dist-upgrade breaks a node, you recover it from a
@@ -453,10 +500,14 @@ quorum drops. There is no undo — recover that node before touching another.
 
 ## Sign-off
 
+✅ validated · ⏳ not yet run · ⚪ not observable on this fleet, with the reason.
+A criterion only this lab's shape hides is not `⚪` if a fixture can supply that
+shape — see the asymmetric fixture under P4-AC2.
+
 | Criterion | Result | Notes |
 |---|---|---|
 | P4-AC1 chat grounded | ✅ 10/03/2026 | 17 hosts named from inventory, cloud footer honest. Found: the footer said "cloud" but not that Ollama had been tried and was unreachable — `RouterResult.skipped` + a `skipped:` line (PR #52). |
-| P4-AC2 Ceph narration | ⚪ n/a | bmax0–3 are symmetric 1 GbE, Ceph HEALTH_OK, covomv on 10 GbE: the analyser is correctly silent. Derivation covered by unit tests only. |
+| P4-AC2 Ceph narration | ✅ derivation 10/09/2026 · ⏳ narration | Not observable on this fleet by construction: bmax0–3 are symmetric 1 GbE, Ceph HEALTH_OK, covomv on 10 GbE, so the analyser is correctly silent. `fixtures/asymmetric-lab.yaml` supplies the asymmetry — `discover replay` + `bottlenecks` produce the `CEPH_BOTTLENECK` finding a narrator would cite, through the real CLI, with no hardware (`tests/test_lab_replay_asymmetric.py`). The prose half is one `helper bottlenecks --narrate` against your own router; still to run. |
 | P4-AC3 onboard | ⏳ | Interactive; not yet run. |
 | P4-AC4 MCP discovery | ✅ 10/03/2026 | `probe_host bmax3` from Claude Code: 4 probes, 33 observations, 0 failures, capability changes reconciled. |
 | P4-AC5 strict-local refusal | ✅ 10/03/2026 | Names the tier, the policy, each backend's exclusion reason, and the three options. |
@@ -464,7 +515,7 @@ quorum drops. There is no undo — recover that node before touching another.
 | P5-AC1 workload library | ✅ 10/03/2026 | 67 entries. |
 | P5-AC2 placement | ✅ 10/03/2026 | `immich` → bmax0 with RAM headroom, threads, GPU optionality and photo-library data gravity; arm/RAM rejections explained. |
 | P5-AC3 rebalance | ✅ after fix 10/03/2026 | First run: no migrations-only plan. Then: Proxmox guests planned onto a NAS, arm64 Pis and Talos workers, one VM ping-ponging. Three defects fixed (PR #51); now three plan classes, all moves within bmax0–3, no repeated VM. |
-| P5-AC4 Ceph mitigations | ⚪ n/a | As P4-AC2. |
+| P5-AC4 Ceph mitigations | ✅ 10/09/2026 | Against the asymmetric fixture: all four mitigations derived from its facts — CRUSH-reweight away from `ceph-c`, bring it 1000→2500 Mbps, relocate its OSDs to `ceph-a`, accept it as a cold tier. The runbook's "fail if they look hardcoded" check is now a test rather than a manual step: change `ceph-c`'s speed and the recommendation moves with it; make it symmetric and the pattern goes quiet. |
 | P5-AC5 surplus | ✅ 10/03/2026 | bmax0: three stopped guests, 32 GiB spare DIMMs, three options. Gap: covomv (a NAS running Docker) is also called surplus — the planner has no "not a hypervisor" notion; same root as the P5-AC3 targets defect, noted in backlog. |
 | P5-AC6 VPN path refused | ✅ 10/03/2026 | Needed a topology file (none existed): two sites, VPN 6 ms RTT measured, bandwidth a placeholder. `plan path wynode2 bmax0` → LAN-grade: no. |
 | P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 (a *dispatch failure* demotes) and step 6 (kill switch mid-flight) were exercised by tests only. |
@@ -473,6 +524,16 @@ quorum drops. There is no undo — recover that node before touching another.
 | P8 node-update (rolling, per node) | ⏳ | Not yet run. No inverse: see Part 3 before the first one. |
 | P7 step 8 (unattended run notice) | ✅ 10/05/2026 | `containers/workload-restart/single-service` granted AUTONOMOUS; an agent-drafted restart of `homepage/deployment/homepage` ran from `helper daemon run --once` with no tap (rev 20 → 21, receipt actor `listener`, rollback `rollout-undo` verified); the phone showed the ✓ notice with `unattended` and the `helper exec rollback` line, after the receipt. Failure/demotion path not forced live — it needs a write that fails after a read that succeeds; pinned by tests. Cell left at AUTONOMOUS by the operator's choice. Found: the 15-min cron listener asked about the proposal while the cell was still CONFIRM, the ask timed out, and the listener then (correctly) refused to run it unattended after the grant — draft *after* granting. |
 
-Open as of 10/05/2026: P4-AC3 (interactive) and P6 steps 5–6 live. Phase 7 is
-signed off end to end; the first unattended execution ran 10/05/2026 and
-`containers/workload-restart/single-service` is live at AUTONOMOUS.
+Open as of 10/09/2026, all of it operator time rather than code:
+
+- **P4-AC3 onboard** — interactive, needs a host the harness has never seen.
+- **P4-AC2 narration** — one `helper bottlenecks --narrate` against the
+  asymmetric fixture and your own router. No hardware; see that section.
+- **P6 steps 5 and 6 live** — a dispatch failure demoting a cell, and the kill
+  switch mid-flight. Both need a write that fails after a read that succeeded,
+  which is hard to stage honestly; pinned by tests meanwhile.
+- **P8 node-update** — the first rolling update. Read Part 3 first: there is no
+  inverse, so the cell cannot reach AUTONOMOUS and never should.
+
+Phase 7 is signed off end to end; the first unattended execution ran 10/05/2026
+and `containers/workload-restart/single-service` is live at AUTONOMOUS.

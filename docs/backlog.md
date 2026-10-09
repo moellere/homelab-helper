@@ -1075,9 +1075,18 @@ real for someone other than its author. Slices in delivery order.
   already done. Phase 9 AC #5 met: a host with an mdraid array reports its
   composition, and a serialled DIMM becomes a `PhysicalPart` + `Placement` —
   now for Talos nodes too.
-- [ ] **9.6 Finish the Phase-2 tail** — probe-level schedules and assertion
-  cadences inside `helper daemon`, so "continuous" is per-probe rather than one
-  discovery interval for everything.
+- [x] **9.6 Finish the Phase-2 tail** — `engine/schedule.py`, `helper daemon run
+  --schedule` (or `HOMELAB_HELPER_SCHEDULE`), `helper schedule [--due]`,
+  `fixtures/schedule.example.yaml`. Per-host / per-Talos probe intervals and
+  per-assertion intervals from one YAML file; **no new state** — a probe is due
+  when its last `DiscoveryRun` for that host is older than its interval, an
+  assertion when its last `AssertionRun` is — so `--once` from a cron tick
+  honours a 15-minute RAID cadence and a daily SMART cadence from the same
+  file. Interval syntax only (`90s 15m 6h 1d 1w`); cron is refused, not
+  guessed. An assertion's own `schedule` column wins over the file. A target
+  with nothing due costs no connection; an unreachable target fails alone.
+  AC #6 met: two probes on different cadences from one daemon, an assertion on
+  its own schedule (`tests/test_schedule.py`).
 - [ ] **9.7 Web UI (the deferred 4.5)** — optional and last: chat, findings
   browser, trust surface read-only.
 

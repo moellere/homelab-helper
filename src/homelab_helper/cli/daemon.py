@@ -1,6 +1,6 @@
 """``helper daemon run`` — the proactive loop (Phase 7 slice 3; the deferred Phase-2 scheduler).
 
-Three jobs on their own cadences, in one long-lived process:
+Jobs on their own cadences, in one long-lived process:
 
 - **discovery** — the same per-source discoverers the MCP ``run_discovery`` tool
   runs (read-only against the lab; findings land in the harness DB);
@@ -8,7 +8,10 @@ Three jobs on their own cadences, in one long-lived process:
   covers become PENDING proposals (deterministic; see that module);
 - **listen** — ``engine/listener.ask_pending``: agent- and playbook-drafted
   proposals that policy would let run go to the approval channel (the phone),
-  and execute on a tap through the same executor as everything else.
+  and execute on a tap through the same executor as everything else;
+- **schedule** (Phase 9.6) — ``engine/schedule.run_due``: with a cadence file,
+  each host/Talos probe and each assertion runs on its own interval, judged
+  from its last recorded run, so ``--once`` from cron honours them too.
 
 ``--once`` runs each enabled job a single time and exits — the shape cron and
 the tests want. Nothing here changes authority: cells, windows and overrides
@@ -18,6 +21,7 @@ remain CLI gestures, and a cell at PROPOSE still produces nothing but a row.
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -37,6 +41,7 @@ from homelab_helper.engine.digest import build_digest, record_digest, render_not
 from homelab_helper.engine.listener import ask_pending
 from homelab_helper.engine.notify import notifier_from_env, send_digest
 from homelab_helper.engine.playbooks import run_playbooks
+from homelab_helper.engine.schedule import SCHEDULE_ENV_VAR, ScheduleError, load_schedule, run_due
 
 if TYPE_CHECKING:
     from homelab_helper.engine.executor import ActionManifest
@@ -127,6 +132,29 @@ async def run_listen_pass() -> dict[str, Any]:
         await engine.dispose()
 
 
+async def run_schedule_pass(
+    schedule_path: str | None, *, probes: bool, assertions: bool
+) -> dict[str, Any]:
+    """Phase 9.6: run the probes and assertions whose cadence says they are due."""
+    try:
+        schedule = load_schedule(schedule_path)
+    except ScheduleError as exc:
+        return {"error": str(exc)}
+    engine = make_engine(database_url())
+    try:
+        async with session_scope(make_sessionmaker(engine)) as session:
+            r = await run_due(session, schedule, probes=probes, assertions=assertions)
+            return {
+                "probes_run": r.probes_run,
+                "probe_failures": r.probe_failures,
+                "assertions_run": r.assertions_run,
+                "not_due": r.not_due,
+                "errors": r.errors,
+            }
+    finally:
+        await engine.dispose()
+
+
 async def run_digest_pass(days: int | None, quiet_ok: bool) -> dict[str, Any]:
     """Deliver a digest if one is due. The window is the digest's own business:
     a daemon restart cannot re-send, because the last run moved the window."""
@@ -187,9 +215,25 @@ def daemon_run(
     digest_every: int = typer.Option(
         720, "--digest-every", help="Minutes between digest checks (the window gates delivery)."
     ),
+    schedule: str | None = typer.Option(
+        None,
+        "--schedule",
+        help=f"Probe/assertion cadence file (default: ${SCHEDULE_ENV_VAR}); '' to disable.",
+    ),
+    schedule_every: int = typer.Option(
+        5,
+        "--schedule-every",
+        help="Minutes between checks for due probes and assertions (their cadences are in the file).",
+    ),
     once: bool = typer.Option(False, "--once", help="One pass of each enabled job, then exit."),
 ) -> None:
-    """Discovery → playbooks → listener, on cadences (or once with --once)."""
+    """Discovery → playbooks → listener, on cadences (or once with --once).
+
+    With a schedule file (``--schedule`` or ``HOMELAB_HELPER_SCHEDULE``) each
+    probe and assertion runs on its own cadence from the same process.
+    """
+    schedule_path = schedule if schedule is not None else os.environ.get(SCHEDULE_ENV_VAR)
+    run_schedule = bool(schedule_path)
     source_list = (
         configured_sources()
         if sources is None
@@ -206,12 +250,16 @@ def daemon_run(
                 _report(job, await run_listen_pass())
             elif job == "digest":
                 _report(job, await run_digest_pass(None, quiet_ok=False))
+            elif job == "schedule":
+                _report(job, await run_schedule_pass(schedule_path, probes=True, assertions=True))
         except Exception as exc:
             console.print(f"[dim]{_stamp()}[/dim] [red]{job} failed:[/red] {escape(str(exc))}")
 
     jobs: list[tuple[str, int]] = []
     if source_list:
         jobs.append(("discovery", discovery_every))
+    if run_schedule:
+        jobs.append(("schedule", schedule_every))
     if playbooks:
         jobs.append(("playbooks", playbooks_every))
     if ask:
@@ -258,4 +306,5 @@ __all__ = [
     "run_discovery_pass",
     "run_listen_pass",
     "run_playbook_pass",
+    "run_schedule_pass",
 ]

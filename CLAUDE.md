@@ -48,6 +48,7 @@ src/homelab_helper/
 │                   usage (8.3 history: RRD rollups, retention, p95 summary),
 │                   rightsizing (8.4: cores/memory from history),
 │                   raid_health (9.5: host.raid → storage-health findings),
+│                   schedule (9.6: per-probe/assertion cadences from a YAML file),
 │                   suggestions (8.7 idle capability, missing blocks),
 │                   cluster_nodes (9.2: the one rule for "is this host a
 │                   placement target"; rebalance/surplus/bottlenecks read it),

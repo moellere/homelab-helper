@@ -327,6 +327,17 @@ state to undo it. A confirmed success stays quiet; you just tapped Approve.
 The notification goes out after the receipt is written and is best-effort: a
 phone that cannot be reached changes nothing about the run or its record.
 
+### Per-probe cadences (Phase 9.6)
+
+One discovery interval for everything was the shortcut; "continuous" means each
+probe on its own cadence. Declare them in a YAML file (copy
+`fixtures/schedule.example.yaml`, point `HOMELAB_HELPER_SCHEDULE` at it): a RAID
+check every 15 minutes, SMART once a day, everything else at a default, and an
+interval per assertion. `helper daemon run` then runs whatever is due, and
+`helper schedule` shows what runs when. Nothing new is stored — a probe is due
+when its last recorded run is older than its interval — so the same file works
+from a 15-minute cron tick (`--once`) and from the long-lived daemon alike.
+
 ### Proactive mode (Phase 7)
 
 `helper daemon run` closes the loop without anyone asking: discovery on a

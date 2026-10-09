@@ -1293,7 +1293,6 @@ def discover_versions() -> None:
     )
 
 
-<<<<<<< HEAD
 @discover_app.command(name="suggestions")
 def discover_suggestions() -> None:
     """Service suggestions (Phase 8.7): idle capability and missing building blocks."""
@@ -1301,13 +1300,14 @@ def discover_suggestions() -> None:
         code=_category_discovery(
             "suggestions", FindingKind.SERVICE_SUGGESTION, "service suggestions"
         )
-=======
+    )
+
+
 @discover_app.command(name="storage")
 def discover_storage() -> None:
     """Storage efficiency (Phase 8.5): headroom trends, stale snapshots, clutter, released PVs."""
     raise typer.Exit(
         code=_category_discovery("storage", FindingKind.STORAGE_EFFICIENCY, "storage efficiency")
->>>>>>> origin/main
     )
 
 

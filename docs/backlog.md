@@ -845,32 +845,6 @@ See `roadmap.md` Phase 8. Slices land in this order.
 - [x] 8.4 Rightsizing & real-usage placement — `engine/rightsizing.py`, `helper plan rightsize [--days] [--persist]`, MCP `rightsizing`; `plan rebalance --basis usage` / `plan_rebalance(basis="usage")`. `rightsizing` findings (cpu-grow, cpu-shrink, mem-shrink, mem-grow for containers only, idle), each naming allocation, p95, peak, window and proposed value; < 7 days of hourly history → no verdict and no resolution (`observed_targets` added to the shared reconcile). VM memory is never grown: Proxmox's figure includes guest page cache (measured: ubuntu-dev reported 14.6 GiB, 4 GiB used in-guest). First live run 10/06/2026: Home Assistant CPU-bound 2 → 3 cores; ESPHome builders 4 GiB → 1–2 GiB; proxmox-dc 2 → 1 core, 4 → 1.5 GiB; esphome-lxc idle.
   - [x] `resize` action kind (10/06/2026): cores and/or `memory_mib` on a guest, through the executor via `set_vm_config`; refused at dispatch beyond the node's CPUs/physical memory (no write); a QEMU balloon floor above the new memory is lowered with it; QEMU without hotplug reports *pending until next stop/start*, containers apply live. Rollback: `prior-config` generalised to the keys an action changes (cpu; cores/memory/balloon). In `REVERSIBLE_ACTION_KINDS`. `rightsize` playbook drafts one resize per cpu-*/mem-* rightsizing finding (never for `idle`); rightsizing evidence now carries node/vmid/kind. MCP `propose_action(cores=, memory_mib=)`.
   - [ ] Follow-ups: in-guest memory via the QEMU guest agent so VM memory can grow too; K8s requests vs usage; an optional restart-after-resize for VMs (today the operator restarts, or a `restart` proposal).
-<<<<<<< HEAD
-- [ ] 8.5 Storage efficiency.
-- [ ] 8.6 Weekly digest.
-- [x] 8.7 Service suggestions — `engine/suggestions.py`,
-  `helper discover suggestions`, `run_discovery("suggestions")`,
-  `FindingKind.SERVICE_SUGGESTION`. Two categories, both INFO:
-  - `capability-idle-gpu` — a host reporting display/compute adapters
-    (`gpu_count`/`gpu_vendors`, from the `host.gpu` probe) while nothing the
-    library knows as GPU-capable appears to run. The suggestion names each
-    candidate's `gpu_purpose`, so it says what the silicon would be *for*.
-  - `building-block-missing` — the three the roadmap names (metrics, alerting,
-    and the local model the LLM router prefers), each a set of library entries;
-    missing when none is present. Grafana counts for metrics and alerting both.
-  - **Presence is decided by name**, because the harness tracks guests,
-    services and endpoints rather than installed software: a guest called
-    `media` running Plex is invisible here. Every finding says it matched on
-    names only, and both categories are INFO rather than problems. Containment
-    is word-level, so `plexiglass-inventory` is not Plex.
-  - The pass reads stored facts only (no adapter calls), so it cannot fail for
-    a source being down and both categories are always observed.
-  - [ ] Follow-ups: match on the `host.services` probe's unit names and on
-    container image names (K8s + Proxmox LXC) so presence stops depending on
-    what a guest was called; `depends_on` chains (suggest `mosquitto` when
-    `zigbee2mqtt` is present without it); accelerator kinds beyond PCI
-    display-class (Coral TPU on USB).
-=======
 - [x] 8.5 Storage efficiency — `engine/storage.py`, `helper discover storage`,
   `run_discovery("storage")`, `FindingKind.STORAGE_EFFICIENCY` (no migration —
   SQLite SAEnum has no CHECK). Five categories through
@@ -922,8 +896,28 @@ See `roadmap.md` Phase 8. Slices land in this order.
   - [ ] Follow-ups: LLM narration of the page (the contents are already fixed,
     so this is presentation only); a digest-scoped `--since <receipt>` for
     re-reading an old window; HTML output if the Markdown page wants a browser.
-- [ ] 8.7 Service suggestions.
->>>>>>> origin/main
+- [x] 8.7 Service suggestions — `engine/suggestions.py`,
+  `helper discover suggestions`, `run_discovery("suggestions")`,
+  `FindingKind.SERVICE_SUGGESTION`. Two categories, both INFO:
+  - `capability-idle-gpu` — a host reporting display/compute adapters
+    (`gpu_count`/`gpu_vendors`, from the `host.gpu` probe) while nothing the
+    library knows as GPU-capable appears to run. The suggestion names each
+    candidate's `gpu_purpose`, so it says what the silicon would be *for*.
+  - `building-block-missing` — the three the roadmap names (metrics, alerting,
+    and the local model the LLM router prefers), each a set of library entries;
+    missing when none is present. Grafana counts for metrics and alerting both.
+  - **Presence is decided by name**, because the harness tracks guests,
+    services and endpoints rather than installed software: a guest called
+    `media` running Plex is invisible here. Every finding says it matched on
+    names only, and both categories are INFO rather than problems. Containment
+    is word-level, so `plexiglass-inventory` is not Plex.
+  - The pass reads stored facts only (no adapter calls), so it cannot fail for
+    a source being down and both categories are always observed.
+  - [ ] Follow-ups: match on the `host.services` probe's unit names and on
+    container image names (K8s + Proxmox LXC) so presence stops depending on
+    what a guest was called; `depends_on` chains (suggest `mosquitto` when
+    `zigbee2mqtt` is present without it); accelerator kinds beyond PCI
+    display-class (Coral TPU on USB).
 - [ ] Update orchestration (first Phase 8 write path, at PROPOSE) — after 8.1 has run a while.
 
 ---

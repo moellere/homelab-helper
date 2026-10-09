@@ -898,6 +898,8 @@ async def _discover_suggestions(session: AsyncSession) -> dict[str, Any]:
         "known_names": len(present),
         "errors": {},
     }
+
+
 async def _proxmox_storage_facts(
     adapter: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, str], list[dict[str, Any]]]:

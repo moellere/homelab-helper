@@ -29,8 +29,12 @@ below exists to keep that true as the code grows.
   decisions, `docs/backlog.md` for what is now done or newly owed, `CLAUDE.md`
   for invariants and patterns a future session must know. Doc-only PRs are
   fine too; `uv run mkdocs serve` previews the site.
+- A change to any surface named in `docs/stability.md` — a CLI verb, an MCP
+  tool, the probe contract, a manifest field, a configuration variable —
+  updates that page in the same PR, following its deprecation policy. A test
+  holds its CLI and MCP tables to the code.
 - Say in the PR body what you ran. "All five checks pass on Python 3.12" is
-  the expected line.
+  the expected line; CI runs the same on 3.13.
 - Use conventional, descriptive commit titles. We do not require a prefix.
 
 ## The three invariants a change must not break

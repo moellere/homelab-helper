@@ -876,7 +876,28 @@ See `roadmap.md` Phase 8. Slices land in this order.
     rather than a finding); OMV/covomv filesystem headroom via the OMV adapter;
     ZFS snapshot space accounting (`written`/`refer`) so a stale snapshot's real
     cost is a number rather than an explanation.
-- [ ] 8.6 Weekly digest.
+- [x] 8.6 Weekly digest — `engine/digest.py`, `db/models/digest.py` (migration
+  `b4e1f7a9c3d2`), `helper digest show|send|history`, daemon `--digest` job.
+  Contents are chosen from rows only (findings, proposals, receipts,
+  `TrustHistory`) and a subprocess test asserts the module never imports
+  `homelab_helper.llm` — P8-AC6's "an LLM may narrate it but does not choose
+  its contents". Three sections: what was done (receipts, rollbacks marked),
+  authority changes, what changed (opened/resolved, worst-first), what is
+  recommended (open findings + pending proposals).
+  - Windows **tile**: each digest records `window_start`/`window_end`, so the
+    next one starts where the last stopped — no change reported twice, none
+    lost in a gap. `--days` overrides; `show` deliberately does not record, or
+    reading the page would eat a week of changes.
+  - A **quiet window is recorded but not sent** (`--quiet-ok` to override),
+    and standing open findings do not make a window busy — otherwise one known
+    LOW finding buzzes the phone every week, which is the stream this slice
+    replaces.
+  - The daemon job is gated on `MIN_DIGEST_DAYS` rather than its interval, so a
+    restart or a 15-minute cron tick cannot turn the weekly summary into a
+    stream.
+  - [ ] Follow-ups: LLM narration of the page (the contents are already fixed,
+    so this is presentation only); a digest-scoped `--since <receipt>` for
+    re-reading an old window; HTML output if the Markdown page wants a browser.
 - [ ] 8.7 Service suggestions.
 - [ ] Update orchestration (first Phase 8 write path, at PROPOSE) — after 8.1 has run a while.
 

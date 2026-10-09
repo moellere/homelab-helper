@@ -80,6 +80,7 @@ every option.
 | `part` | `merge` `show` |
 | `plan` | `add-workload` `path` `rebalance` `rightsize` `surplus` `workloads` |
 | `probes` | `list` `register` |
+| `schedule` | — |
 | `service` | `aliases` `resolvers` `retire-resolver` |
 | `skills` | `set` |
 | `trust` | `boundary` `grant` `history` `show` |
@@ -204,6 +205,7 @@ until it is.
 | Assertion library | `helper assert load` | `version: 1` | Same. |
 | Network topology | `HOMELAB_HELPER_NETWORK_TOPOLOGY` | not yet | Keys are only added until the format gains a `version`. |
 | Service aliases | `HOMELAB_HELPER_SERVICE_ALIASES` | not yet | Same. |
+| Probe/assertion schedule | `HOMELAB_HELPER_SCHEDULE` / `helper daemon run --schedule` | not yet | Same. Interval syntax (`90s 15m 6h 1d 1w`) is the contract; cron syntax is refused rather than guessed. |
 | Workload library | `HOMELAB_HELPER_WORKLOAD_LIBRARY` | not yet | Same; the bundled library is data, and entries may be added, corrected or removed in any release. |
 
 ## NetBox custom fields

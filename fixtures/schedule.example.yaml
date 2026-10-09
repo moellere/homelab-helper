@@ -1,0 +1,39 @@
+# Probe and assertion cadences for `helper daemon run` (Phase 9.6).
+#
+# Copy this file, edit it to match your lab, and point HOMELAB_HELPER_SCHEDULE
+# at it. Intervals are 90s / 15m / 6h / 1d / 1w — cron syntax is not accepted.
+#
+# Nothing new is stored: a probe is due when its last DiscoveryRun for that host
+# is older than its interval, an assertion when its last AssertionRun is. That
+# is what lets `helper daemon run --once` from a 15-minute cron tick honour a
+# weekly SMART cadence and a 15-minute RAID cadence from the same file.
+
+defaults:
+  probes: 6h          # any probe not named below, on any host
+  assertions: 6h      # any assertion without its own `schedule`
+
+hosts:
+  - name: nas0
+    ssh_user: root
+    primary_ip: 10.0.6.29
+    probes:
+      host.raid: 15m    # a degraded array should be a finding within the quarter hour
+      host.shares: 1h
+      host.smart: 1d    # SMART rarely changes; daily is plenty
+      host.services: 30m
+  - name: node0
+    ssh_user: root
+    primary_ip: 10.0.6.20
+    probes:
+      default: 4h       # this host's own default for everything not listed
+      host.raid: 15m
+
+talos:
+  - name: cp1
+    node: 10.0.6.13
+    probes:
+      talos.host: 2h
+
+assertions:
+  default: 6h
+  ceph-replication-link-speed: 1d   # an assertion's own `schedule` column still wins

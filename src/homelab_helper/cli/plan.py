@@ -358,6 +358,6 @@ def plan_rightsize(
     console.print(table)
     console.print(f"{len(recs)} recommendation(s)")
     for line in result["skipped"]:
-        console.print(f"[dim]skipped (too little history): {escape(line)}[/dim]")
+        console.print(f"[dim]skipped (too little history yet): {escape(line)}[/dim]")
     if result["findings"] is not None:
         console.print(f"findings: {result['findings']}")

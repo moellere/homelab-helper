@@ -3,7 +3,10 @@
 Every recommendation names the allocation, the observed p95 and peak, the
 window, and the proposed value (acceptance criterion 5). A guest with fewer
 than ``MIN_SAMPLES`` hourly buckets in the window gets no verdict and is not
-counted as observed, so its earlier findings neither open nor resolve.
+counted as observed, so its earlier findings neither open nor resolve. The one
+exception is a guest whose cores or memory changed inside the window: its
+history restarts at the change, and until it is long enough the guest counts
+as observed with no issues — the finding that asked for the change is done.
 
 Rules (thresholds are module constants, deliberately conservative):
 
@@ -240,7 +243,18 @@ async def evaluate(
             session, subject_type="guest", subject_key=key, window=window, resolution=HOUR, now=now
         )
         if (s.get("samples") or 0) < MIN_SAMPLES:
-            skipped.append(f"{vm.name} ({vm.vmid}): {s.get('samples', 0)} hourly bucket(s)")
+            changed = s.get("allocation_changed_at")
+            if changed:
+                # The allocation moved inside the window, so whatever was found
+                # before no longer describes this guest: count it observed with
+                # nothing to say (earlier findings resolve) and start over.
+                evaluated.add(("guest", key))
+                skipped.append(
+                    f"{vm.name} ({vm.vmid}): resized {changed[:10]}, "
+                    f"{s.get('samples', 0)} hourly bucket(s) since"
+                )
+            else:
+                skipped.append(f"{vm.name} ({vm.vmid}): {s.get('samples', 0)} hourly bucket(s)")
             continue
         evaluated.add(("guest", key))
         issues += guest_issues(key, vm.name or key, vm.kind or "qemu", s, days, vm.node_name)

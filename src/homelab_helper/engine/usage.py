@@ -108,22 +108,24 @@ def rollup(
 ) -> list[Bucket]:
     """Bucket RRD points: means of AVERAGE points, peaks of MAX points.
 
-    Points without a ``cpu`` value carry no data (the guest was stopped or did
-    not exist yet) and are skipped, so empty buckets are never written.
+    A point without the subject's leading field (``cpu`` for nodes and guests,
+    ``used`` for a storage pool) carries no data — the guest was stopped or did
+    not exist yet — and is skipped, so empty buckets are never written.
     """
     seconds = BUCKET_SECONDS[resolution]
+    presence = next(iter(fields))
     grouped: dict[datetime, list[dict[str, Any]]] = {}
     for p in average:
-        if p.get("cpu") is None:
+        if p.get(presence) is None:
             continue
         grouped.setdefault(_bucket_start(p["time"], seconds), []).append(p)
     peaks: dict[datetime, list[dict[str, Any]]] = {}
     for p in peak:
-        if p.get("cpu") is None:
+        if p.get(presence) is None:
             continue
         peaks.setdefault(_bucket_start(p["time"], seconds), []).append(p)
 
-    mem_key = next(k for k, v in fields.items() if v == "mem_used")
+    mem_key = next((k for k, v in fields.items() if v == "mem_used"), None)
     out: list[Bucket] = []
     for ts in sorted(grouped):
         points = grouped[ts]
@@ -139,8 +141,11 @@ def rollup(
                 b.extra[key] = value
         top = peaks.get(ts) or points
         cpu_peaks = [float(p["cpu"]) for p in top if p.get("cpu") is not None]
-        mem_peaks = [float(p[mem_key]) for p in top if p.get(mem_key) is not None]
-        b.values["cpu_max"] = max(cpu_peaks) if cpu_peaks else b.values.get("cpu")
+        mem_peaks = (
+            [float(p[mem_key]) for p in top if p.get(mem_key) is not None] if mem_key else []
+        )
+        if "cpu" in fields:
+            b.values["cpu_max"] = max(cpu_peaks) if cpu_peaks else b.values.get("cpu")
         if mem_peaks:
             b.values["mem_used_max"] = round(max(mem_peaks))
         out.append(b)
@@ -257,6 +262,10 @@ async def pool_history(
     )
 
 
+def _same_allocation(a: UsageSample, b: UsageSample) -> bool:
+    return a.cpus == b.cpus and a.mem_total == b.mem_total
+
+
 async def summarize(
     session: AsyncSession,
     *,
@@ -266,7 +275,14 @@ async def summarize(
     resolution: str = HOUR,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """p95 and peak of CPU and memory over ``window``, with the latest allocation."""
+    """p95 and peak of CPU and memory over ``window``, with the latest allocation.
+
+    The figures cover only the buckets since the allocation last changed: a
+    guest resized mid-window is judged by what it did with its *current* cores
+    and memory, not by a history that mixes two sizes. ``allocation_changed_at``
+    names that moment when it falls inside the window; ``samples_in_window``
+    is the count before the cut.
+    """
     since = (now or datetime.now(UTC)).replace(tzinfo=None) - window
     rows = (
         (
@@ -286,7 +302,15 @@ async def summarize(
     )
     if not rows:
         return {"subject": subject_key, "samples": 0}
+    in_window = len(rows)
     latest = rows[-1]
+    changed_at: datetime | None = None
+    cut = len(rows) - 1
+    while cut > 0 and _same_allocation(rows[cut - 1], latest):
+        cut -= 1
+    if cut > 0:
+        changed_at = rows[cut].ts
+        rows = rows[cut:]
     cpu = [r.cpu for r in rows if r.cpu is not None]
     cpu_peak = [r.cpu_max for r in rows if r.cpu_max is not None]
     mem = [float(v) for r in rows if (v := r.mem_used_max or r.mem_used)]
@@ -296,6 +320,8 @@ async def summarize(
         "label": latest.label,
         "resolution": resolution,
         "samples": len(rows),
+        "samples_in_window": in_window,
+        "allocation_changed_at": changed_at.isoformat() if changed_at else None,
         "first": rows[0].ts.isoformat(),
         "last": latest.ts.isoformat(),
         "cpus": latest.cpus,

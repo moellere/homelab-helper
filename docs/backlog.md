@@ -1100,6 +1100,14 @@ from 1.0.0 is the operator-time list under 9.1.
   with nothing due costs no connection; an unreachable target fails alone.
   AC #6 met: two probes on different cadences from one daemon, an assertion on
   its own schedule (`tests/test_schedule.py`).
+- [x] **8.3/8.4 follow-up (10/09/2026)** — `discover usage` died on every run
+  after 8.5 added storage pools (`rollup` looked up a memory field a pool's RRD
+  does not have, and dropped every pool point for lacking `cpu`); pools now
+  roll up on their own leading field. `summarize` restarts a guest's history
+  at its last cores/memory change (`allocation_changed_at`,
+  `samples_in_window`), and `evaluate` counts such a guest as observed with
+  nothing to say until the fresh history is long enough — so a finding whose
+  resize was applied resolves instead of re-asking against stale buckets.
 - [x] **9.7a Status endpoint** (`engine/status.py` + `status_api.py` +
   `helper status show|serve`, `docs/status-endpoint.md`) — the dashboard
   answer to "anything wrong, anything waiting on me?": open findings by

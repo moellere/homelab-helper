@@ -18,6 +18,7 @@ from homelab_helper.engine.usage import (
     HOUR,
     NODE_EXTRA,
     NODE_FIELDS,
+    STORAGE_FIELDS,
     percentile,
     prune_usage,
     record_usage,
@@ -198,3 +199,41 @@ async def test_rrd_reads_are_plain_gets() -> None:
         ("GET", "/api2/json/nodes/pve0/rrddata", "timeframe=month&cf=AVERAGE"),
         ("GET", "/api2/json/nodes/pve0/qemu/100/rrddata", "timeframe=year&cf=MAX"),
     ]
+
+
+def test_rollup_of_a_storage_pool_has_no_cpu_or_memory() -> None:
+    # A pool's RRD carries used/total only; the old presence test on ``cpu``
+    # dropped every point and the mem lookup raised StopIteration.
+    pts = [
+        {"time": int((T0 + timedelta(minutes=m)).timestamp()), "used": 10.0 * G, "total": 100.0 * G}
+        for m in (0, 30, 60)
+    ]
+    buckets = rollup(pts, [], resolution=HOUR, fields=STORAGE_FIELDS)
+    assert [b.values for b in buckets] == [
+        {"disk_used": round(10.0 * G), "disk_total": round(100.0 * G)},
+        {"disk_used": round(10.0 * G), "disk_total": round(100.0 * G)},
+    ]
+
+
+async def test_summarize_restarts_at_an_allocation_change(sessionmaker) -> None:
+    before = [_guest_point(60 * h, 0.9, 1 * G) for h in range(50)]  # 2 cores, hot
+    after = [_guest_point(60 * h, 0.2, 1 * G, maxcpu=3) for h in range(50, 80)]  # 3 cores, calm
+    buckets = rollup(before + after, [], resolution=HOUR, fields=GUEST_FIELDS)
+    async with session_scope(sessionmaker) as s:
+        await record_usage(
+            s,
+            subject_type="guest",
+            subject_key="lab/100",
+            label="web",
+            resolution=HOUR,
+            buckets=buckets,
+        )
+        summary = await summarize(
+            s, subject_type="guest", subject_key="lab/100", now=T0 + timedelta(days=5)
+        )
+    assert summary["cpus"] == 3
+    assert summary["samples"] == 30
+    assert summary["samples_in_window"] == 80
+    assert summary["allocation_changed_at"].startswith("2026-10-03T02:00:00")  # T0 + 50 h
+    assert summary["cpu_p95"] == pytest.approx(0.2)
+    assert summary["cpu_peak"] == pytest.approx(0.2)

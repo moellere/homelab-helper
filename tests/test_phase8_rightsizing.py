@@ -199,3 +199,48 @@ async def test_rebalance_on_usage_loads_guests_at_observed_memory(sessionmaker) 
     (u,) = [h for h in usage.hosts if h.hostname == "pve0"]
     assert a.committed == 16 * G
     assert u.committed == 1 * G
+
+
+async def test_resize_inside_the_window_closes_the_finding_and_restarts_history(
+    sessionmaker,
+) -> None:
+    async with session_scope(sessionmaker) as s:
+        await _seed(s, vmid=100, hours=MIN_SAMPLES + 10, cpu=0.9, mem_gb=3.5)
+        result, issues, _ = await reconcile_rightsizing(s, now=NOW)
+        assert [i.category for i in issues] == ["cpu-grow"]
+        assert result.counts()["opened"] == 1
+
+        # The operator applied it: 3 cores from NOW on, and a calm guest.
+        start = NOW.replace(tzinfo=None)
+        buckets = [
+            Bucket(
+                ts=start + timedelta(hours=h),
+                values={
+                    "cpu": 0.2,
+                    "cpu_max": 0.2,
+                    "cpus": 3.0,
+                    "mem_used": int(3.5 * G),
+                    "mem_used_max": int(3.5 * G),
+                    "mem_total": 4 * G,
+                    "net_in": 10_000.0,
+                    "net_out": 10_000.0,
+                },
+            )
+            for h in range(1, 6)
+        ]
+        await record_usage(
+            s,
+            subject_type="guest",
+            subject_key="lab/100",
+            label="vm100",
+            resolution=HOUR,
+            buckets=buckets,
+        )
+        later, issues, skipped = await reconcile_rightsizing(s, now=NOW + timedelta(hours=6))
+        assert issues == []
+        assert len(later.resolved) == 1  # the premise is gone, not merely unobserved
+        assert len(skipped) == 1
+        assert "resized" in skipped[0]
+        assert "5 hourly bucket(s) since" in skipped[0]
+        rows = (await s.execute(select(ReconciliationFinding))).scalars().all()
+        assert [r.status for r in rows] == [FindingStatus.RESOLVED]

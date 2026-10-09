@@ -848,7 +848,28 @@ See `roadmap.md` Phase 8. Slices land in this order.
   - [x] `resize` action kind (10/06/2026): cores and/or `memory_mib` on a guest, through the executor via `set_vm_config`; refused at dispatch beyond the node's CPUs/physical memory (no write); a QEMU balloon floor above the new memory is lowered with it; QEMU without hotplug reports *pending until next stop/start*, containers apply live. Rollback: `prior-config` generalised to the keys an action changes (cpu; cores/memory/balloon). In `REVERSIBLE_ACTION_KINDS`. `rightsize` playbook drafts one resize per cpu-*/mem-* rightsizing finding (never for `idle`); rightsizing evidence now carries node/vmid/kind. MCP `propose_action(cores=, memory_mib=)`.
   - [ ] Follow-ups: in-guest memory via the QEMU guest agent so VM memory can grow too; K8s requests vs usage; an optional restart-after-resize for VMs (today the operator restarts, or a `restart` proposal).
 - [ ] 8.5 Storage efficiency.
-- [ ] 8.6 Weekly digest.
+- [x] 8.6 Weekly digest — `engine/digest.py`, `db/models/digest.py` (migration
+  `b4e1f7a9c3d2`), `helper digest show|send|history`, daemon `--digest` job.
+  Contents are chosen from rows only (findings, proposals, receipts,
+  `TrustHistory`) and a subprocess test asserts the module never imports
+  `homelab_helper.llm` — P8-AC6's "an LLM may narrate it but does not choose
+  its contents". Three sections: what was done (receipts, rollbacks marked),
+  authority changes, what changed (opened/resolved, worst-first), what is
+  recommended (open findings + pending proposals).
+  - Windows **tile**: each digest records `window_start`/`window_end`, so the
+    next one starts where the last stopped — no change reported twice, none
+    lost in a gap. `--days` overrides; `show` deliberately does not record, or
+    reading the page would eat a week of changes.
+  - A **quiet window is recorded but not sent** (`--quiet-ok` to override),
+    and standing open findings do not make a window busy — otherwise one known
+    LOW finding buzzes the phone every week, which is the stream this slice
+    replaces.
+  - The daemon job is gated on `MIN_DIGEST_DAYS` rather than its interval, so a
+    restart or a 15-minute cron tick cannot turn the weekly summary into a
+    stream.
+  - [ ] Follow-ups: LLM narration of the page (the contents are already fixed,
+    so this is presentation only); a digest-scoped `--since <receipt>` for
+    re-reading an old window; HTML output if the Markdown page wants a browser.
 - [ ] 8.7 Service suggestions.
 - [ ] Update orchestration (first Phase 8 write path, at PROPOSE) — after 8.1 has run a while.
 

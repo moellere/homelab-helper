@@ -28,9 +28,14 @@ from rich.markup import escape
 
 from homelab_helper.config import database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
-from homelab_helper.engine.approval import ApprovalConfigError, approval_channel_from_env
+from homelab_helper.engine.approval import (
+    ApprovalConfigError,
+    HomeAssistantApprovalConfig,
+    approval_channel_from_env,
+)
+from homelab_helper.engine.digest import build_digest, record_digest, render_notification
 from homelab_helper.engine.listener import ask_pending
-from homelab_helper.engine.notify import notifier_from_env
+from homelab_helper.engine.notify import notifier_from_env, send_digest
 from homelab_helper.engine.playbooks import run_playbooks
 
 if TYPE_CHECKING:
@@ -44,6 +49,9 @@ daemon_app = typer.Typer(
 console = Console(soft_wrap=True)
 
 DEFAULT_SOURCES = "argocd,k8s,proxmox"
+MIN_DIGEST_DAYS = 6.0
+"""A digest covering less than this is not due yet — so a restart, or a
+15-minute cron tick, cannot turn a weekly summary into a stream."""
 
 
 def _stamp() -> str:
@@ -110,6 +118,36 @@ async def run_listen_pass() -> dict[str, Any]:
         await engine.dispose()
 
 
+async def run_digest_pass(days: int | None, quiet_ok: bool) -> dict[str, Any]:
+    """Deliver a digest if one is due. The window is the digest's own business:
+    a daemon restart cannot re-send, because the last run moved the window."""
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            digest = await build_digest(session, days=days)
+            if digest.window.days < MIN_DIGEST_DAYS:
+                return {"skipped": f"last digest {digest.window.days:.1f}d ago"}
+            if digest.quiet and not quiet_ok:
+                await record_digest(session, digest, delivery="page", detail="quiet window")
+                return {"quiet": True}
+            title, message = render_notification(digest)
+            try:
+                config = HomeAssistantApprovalConfig.from_env()
+            except ApprovalConfigError as exc:
+                await record_digest(session, digest, delivery="unconfigured", detail=str(exc))
+                return {"unconfigured": str(exc)}
+            try:
+                await send_digest(config, title, message)
+            except Exception as exc:
+                await record_digest(session, digest, delivery="failed", detail=str(exc))
+                return {"failed": str(exc)}
+            await record_digest(session, digest, delivery="sent")
+            return {"sent": title, **digest.counts()}
+    finally:
+        await engine.dispose()
+
+
 def _report(job: str, result: dict[str, Any]) -> None:
     summary = ", ".join(
         f"{k}={escape(str(v))}" for k, v in result.items() if v not in ([], 0, None, {}, "")
@@ -131,6 +169,12 @@ def daemon_run(
     listen_every: int = typer.Option(1, "--listen-every", help="Minutes between listener passes."),
     ask: bool = typer.Option(True, "--ask/--no-ask", help="Run the approval listener."),
     playbooks: bool = typer.Option(True, "--playbooks/--no-playbooks", help="Run the playbooks."),
+    digest: bool = typer.Option(
+        False, "--digest/--no-digest", help="Deliver the weekly digest when one is due."
+    ),
+    digest_every: int = typer.Option(
+        720, "--digest-every", help="Minutes between digest checks (the window gates delivery)."
+    ),
     once: bool = typer.Option(False, "--once", help="One pass of each enabled job, then exit."),
 ) -> None:
     """Discovery → playbooks → listener, on cadences (or once with --once)."""
@@ -144,6 +188,8 @@ def daemon_run(
                 _report(job, await run_playbook_pass())
             elif job == "listen":
                 _report(job, await run_listen_pass())
+            elif job == "digest":
+                _report(job, await run_digest_pass(None, quiet_ok=False))
         except Exception as exc:
             console.print(f"[dim]{_stamp()}[/dim] [red]{job} failed:[/red] {escape(str(exc))}")
 
@@ -154,6 +200,8 @@ def daemon_run(
         jobs.append(("playbooks", playbooks_every))
     if ask:
         jobs.append(("listen", listen_every))
+    if digest:
+        jobs.append(("digest", digest_every))
 
     async def _once() -> None:
         for job, _ in jobs:

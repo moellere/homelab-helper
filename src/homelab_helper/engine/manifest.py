@@ -54,11 +54,14 @@ GUEST_ACTION_KINDS: tuple[str, ...] = (*POWER_ACTION_KINDS, "migrate", "cpu-type
 WORKLOAD_ACTION_KINDS: tuple[str, ...] = ("workload-restart", "workload-scale")
 ARGOCD_ACTION_KINDS: tuple[str, ...] = ("argocd-sync",)
 DNS_ACTION_KINDS: tuple[str, ...] = ("dns-record",)
+NODE_ACTION_KINDS: tuple[str, ...] = ("node-update",)
+NODE_DOMAIN = TrustDomain.HOST_OS
 ACTION_KINDS: tuple[str, ...] = (
     *GUEST_ACTION_KINDS,
     *WORKLOAD_ACTION_KINDS,
     *ARGOCD_ACTION_KINDS,
     *DNS_ACTION_KINDS,
+    *NODE_ACTION_KINDS,
 )
 DNS_RECORD_TYPES: tuple[str, ...] = ("A", "AAAA", "CNAME", "TXT")
 MAX_CORES = 512
@@ -86,6 +89,7 @@ ActionKind = Literal[
     "workload-scale",
     "argocd-sync",
     "dns-record",
+    "node-update",
 ]
 VMKind = Literal["qemu", "lxc"]
 WorkloadKind = Literal["deployment", "statefulset", "daemonset"]
@@ -144,6 +148,19 @@ class DnsRecordTarget(BaseModel):
     """Which UniFi controller (``HOMELAB_HELPER_UNIFI_CONTROLLERS`` name); default = the single one."""
 
 
+class NodeTarget(BaseModel):
+    """A hypervisor node itself, not a guest on it.
+
+    Deliberately only a name: a node action's *what* is fixed in code, never
+    carried by the manifest. An artifact that could name the command would make
+    a proposal into remote code execution gated by one cell.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node: str = Field(min_length=1)
+
+
 class RollbackSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -156,7 +173,7 @@ class ActionSpec(BaseModel):
 
     domain: TrustDomain
     action_kind: ActionKind
-    target: ActionTarget | WorkloadTarget | ArgoAppTarget | DnsRecordTarget
+    target: ActionTarget | WorkloadTarget | ArgoAppTarget | DnsRecordTarget | NodeTarget
     hostnames: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -196,8 +213,13 @@ def _dns_rule(t: DnsRecordTarget) -> tuple[TrustDomain, tuple[str, ...], str]:
     return DNS_DOMAIN, DNS_ACTION_KINDS, "a DNS record"
 
 
+def _node_rule(t: NodeTarget) -> tuple[TrustDomain, tuple[str, ...], str]:
+    return NODE_DOMAIN, NODE_ACTION_KINDS, "a hypervisor node"
+
+
 _TARGET_RULES: dict[type, Any] = {
     ActionTarget: _guest_rule,
+    NodeTarget: _node_rule,
     WorkloadTarget: _workload_rule,
     ArgoAppTarget: _argocd_rule,
     DnsRecordTarget: _dns_rule,
@@ -239,17 +261,32 @@ class ActionArtifact(BaseModel):
 
 _VARIANT_BY_KEY = (
     ("vmid", "ActionTarget"),
-    ("node", "ActionTarget"),
     ("application", "ArgoAppTarget"),
     ("hostname", "DnsRecordTarget"),
     ("namespace", "WorkloadTarget"),
+    ("node", "ActionTarget"),
 )
+_TARGET_VARIANTS = {
+    "ActionTarget",
+    "WorkloadTarget",
+    "ArgoAppTarget",
+    "DnsRecordTarget",
+    "NodeTarget",
+}
 
 
 def _guess_variant(raw: Any) -> str | None:
+    """Which union member the target's own keys point at.
+
+    Mirrors the executor's own rule so the two agree: ``node`` without
+    ``vmid`` is a node, which also means a node target carrying junk reports
+    the junk rather than complaining about a missing ``vmid``.
+    """
     target = (raw.get("action") or {}).get("target") if isinstance(raw, dict) else None
     if not isinstance(target, dict):
         return None
+    if "node" in target and "vmid" not in target:
+        return "NodeTarget"
     return next((variant for key, variant in _VARIANT_BY_KEY if key in target), None)
 
 
@@ -264,7 +301,7 @@ def validate_artifact(raw: Any) -> ActionArtifact:
     except ValidationError as exc:
         errors = exc.errors()
         variant = _guess_variant(raw)
-        variants = {"ActionTarget", "WorkloadTarget", "ArgoAppTarget", "DnsRecordTarget"}
+        variants = _TARGET_VARIANTS
         preferred = [e for e in errors if not (set(map(str, e["loc"])) & variants)] + [
             e for e in errors if variant and variant in map(str, e["loc"])
         ]
@@ -350,6 +387,30 @@ def build_workload_artifact(
     return artifact.as_artifact()
 
 
+def build_node_artifact(
+    *,
+    node: str,
+    action_kind: str = "node-update",
+    hostnames: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, Any]:
+    """An executor-ready node artifact. Carries no command and no rollback:
+    a package upgrade has no inverse, so the strategy is fixed at no-inverse
+    and ``verified`` can only ever be false."""
+    artifact = validate_artifact(
+        {
+            "kind": "action",
+            "action": {
+                "domain": NODE_DOMAIN.value,
+                "action_kind": action_kind,
+                "target": {"node": node},
+                "hostnames": list(hostnames) if hostnames else [node],
+            },
+            "rollback": {"verified": False, "strategy": "no-inverse"},
+        }
+    )
+    return artifact.as_artifact()
+
+
 def build_argocd_artifact(
     *,
     application: str,
@@ -420,6 +481,8 @@ __all__ = [
     "DNS_DOMAIN",
     "DNS_RECORD_TYPES",
     "GUEST_ACTION_KINDS",
+    "NODE_ACTION_KINDS",
+    "NODE_DOMAIN",
     "POWER_ACTION_KINDS",
     "VM_KIND_DOMAIN",
     "WORKLOAD_ACTION_KINDS",
@@ -431,11 +494,13 @@ __all__ = [
     "ArgoAppTarget",
     "DnsRecordTarget",
     "ManifestError",
+    "NodeTarget",
     "RollbackSpec",
     "WorkloadTarget",
     "build_argocd_artifact",
     "build_artifact",
     "build_dns_artifact",
+    "build_node_artifact",
     "build_workload_artifact",
     "validate_artifact",
 ]

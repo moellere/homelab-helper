@@ -46,8 +46,8 @@ if TYPE_CHECKING:
 
 DEFAULT_SOURCES: tuple[str, ...] = ("playbook:", "agent:")
 
-AdaptersFor = Callable[[ActionManifest], Awaitable["tuple[Any, Any, Any, Any] | str"]]
-"""Resolve ``(proxmox, k8s, argocd, unifi)`` for one manifest, or a message naming what is missing."""
+AdaptersFor = Callable[[ActionManifest], Awaitable["tuple[Any, Any, Any, Any, Any] | str"]]
+"""Resolve ``(proxmox, k8s, argocd, unifi, ssh)`` for one manifest, or a message naming what is missing."""
 
 
 @dataclass
@@ -133,7 +133,7 @@ async def ask_pending(
         if isinstance(resolved, str):
             result.unconfigured.append(f"{pid[:8]}: {resolved}")
             continue
-        proxmox, k8s, argocd, unifi = resolved
+        proxmox, k8s, argocd, unifi, ssh = resolved
 
         async def _confirm(m: ActionManifest, d: Decision, _pid: str = pid) -> ApprovalResult:
             result.asked.append(_pid[:8])
@@ -150,6 +150,7 @@ async def ask_pending(
                 k8s_adapter=k8s,
                 argocd_adapter=argocd,
                 unifi_adapter=unifi,
+                ssh_adapter=ssh,
                 notifier=notifier,
             )
         except ExecutionRefused as exc:

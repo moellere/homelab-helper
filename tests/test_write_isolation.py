@@ -28,12 +28,14 @@ WRITE_METHODS = (
     "create_dns_record",
     "update_dns_record",
     "delete_dns_record",
+    "apt_dist_upgrade",
 )
 ALLOWED = {
     SRC / "adapters" / "proxmox.py",  # the definitions
     SRC / "adapters" / "kubernetes.py",  # the Phase-7 workload writes
     SRC / "adapters" / "argocd.py",  # Phase-7 slice 2: sync / rollback
     SRC / "adapters" / "unifi.py",  # Phase-7 slice 2: static DNS
+    SRC / "adapters" / "kernel_ssh.py",  # Phase-8: the node dist-upgrade
     SRC / "engine" / "executor.py",  # the gate's enforcement point
     SRC / "engine" / "rollback.py",  # driven by the executor
 }

@@ -47,6 +47,7 @@ from sqlalchemy import func, or_, select
 from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfigError
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
+from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
@@ -2109,9 +2110,10 @@ class _Adapters:
     k8s: K8sAdapter | None
     argocd: ArgoCDAdapter | None
     unifi: UniFiAdapter | None
+    ssh: KernelSSHAdapter | None = None
 
     def __iter__(self) -> Iterator[Any]:
-        return iter((self.proxmox, self.k8s, self.argocd, self.unifi))
+        return iter((self.proxmox, self.k8s, self.argocd, self.unifi, self.ssh))
 
 
 def _execution_adapters(manifest: Any) -> tuple[_Adapters | None, str | None]:
@@ -2135,7 +2137,8 @@ def _execution_adapters(manifest: Any) -> tuple[_Adapters | None, str | None]:
                 f"UniFi adapter: no controller matches {manifest.controller!r} "
                 "(set HOMELAB_HELPER_UNIFI_CONTROLLERS)"
             )
-    return _Adapters(proxmox, k8s, argocd, unifi), None
+    ssh = KernelSSHAdapter() if manifest.is_node else None
+    return _Adapters(proxmox, k8s, argocd, unifi, ssh), None
 
 
 @server.tool()
@@ -2197,7 +2200,7 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
             if problem is not None:
                 return {"error": problem}
             assert adapters is not None
-            adapter, k8s, argocd, unifi = adapters
+            adapter, k8s, argocd, unifi, ssh = adapters
             try:
                 result = await _run_proposal(
                     session,
@@ -2209,6 +2212,7 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
                     k8s_adapter=k8s,
                     argocd_adapter=argocd,
                     unifi_adapter=unifi,
+                    ssh_adapter=ssh,
                     notifier=notifier_from_env(),
                 )
             except ExecutionRefused as exc:

@@ -28,6 +28,7 @@ for connection-level failures.
 from __future__ import annotations
 
 import asyncio
+import shlex
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +38,11 @@ from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+
+APT_UPGRADE_TIMEOUT = 1800
+"""Half an hour: a hypervisor with a hundred-odd packages and a new
+kernel is not quick, and a timeout mid-dpkg is worse than waiting."""
 
 
 class SSHConnectionError(RuntimeError):
@@ -107,7 +113,7 @@ def _cache_key(host: str, user: str, port: int) -> tuple[str, str, int]:
 
 
 class KernelSSHAdapter:
-    """The read-only SSH adapter used by host probes.
+    """The SSH adapter used by host probes — read-only but for one write.
 
     Holds an optional shared-session cache: when :meth:`shared_session` is
     active for a given ``(host, user, port)``, calls to :meth:`session` with
@@ -216,6 +222,42 @@ class KernelSSHAdapter:
             self._shared.pop(key, None)
             conn.close()
             await conn.wait_closed()
+
+    # ------------------------------------------------------------------ writes
+    #
+    # The ONLY write on this adapter, and it exists solely for
+    # engine/executor.py. It runs a FIXED command: the manifest names a node,
+    # never a command, so a proposal cannot become remote code execution
+    # gated by one trust cell. tests/test_write_isolation.py fails if any
+    # module other than the executor names it.
+
+    async def apt_dist_upgrade(
+        self,
+        host: str,
+        *,
+        user: str,
+        key_path: Path | str | None = None,
+        password: str | None = None,
+        port: int = 22,
+        timeout: int = APT_UPGRADE_TIMEOUT,
+    ) -> CommandResult:
+        """Apply the node's pending Debian/Proxmox packages. Executor use only.
+
+        Non-interactive and config-preserving: a prompt would hang forever with
+        no tty, and silently replacing a hand-edited config file on a
+        hypervisor is not something an unattended run may decide.
+        """
+        command = (
+            "DEBIAN_FRONTEND=noninteractive "
+            'apt-get -y -o Dpkg::Options::="--force-confold" '
+            '-o Dpkg::Options::="--force-confdef" dist-upgrade'
+        )
+        if user != "root":
+            command = f"sudo -n sh -c {shlex.quote(command)}"
+        async with self.session(
+            host, user=user, key_path=key_path, password=password, port=port
+        ) as ssh:
+            return await ssh.run(command, timeout=timeout)
 
     async def health_check(
         self,

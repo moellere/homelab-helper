@@ -58,14 +58,14 @@ def _stamp() -> str:
     return datetime.now(UTC).astimezone().strftime("%H:%M:%S")
 
 
-async def _adapters_for(manifest: ActionManifest) -> tuple[Any, Any, Any, Any] | str:
+async def _adapters_for(manifest: ActionManifest) -> tuple[Any, Any, Any, Any, Any] | str:
     """The listener's adapter resolver — the same one the MCP trigger uses."""
     from homelab_helper.mcp_server import _execution_adapters  # noqa: PLC0415 - interface→interface
 
     adapters, problem = _execution_adapters(manifest)
     if problem is not None or adapters is None:
         return problem or "adapters unavailable"
-    return adapters.proxmox, adapters.k8s, adapters.argocd, adapters.unifi
+    return adapters.proxmox, adapters.k8s, adapters.argocd, adapters.unifi, adapters.ssh
 
 
 async def run_discovery_pass(sources: list[str]) -> dict[str, Any]:

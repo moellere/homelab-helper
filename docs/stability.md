@@ -17,6 +17,7 @@ already treated as promises, and 1.0 is the point where the rest join them.
 | [The invariants](#the-invariants) | **held now** | No release puts a model in the authorization path, lets an agent grant or elevate, or runs an unverifiable action unattended. |
 | [CLI verbs](#cli-verbs) | **held now** | A verb's name, position and required arguments stay. Options are added, not removed. A renamed verb keeps its old name as a warning alias for a release. Human-readable output is not a contract. |
 | [MCP tools](#mcp-tools) | **held now** | Tool names and argument names stay. Result objects only gain keys. Misses return `{"error": ...}`, never raise. |
+| [Status endpoint](status-endpoint.md) | **held now** | `GET /status` and `GET /healthz` stay, the object only gains keys, and the endpoint never grows a route that changes anything. |
 | [Probe plugin contract](#probe-plugin-contract) | **held now** | The entry-point group, the `Probe` attributes and the four transport types only gain fields. |
 | [Action manifests](#action-manifests) | **held now** | The envelope and every shipped action kind's target fields stay. New kinds are added; the executor rejects what it does not know. |
 | [Database](#database) | **held now** | `helper db init` upgrades any earlier release's database. Migrations are forward-only. The schema itself is not an API. |
@@ -83,6 +84,7 @@ every option.
 | `schedule` | — |
 | `service` | `aliases` `resolvers` `retire-resolver` |
 | `skills` | `set` |
+| `status` | `serve` `show` |
 | `trust` | `boundary` `grant` `history` `show` |
 | `usage` | — |
 | `version` | — |

@@ -28,7 +28,8 @@ it at anything real. Then it shows you how to point it at your own lab.
 ## Where to go next
 
 - **Operating it:** the [CLI reference](cli.md), the
-  [trust gradient for operators](trust-gradient.md), and the
+  [trust gradient for operators](trust-gradient.md), the
+  [status endpoint](status-endpoint.md) for your dashboard, and the
   [live validation runbook](live-validation.md) you run before trusting any of
   it with your own fleet.
 - **Extending it:** [writing a probe](writing-a-probe.md) and

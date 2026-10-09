@@ -267,11 +267,12 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 
 | Phase | State |
 |---|---|
-| 1 — Inventory & discovery | Core complete; a few probes open (`host.raid`, dmidecode DIMM depth, example replay fixture) |
+| 1 — Inventory & discovery | Core complete; two probes open (`host.raid`/`host.shares`, dmidecode DIMM depth) — both now Phase 9.5. The replay fixture landed (`helper discover replay`). |
 | 2 — Continuous agent / time-series | **Deliberately deferred** (several planners note "lands with Phase-2 time-series") |
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
+| 9 — Road to 1.0 | Planned (`roadmap.md` Phase 9): close the validation gate, de-assume the lab, docs site, declare the 1.0 surface, last Phase-1 probes, Phase-2 cadences |
 | 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F), agent-side `propose_action` + manifest schema + secret references (agent-access items 4–6). All six ACs implemented; live-fleet validation outstanding |
 
 Live-fleet validation: Phases 4–7 have run against the operator's lab

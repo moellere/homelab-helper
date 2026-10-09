@@ -39,11 +39,14 @@ Phase 1 — Inventory & Discovery
     │       │
     │       ▼
     │   Phase 8 — Operate & Optimize
+    │       │
+    │       ▼
+    │   Phase 9 — Road to 1.0
     │
     └── Cross-cutting: probe catalog growth, docs, test fixtures
 ```
 
-Phases 2 and 3 are sequential as written but loosely coupled — could be parallelized once Phase 1 is solid. Phase 4 can begin once Phase 3 produces enough cross-source signal to be worth narrating; can ship narratively before all of Phase 3 is done. Phase 5 needs both inventory depth (P1-2) and external context (P3). Phase 6 needs the proposal stream and blast-radius/rollback metadata that the planner (P5) and reconciler (P1-2) produce — it executes what the read-only system has been proposing all along. Phase 8 turns the planners from snapshot reasoning into continuous, history-backed operations advice; its findings flow into the same proposal → trust gate → execution path Phase 7 built.
+Phases 2 and 3 are sequential as written but loosely coupled — could be parallelized once Phase 1 is solid. Phase 4 can begin once Phase 3 produces enough cross-source signal to be worth narrating; can ship narratively before all of Phase 3 is done. Phase 5 needs both inventory depth (P1-2) and external context (P3). Phase 6 needs the proposal stream and blast-radius/rollback metadata that the planner (P5) and reconciler (P1-2) produce — it executes what the read-only system has been proposing all along. Phase 8 turns the planners from snapshot reasoning into continuous, history-backed operations advice; its findings flow into the same proposal → trust gate → execution path Phase 7 built. Phase 9 depends on all of them being built, and on none of them being finished: it is the consolidation pass that turns eight phases of capability into something a second person can run.
 
 ## Effort scale
 
@@ -410,7 +413,83 @@ A lab that tells its operator, once a week and with evidence, what is out of dat
 
 ---
 
-## Post-roadmap (Phase 9+)
+## Phase 9 — Road to 1.0
+
+Phases 1 to 8 were built against mocks and verified against **one** lab. That
+is why the framework works and also why nobody else can run it yet: the
+install story is a README, half the acceptance criteria have never met real
+hardware, the planners quietly assume every host is a Proxmox node, and
+nothing says which surfaces a plugin author may depend on. Phase 9 adds no
+capability. It makes the existing capability **real for someone other than its
+author** — and tells that author which of its promises are actually tested.
+
+The on-ramp already exists and is undocumented: `helper discover replay` seeds
+a synthetic lab from `fixtures/example-lab.yaml` and produces 13 findings with
+no hardware, no credentials and no SSH. A stranger should meet that in the
+first five minutes, not discover it in the backlog.
+
+### Goals
+
+- A stranger installs it, points it at their own lab, and gets a finding table
+  — from written instructions, in an hour.
+- Every Phase 4 to 8 acceptance criterion is either validated against real
+  hardware or honestly marked unvalidatable-here, with the reason.
+- The assumptions that leaked in from one lab are named, then fixed or written
+  down.
+- "1.0" means something: a stated promise about the surfaces other people
+  build on.
+
+### Slices, in delivery order
+
+| # | Slice | Delivers |
+|---|---|---|
+| 9.1 | **Close the validation gate** | The `⏳` rows in `live-validation.md`: onboarding (interactive), Phase 6 steps 5 and 6 live, and Part 3's rolling update on one node. The two `⚪ n/a` rows (Ceph narration and mitigations) get a synthetic **asymmetric** replay fixture so the derivation runs end-to-end through the real CLI, or a stated reason they stay unit-tested only. |
+| 9.2 | **De-assume the lab** | Hosts gain a role (or it derives from cluster membership plus capability) so `plan surplus` stops calling a Docker-running NAS surplus — the mirror of the `plan rebalance` defect fixed in #51. The runbook's 1 GbE / 2.5 GbE text matches a symmetric fleet. Any other place the fleet's shape became logic. |
+| 9.3 | **Docs site** | mkdocs-material: getting-started led by `discover replay`, CLI reference, probe SDK guide, adapter authoring guide, NetBox custom-field reference, and an operator's explainer for the trust gradient — what `PROPOSE` / `CONFIRM` / `AUTONOMOUS` mean and how to raise a floor without regretting it. |
+| 9.4 | **Declare the 1.0 surface** | `docs/stability.md`: what is stable and what is not — the probe entry-point contract, the `ProposalLog.artifact` manifest schema, the DB through migrations, the CLI verbs, the MCP tool names — plus a deprecation policy. Python matrix pinned in CI (3.12 now, 3.13 when upstream deps allow). |
+| 9.5 | **The last Phase-1 probes** | `host.raid` / `host.shares` (mdraid composition, exported shares), dmidecode DIMM depth so a serialled module becomes a `PhysicalPart` + `Placement`, and `talos.host` CPU/DIMM depth. These are what a new user with an mdraid box or a Talos cluster hits on day one. |
+| 9.6 | **Finish the Phase-2 tail** | Probe-level schedules and assertion cadences inside the daemon, so "continuous" means per-probe cadence rather than one discovery interval for everything. |
+| 9.7 | **Web UI (the deferred 4.5)** | *Optional, and deliberately last.* Chat, a findings browser, and the trust surface read-only. The CLI and MCP already cover this, and a UI is the easiest thing to half-build. |
+
+**Non-goals.** No new adapters, no new action kinds, no predictive work, no
+hosted service. Phase 9 earns its keep by finishing things, not starting them.
+
+### Acceptance criteria
+
+1. **The sign-off table has no `⏳` rows.** Every Phase 4 to 8 criterion is
+   validated live, or marked `⚪` with a reason naming what about this lab makes
+   it unobservable.
+2. **A stranger gets to a finding table from the docs site alone** — install,
+   `helper db init`, `helper discover replay`, `helper findings list` — without
+   reading the repo or asking its author.
+3. **`plan surplus` against a lab whose NAS runs Docker does not call the NAS
+   surplus**, and says what makes a host a placement target.
+4. **The asymmetric replay fixture reproduces the Ceph bottleneck finding and
+   its four mitigations through the CLI**, so P4-AC2 and P5-AC4 are demonstrable
+   without owning a mismatched fleet.
+5. **A host with an mdraid array reports its composition**, and a DIMM
+   reporting a serial becomes a `PhysicalPart` with a `Placement`.
+6. **Two probes on different cadences both run from one `helper daemon`**, and
+   an assertion runs on its own schedule.
+7. **`docs/stability.md` names every public surface and its promise**, and CI
+   runs the declared Python matrix.
+
+### Effort
+
+**8–14 weeks**, plus **3–4** if the Web UI is built. 9.1 is mostly operator
+time on real hardware rather than coding; 9.3 is the largest coding-adjacent
+item because documentation is slow; 9.5 is three probes, each with its own
+parse tests.
+
+### Stop-here value
+
+A framework a stranger can install, understand and trust — and whose author
+knows exactly which of its promises have met real hardware and which have only
+ever met a mock.
+
+---
+
+## Post-roadmap (Phase 10+)
 
 These are real future phases, deliberately not committed in this roadmap:
 
@@ -418,7 +497,15 @@ These are real future phases, deliberately not committed in this roadmap:
 - **Multi-tenant + hosted service**. The Nabu-Casa-style subscription tier — managed LLM access, off-site backup, remote access, mobile push, community template marketplace.
 - **Heterogeneous architecture support beyond Linux**. FreeBSD probes (TrueNAS Core, pfSense/OPNsense), macOS probes (Mac mini servers), Windows probes (Windows hosts in mixed labs).
 
-Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–8).
+Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–9).
+
+**Predictive operations is the strongest candidate** and its substrate is
+already in place: 8.3 backfills up to a year of daily rollups on first run, and
+the `host.smart` probe already collects per-drive status, power-on hours,
+temperature and reallocated-sector counts that **nothing currently consumes** —
+a failing disk is invisible today. With roughly 26 subjects that work is
+thresholds, trends and per-subject baselines rather than fleet ML, and should
+be named that way.
 
 ---
 
@@ -478,4 +565,4 @@ Replay-based testing for the reconciler is non-negotiable — without it, regres
 
 ## Total roadmap effort
 
-Adding the phase ranges: **28–42 weeks** for Phases 1–5, plus **12–20 weeks** for Phase 6 — **40–62 weeks** for the full L1→L2 arc, at the optimistic "focused hobby pace" estimate. Realistic (2× factor) is **80–124 weeks** — two to two-and-a-half years of evening/weekend work. That's a lot. The stop-here markers exist precisely because *every* point along that road produces a working system; you decide phase-by-phase whether to continue. Phases 1–5 are a complete read-only product on their own — Phase 6 is the deliberate, gated decision to let the framework act.
+Adding the phase ranges: **28–42 weeks** for Phases 1–5, plus **12–20 weeks** for Phase 6, **6–10** for Phase 7, **6–10** for Phase 8 and **8–14** for Phase 9 — **60–96 weeks** end to end, at the optimistic "focused hobby pace" estimate. Realistic (2× factor) is **120–192 weeks** — three to four years of evening/weekend work. That's a lot. The stop-here markers exist precisely because *every* point along that road produces a working system; you decide phase-by-phase whether to continue. Phases 1–5 are a complete read-only product on their own — Phase 6 is the deliberate, gated decision to let the framework act.

@@ -11,8 +11,15 @@ Sources:
 
 - ``nodename``           → ``host.identity.hostname``
 - ``version`` (server)   → ``host.identity.os_*``, ``host.cpu.architecture``
-- ``systeminformation``  → cpu vendor/model, ``host.identity.machine_id``
-- ``/proc/cpuinfo``      → ``host.cpu.cores`` / ``threads`` / flags
+- ``systeminformation``  → ``host.identity.machine_id`` (it describes the
+  *machine* — chassis maker and product — so it never feeds the CPU fields)
+- ``/proc/cpuinfo``      → ``host.cpu.model`` / ``vendor`` (same spelling as the
+  SSH probe) and flags
+- ``processors``         → sockets, cores, threads, max MHz (Phase 9.5)
+- ``memorymodules``      → ``host.memory.dimms`` in the canonical dmidecode
+  shape, so DIMM lineage works for Talos nodes with no reconciler change;
+  a module without a serial (VMs, some consumer boards) becomes the usual
+  DIMM gap finding
 - ``/proc/meminfo``      → ``host.memory.mem_total_bytes``
 - ``disks``              → ``host.storage.devices`` (WWID + symlink serial)
 - ``links`` + ``addresses`` → ``host.network.interfaces`` (physical only)
@@ -75,6 +82,8 @@ def parse_cpuinfo(content: str) -> dict[str, Any]:
     """
     cores = 0
     flags: list[str] = []
+    model: str | None = None
+    vendor: str | None = None
     for raw in content.splitlines():
         if ":" not in raw:
             continue
@@ -84,7 +93,56 @@ def parse_cpuinfo(content: str) -> dict[str, Any]:
             cores += 1
         elif key in ("flags", "features") and not flags:
             flags = value.split()
-    return {"cores": cores, "flags": flags}
+        elif key == "model name" and model is None:
+            model = value.strip() or None
+        elif key == "vendor_id" and vendor is None:
+            vendor = value.strip() or None
+    return {"cores": cores, "flags": flags, "model": model, "vendor": vendor}
+
+
+_NO_SERIAL = {"", "unknown", "not specified", "none", "0", "00000000", "to be filled by o.e.m."}
+_MIB = 1024**2
+
+
+def dimm_from_module(spec: dict[str, Any]) -> dict[str, Any] | None:
+    """One Talos ``MemoryModules`` spec → the canonical ``host.memory.dimms`` entry.
+
+    Empty slots (no size) are dropped; placeholder serials become ``None`` so
+    the reconciler reports a gap rather than keying a part on ``"Unknown"``.
+    """
+    size = spec.get("sizeMiB")
+    if not isinstance(size, int) or size <= 0:
+        return None
+    serial = str(spec.get("serialNumber") or "").strip()
+
+    def _clean(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    return {
+        "slot": _clean(spec.get("deviceLocator")),
+        "serial": None if serial.lower() in _NO_SERIAL else serial,
+        "size_bytes": size * _MIB,
+        "speed_mts": spec.get("speed") if isinstance(spec.get("speed"), int) else None,
+        "manufacturer": _clean(spec.get("manufacturer")),
+        "part_number": _clean(spec.get("productName")),
+        "type": None,
+    }
+
+
+def processor_summary(specs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sockets, cores, threads, max MHz and a model fallback from ``processors``."""
+    populated = [s for s in specs if isinstance(s.get("coreCount"), int) and s["coreCount"] > 0]
+    if not populated:
+        return {}
+    speeds = [s["maxSpeedMhz"] for s in populated if isinstance(s.get("maxSpeedMhz"), int)]
+    return {
+        "sockets": len(populated),
+        "cores": sum(s["coreCount"] for s in populated),
+        "threads": sum(int(s.get("threadCount") or s["coreCount"]) for s in populated),
+        "max_freq_mhz": max(speeds) if speeds else None,
+        "model": (str(populated[0].get("productName") or "").strip() or None),
+    }
 
 
 def parse_meminfo_total_bytes(content: str) -> int | None:
@@ -224,11 +282,14 @@ class TalosHostProbe(Probe):
         "host.cpu.architecture",
         "host.cpu.model",
         "host.cpu.vendor",
+        "host.cpu.sockets",
         "host.cpu.cores",
         "host.cpu.threads",
+        "host.cpu.max_freq_mhz",
         "host.cpu.flags",
         "host.cpu.interesting_flags",
         "host.memory.mem_total_bytes",
+        "host.memory.dimms",
         "host.storage.devices",
         "host.storage.disk_count",
         "host.network.interfaces",
@@ -265,6 +326,14 @@ class TalosHostProbe(Probe):
         except Exception as exc:  # runner/parse surprises become a probe failure, not a crash
             return ProbeResult(success=False, error=f"talos probe error: {exc}")
 
+        # Hardware resources are best effort: a platform without SMBIOS loses DIMM
+        # and socket depth, not the rest of the inventory.
+        try:
+            modules = await adapter.get_resources(node, "memorymodules")
+            processors = await adapter.get_resources(node, "processors")
+        except Exception:
+            modules, processors = [], []
+
         def _first_spec(docs: list[dict[str, Any]]) -> dict[str, Any]:
             return (docs[0].get("spec") or {}) if docs else {}
 
@@ -275,6 +344,8 @@ class TalosHostProbe(Probe):
             return ProbeResult(success=False, error="could not read nodename from Talos")
 
         cpu = parse_cpuinfo(cpuinfo_raw)
+        proc = processor_summary([d.get("spec") or {} for d in processors])
+        dimms = [m for m in (dimm_from_module(d.get("spec") or {}) for d in modules) if m]
         flags = cpu["flags"]
         interesting = [f for f in flags if f in INTERESTING_CPU_FLAGS]
         mem_total = parse_meminfo_total_bytes(meminfo_raw)
@@ -286,7 +357,7 @@ class TalosHostProbe(Probe):
             hostname=hostname,
             arch=ver.get("arch"),
             talos_version=tag,
-            cpu_cores=cpu["cores"] or None,
+            cpu_cores=proc.get("cores") or cpu["cores"] or None,
             mem_total_bytes=mem_total,
             disk_count=len(devices),
             interface_count=len(interfaces),
@@ -299,13 +370,16 @@ class TalosHostProbe(Probe):
             ("host.identity.os_id", "talos"),
             ("host.identity.os_pretty_name", f"Talos Linux {tag}" if tag else "Talos Linux"),
             ("host.cpu.architecture", ver.get("arch")),
-            ("host.cpu.model", (sysinfo_spec.get("productName") or "").strip() or None),
-            ("host.cpu.vendor", (sysinfo_spec.get("manufacturer") or "").strip() or None),
-            ("host.cpu.cores", cpu["cores"] or None),
-            ("host.cpu.threads", cpu["cores"] or None),
+            ("host.cpu.model", cpu["model"] or proc.get("model")),
+            ("host.cpu.vendor", cpu["vendor"]),
+            ("host.cpu.sockets", proc.get("sockets")),
+            ("host.cpu.cores", proc.get("cores") or cpu["cores"] or None),
+            ("host.cpu.threads", proc.get("threads") or cpu["cores"] or None),
+            ("host.cpu.max_freq_mhz", proc.get("max_freq_mhz")),
             ("host.cpu.flags", flags or None),
             ("host.cpu.interesting_flags", interesting or None),
             ("host.memory.mem_total_bytes", mem_total),
+            ("host.memory.dimms", dimms or None),
             ("host.storage.devices", devices),
             ("host.storage.disk_count", len(devices)),
             ("host.network.interfaces", interfaces),
@@ -328,6 +402,8 @@ __all__ = [
     "INTERESTING_CPU_FLAGS",
     "TalosHostOutput",
     "TalosHostProbe",
+    "dimm_from_module",
     "parse_cpuinfo",
     "parse_meminfo_total_bytes",
+    "processor_summary",
 ]

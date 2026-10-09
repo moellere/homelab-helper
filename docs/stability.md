@@ -231,8 +231,9 @@ never while it is the newest release of its line.
 **Before 1.0.** A surface marked *held now* above is already a promise:
 changing it needs a deprecation, not just a release note. Everything else may
 change between pre-releases, and each release's notes carry a *Breaking*
-section when it does. Between `0.1.0b` builds the same rule applies; a beta is
-not a licence to break what is marked held.
+section when it does. Between pre-release builds (`0.1.0b`, `1.0.0rc`) the same
+rule applies; a beta or a release candidate is not a licence to break what is
+marked held.
 
 **From 1.0.** Versions follow semantic versioning on top of PEP 440.
 

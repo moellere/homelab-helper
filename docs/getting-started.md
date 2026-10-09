@@ -15,7 +15,7 @@ specific kind of change on yourself.
 
 ```bash
 uv tool install --prerelease allow homelab-helper   # from PyPI
-# or: pipx install homelab-helper==0.1.0b3
+# or: pipx install homelab-helper==1.0.0rc1
 helper --install-completion                          # bash / zsh / fish, optional
 ```
 

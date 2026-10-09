@@ -1002,12 +1002,17 @@ See `roadmap.md` Phase 8. Slices land in this order.
 ## Phase 9 — Road to 1.0
 
 See `roadmap.md` Phase 9. Adds no capability: it makes the existing capability
-real for someone other than its author. Slices in delivery order.
+real for someone other than its author. Slices in delivery order. **1.0.0rc1**
+was cut 10/09/2026 with 9.2–9.7a done and Postgres in CI; what separates it
+from 1.0.0 is the operator-time list under 9.1.
 
 - [ ] **9.1 Close the validation gate** — the `⏳` rows in
   `docs/live-validation.md`. Everything still open here is **operator time on
   real hardware**, not code; the one item that was blocked on this lab's shape
   rather than on access is done.
+  - [x] P4-AC2 narration (10/09/2026): `helper bottlenecks --narrate` against
+    the asymmetric fixture through the router named `ceph-c`, the 1000 vs
+    2500 Mbps links and the four mitigations with their trade-offs.
   - [ ] P4-AC3 onboarding, interactively, on a host the harness has never seen.
   - [ ] P6 step 5 live: a *dispatch failure* demotes the cell. Needs a write
     that fails after a read that succeeds — pinned by tests, never forced live.

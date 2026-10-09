@@ -61,7 +61,7 @@ and a kubeconfig. Chat works out of the box against a local
 
 ```bash
 uv tool install --prerelease allow homelab-helper   # from PyPI (beta: installers skip pre-releases unless told)
-# or: pipx install homelab-helper==0.1.0b3
+# or: pipx install homelab-helper==1.0.0rc1
 helper --install-completion                          # bash / zsh / fish
 # bleeding edge: uv tool install git+https://github.com/moellere/homelab-helper
 ```

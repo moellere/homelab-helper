@@ -15,6 +15,9 @@ Before any non-trivial change, skim:
 - `docs/live-validation.md` — the live-fleet runbook; the suite is all
   mocks, so this is the only place the ACs meet real infrastructure
 - `docs/harness-schema-slice1.md` — DB schema + forward-spec for L2 trust tables
+- `docs/handoff-phase-9.5.md` — **transient**, if it exists: what the previous
+  session learned that the docs above do not say yet. Delete it in the PR
+  that closes 9.5.
 
 `README.md` is the operator-facing intro; the docs above are what to consult
 when making implementation decisions. The same `docs/` folder is the mkdocs

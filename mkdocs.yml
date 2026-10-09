@@ -11,6 +11,7 @@ strict: true
 # Internal working documents that are not site material.
 exclude_docs: |
   google-weather-ha-integration-proposal.md
+  handoff-phase-9.5.md
 
 theme:
   name: material

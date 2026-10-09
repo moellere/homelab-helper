@@ -539,16 +539,24 @@ The rest of Phase 1, and all of Phase 6, is below.
   than FAIL, so the library binds cleanly to mixed amd64/arm fleets.
 - [ ] **`host.raid` / `host.shares` probes** — mdraid composition
   (`/proc/mdstat` + `mdadm --detail`) so the reconciler models an array as a
-  volume over its member parts; NFS/SMB share enumeration.
+  volume over its member parts; NFS/SMB share enumeration. Phase 9.5; the
+  design notes are in `docs/handoff-phase-9.5.md`.
 - [ ] **`talos.host` CPU/DIMM depth** — SMBIOS `processors`/`memorymodules` can
   be sparse (cores/flags come from `/proc/cpuinfo`); DIMM lineage isn't
-  populated without a per-module serial.
+  populated without a per-module serial. Phase 9.5; probe-side only, the
+  adapter's `get_resources` is already generic.
 
 
 ### P2 — strengthens, doesn't block
 
-- [ ] Verify `host.memory` emits per-DIMM identity (`dmidecode` slot topology) sufficient for `PhysicalPart`/`Placement` creation; extend if not (the roadmap names this `host.memory.dmidecode`)
-- [ ] Docs site scaffold (mkdocs-material): getting-started, CLI reference, probe SDK guide, NetBox custom-field reference
+- [x] Verify `host.memory` emits per-DIMM identity sufficient for
+  `PhysicalPart`/`Placement` creation — it does, and has since the dmidecode
+  layer landed: `parse_dmidecode_memory` emits slot/size/serial/vendor/part,
+  `_reconcile_dimm_lineage` keys parts by serial. Verified 10/09/2026 by
+  replaying the bundled `asymmetric` lab: three serialled DIMMs → three
+  `PhysicalPart(kind=DIMM)` rows, three open placements, no gap finding. This
+  row was stale; see the 9.5 note.
+- [x] Docs site scaffold — Phase 9.3 (#74).
 
 ### Hygiene
 
@@ -1050,9 +1058,15 @@ real for someone other than its author. Slices in delivery order.
   the existing required check keeps its name.
   - [ ] Postgres in CI: the `postgres` extra is supported but the suite only
     runs against SQLite there; the stability page says so until it is fixed.
-- [ ] **9.5 The last Phase-1 probes** — `host.raid` / `host.shares`, dmidecode
-  DIMM depth (a serialled module becomes a `PhysicalPart` + `Placement`),
-  `talos.host` CPU/DIMM depth.
+- [ ] **9.5 The last Phase-1 probes** — two, not three: the roadmap's
+  "dmidecode DIMM depth" was already done (a serialled module *is* a
+  `PhysicalPart` + `Placement`; verified against the bundled `asymmetric` lab,
+  see the P2 row above). Left: `host.raid` / `host.shares`, and `talos.host`
+  CPU/DIMM depth by projecting `memorymodules` onto `host.memory.dimms` so the
+  existing lineage serves Talos nodes. Design notes, the volume-model decision
+  to make with the operator, and the test fakes to mirror are in
+  `docs/handoff-phase-9.5.md` (transient; delete it in the PR that closes
+  this).
 - [ ] **9.6 Finish the Phase-2 tail** — probe-level schedules and assertion
   cadences inside `helper daemon`, so "continuous" is per-probe rather than one
   discovery interval for everything.

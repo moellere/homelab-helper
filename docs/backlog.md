@@ -99,7 +99,9 @@ The rest of Phase 1, and all of Phase 6, is below.
   arch-scoped SKIP). Integration test `tests/test_lab_replay.py` asserts ≥11
   findings (AC3) and idempotent re-runs (AC4). The committed generic assertion
   library is `fixtures/assertion-library-starter.yaml`; operators bind it to
-  their own hostnames in a local (un-committed) copy.
+  their own hostnames in a local (un-committed) copy. Phase 9.1 added an
+  optional `clusters:` block (Cluster + VirtualMachine rows) and a second
+  fixture, `fixtures/asymmetric-lab.yaml`.
 
 ### Discovery sources & probes (landed)
 
@@ -981,18 +983,25 @@ See `roadmap.md` Phase 9. Adds no capability: it makes the existing capability
 real for someone other than its author. Slices in delivery order.
 
 - [ ] **9.1 Close the validation gate** — the `⏳` rows in
-  `docs/live-validation.md`.
+  `docs/live-validation.md`. Everything still open here is **operator time on
+  real hardware**, not code; the one item that was blocked on this lab's shape
+  rather than on access is done.
   - [ ] P4-AC3 onboarding, interactively, on a host the harness has never seen.
   - [ ] P6 step 5 live: a *dispatch failure* demotes the cell. Needs a write
     that fails after a read that succeeds — pinned by tests, never forced live.
   - [ ] P6 step 6 live: the kill switch halts a run mid-flight at the
     pre-dispatch checkpoint.
-  - [ ] Part 3 rolling `node-update` on one drained node, including the
+  - [ ] Part 4 rolling `node-update` on one drained node, including the
     zero-API-call check at the propose floor (read the node's auth log).
-  - [ ] P4-AC2 / P5-AC4 (`⚪ n/a` today): build a synthetic **asymmetric**
-    replay fixture so the Ceph derivation and its four mitigations run end to
-    end through the CLI, or write down why they stay unit-tested only. The
-    symmetric fleet cannot exercise them.
+  - [x] P4-AC2 / P5-AC4: `fixtures/asymmetric-lab.yaml` — a three-node cluster
+    with one node left at 1 GbE. `discover replay` + `bottlenecks` produce the
+    `CEPH_BOTTLENECK` finding and all four mitigations through the real CLI,
+    with no hardware (`tests/test_lab_replay_asymmetric.py`, including the
+    runbook's anti-hardcoding check). Needed a `clusters:` block in the replay
+    fixture schema: the fleet-shape analysers read cluster membership off the
+    guest rows, so a fixture without guests has no cluster.
+    - [ ] P4-AC2's narration half: one `helper bottlenecks --narrate` against
+      the fixture and the operator's own router. No hardware, but not a test.
 - [ ] **9.2 De-assume the lab**
   - [ ] Hosts gain a role, or it derives from cluster membership plus
     capability, so `plan surplus` stops calling covomv surplus (a NAS running

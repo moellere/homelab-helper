@@ -441,6 +441,11 @@ def discover_replay(
                 f"{result.observations_loaded} observation(s), "
                 f"{result.assertions_loaded} assertion(s) loaded / {result.assertions_run} run"
             )
+            if result.clusters_loaded:
+                console.print(
+                    f"[green]clusters[/green]: {result.clusters_loaded} cluster(s), "
+                    f"{result.guests_loaded} guest(s)"
+                )
             console.print("Run [bold]helper audit[/bold] to see the resulting findings.")
             return 0
         finally:

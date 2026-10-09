@@ -20,6 +20,7 @@ executor's path and the mechanical LLM-import tests cover it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -41,7 +42,10 @@ log = logging.getLogger(__name__)
 
 APPROVE_PREFIX = "HELPER_APPROVE_"
 DENY_PREFIX = "HELPER_DENY_"
-DEFAULT_TIMEOUT_S = 300
+DEFAULT_TIMEOUT_S = 900
+APPROVAL_CHANNEL = "homelab-helper approvals"
+"""A dedicated Android channel: high importance is fixed when a channel is first
+created, so approvals get their own instead of sharing the run-notice channel."""
 _HTTP_ERROR_THRESHOLD = 300
 
 
@@ -72,7 +76,13 @@ class ApprovalChannel(Protocol):
     name: str
 
     async def request(
-        self, manifest: ActionManifest, decision: Decision, *, proposal_id: str
+        self,
+        manifest: ActionManifest,
+        decision: Decision,
+        *,
+        proposal_id: str,
+        title: str | None = None,
+        why: str | None = None,
     ) -> ApprovalResult: ...
 
 
@@ -143,25 +153,33 @@ class HomeAssistantApprovalChannel:
         return f"{APPROVE_PREFIX}{proposal_id}", f"{DENY_PREFIX}{proposal_id}"
 
     async def request(
-        self, manifest: ActionManifest, decision: Decision, *, proposal_id: str
+        self,
+        manifest: ActionManifest,
+        decision: Decision,
+        *,
+        proposal_id: str,
+        title: str | None = None,
+        why: str | None = None,
     ) -> ApprovalResult:
         approve_id, deny_id = self.action_ids(proposal_id)
-        message = (
-            f"{manifest.action_kind} {manifest.target_label} — cell {manifest.cell_key}; "
-            f"policy says CONFIRM: {'; '.join(decision.reasons)[:160]}. "
-            "Expand this notification for Approve / Deny."
-        )
+        tag = f"homelab_helper_{proposal_id}"
         await self._sender(
             {
-                "title": "homelab-helper: approve this action?",
-                "message": message,
+                "title": title or f"Approve: {manifest.action_kind} {manifest.target_label}?",
+                "message": approval_message(manifest, why),
                 "data": {
-                    "tag": f"homelab_helper_{proposal_id}",
-                    "channel": "homelab-helper",
+                    "tag": tag,
+                    "group": "homelab-helper-approvals",
+                    "channel": APPROVAL_CHANNEL,
                     "importance": "high",
+                    "priority": "high",
+                    "ttl": 0,
+                    # Stays until answered: an approval swiped away by accident is lost.
+                    "sticky": True,
                     # A plain tap would open the dashboard, which is not an answer;
                     # the buttons are the only way to respond.
                     "clickAction": "noAction",
+                    "push": {"interruption-level": "time-sensitive"},
                     "actions": [
                         {"action": approve_id, "title": "Approve"},
                         {"action": deny_id, "title": "Deny"},
@@ -169,7 +187,10 @@ class HomeAssistantApprovalChannel:
                 },
             }
         )
-        event = await self._listener(approve_id, deny_id, float(self.config.timeout_s))
+        try:
+            event = await self._listener(approve_id, deny_id, float(self.config.timeout_s))
+        finally:
+            await self._clear(tag)
         if event is None:
             return ApprovalResult(
                 approved=False,
@@ -183,6 +204,11 @@ class HomeAssistantApprovalChannel:
             responder=str(responder) if responder else None,
             detail={k: v for k, v in event.items() if k in ("action", "device_id", "device_name")},
         )
+
+    async def _clear(self, tag: str) -> None:
+        """Remove an answered or expired prompt from the phone; best effort."""
+        with contextlib.suppress(ApprovalError, ApprovalConfigError, OSError):
+            await self._sender({"message": "clear_notification", "data": {"tag": tag}})
 
     async def _send_notification(self, payload: dict[str, Any]) -> None:
         domain, _, service = self.config.notify_service.partition(".")
@@ -248,12 +274,32 @@ class HomeAssistantApprovalChannel:
             raise ApprovalError(f"Home Assistant websocket failed: {exc}") from exc
 
 
+_NEXT_START_KINDS = {"cpu-type", "resize"}
+_WHY_LIMIT = 200
+
+
+def approval_message(manifest: ActionManifest, why: str | None) -> str:
+    """One readable line: why, when it takes effect, and where it sits in policy."""
+    parts = []
+    if why:
+        parts.append(why.strip().rstrip(".")[:_WHY_LIMIT] + ".")
+    if manifest.action_kind in _NEXT_START_KINDS and manifest.vm_kind == "qemu":
+        parts.append("Takes effect at the VM's next restart.")
+    elif manifest.action_kind == "resize":
+        parts.append("Applies immediately.")
+    parts.append(f"({manifest.target_label}; {manifest.domain.value}/{manifest.action_kind})")
+    # Android shows the buttons only on an expanded notification.
+    parts.append("Expand for Approve / Deny.")
+    return " ".join(parts)
+
+
 def approval_channel_from_env() -> HomeAssistantApprovalChannel:
     """The configured channel, or :class:`ApprovalConfigError` naming what is missing."""
     return HomeAssistantApprovalChannel(HomeAssistantApprovalConfig.from_env())
 
 
 __all__ = [
+    "APPROVAL_CHANNEL",
     "APPROVE_PREFIX",
     "DEFAULT_TIMEOUT_S",
     "DENY_PREFIX",
@@ -264,4 +310,5 @@ __all__ = [
     "HomeAssistantApprovalChannel",
     "HomeAssistantApprovalConfig",
     "approval_channel_from_env",
+    "approval_message",
 ]

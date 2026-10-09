@@ -337,9 +337,15 @@ the action; a finding must have persisted 15 minutes first (the platform's
 own self-heal gets first go); one live proposal per finding; a six-hour
 cooldown after any decision so a fix that did not clear the finding is not
 retried every pass; and a draft whose finding resolves is withdrawn.
-The listener never re-asks a proposal you denied or let time out, never asks
-about cells still at PROPOSE, and leaves hand-authored proposals alone. With
-every cell at its default, the daemon only ever writes rows.
+The listener sends every prompt at once — each titled with what it would do
+("Resize proxmox-dc: cores 2 → 1"), with one line of why and when it takes
+effect, on a high-importance "homelab-helper approvals" channel, sticky until
+answered, and cleared from the phone once answered or expired (15 minutes by
+default, `HOMELAB_HELPER_APPROVAL_TIMEOUT_S`). Approve or Deny is final; a
+prompt that simply expired is asked again two hours later, three times at most,
+because a missed notification is not a "no". It never asks about cells still at
+PROPOSE and leaves hand-authored proposals alone. With every cell at its
+default, the daemon only ever writes rows.
 
 ### Using with Claude / MCP
 

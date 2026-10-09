@@ -507,7 +507,7 @@ shape — see the asymmetric fixture under P4-AC2.
 | Criterion | Result | Notes |
 |---|---|---|
 | P4-AC1 chat grounded | ✅ 10/03/2026 | 17 hosts named from inventory, cloud footer honest. Found: the footer said "cloud" but not that Ollama had been tried and was unreachable — `RouterResult.skipped` + a `skipped:` line (PR #52). |
-| P4-AC2 Ceph narration | ✅ derivation 10/09/2026 · ⏳ narration | Not observable on this fleet by construction: bmax0–3 are symmetric 1 GbE, Ceph HEALTH_OK, covomv on 10 GbE, so the analyser is correctly silent. the bundled `asymmetric` lab supplies the asymmetry — `discover replay` + `bottlenecks` produce the `CEPH_BOTTLENECK` finding a narrator would cite, through the real CLI, with no hardware (`tests/test_lab_replay_asymmetric.py`). The prose half is one `helper bottlenecks --narrate` against your own router; still to run. |
+| P4-AC2 Ceph narration | ✅ 10/09/2026 | Not observable on this fleet by construction: bmax0–3 are symmetric 1 GbE, Ceph HEALTH_OK, covomv on 10 GbE, so the analyser is correctly silent. the bundled `asymmetric` lab supplies the asymmetry — `discover replay` + `bottlenecks` produce the `CEPH_BOTTLENECK` finding a narrator would cite, through the real CLI, with no hardware (`tests/test_lab_replay_asymmetric.py`). Narration ran 10/09/2026 against the asymmetric fixture through the router (Anthropic, prefer-local fell through): the prose named `ceph-c`, the 1000 vs 2500 Mbps links and all four mitigations with their trade-offs, and ended by saying nothing moves until the operator acts. |
 | P4-AC3 onboard | ⏳ | Interactive; not yet run. |
 | P4-AC4 MCP discovery | ✅ 10/03/2026 | `probe_host bmax3` from Claude Code: 4 probes, 33 observations, 0 failures, capability changes reconciled. |
 | P4-AC5 strict-local refusal | ✅ 10/03/2026 | Names the tier, the policy, each backend's exclusion reason, and the three options. |
@@ -527,8 +527,6 @@ shape — see the asymmetric fixture under P4-AC2.
 Open as of 10/09/2026, all of it operator time rather than code:
 
 - **P4-AC3 onboard** — interactive, needs a host the harness has never seen.
-- **P4-AC2 narration** — one `helper bottlenecks --narrate` against the
-  asymmetric fixture and your own router. No hardware; see that section.
 - **P6 steps 5 and 6 live** — a dispatch failure demoting a cell, and the kill
   switch mid-flight. Both need a write that fails after a read that succeeded,
   which is hard to stage honestly; pinned by tests meanwhile.

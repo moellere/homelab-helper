@@ -449,7 +449,7 @@ first five minutes, not discover it in the backlog.
 | 9.4 | **Declare the 1.0 surface** | `docs/stability.md`: what is stable and what is not — the probe entry-point contract, the `ProposalLog.artifact` manifest schema, the DB through migrations, the CLI verbs, the MCP tool names — plus a deprecation policy. Python matrix pinned in CI (3.12 now, 3.13 when upstream deps allow). |
 | 9.5 | **The last Phase-1 probes** | `host.raid` / `host.shares` (mdraid composition, exported shares), dmidecode DIMM depth so a serialled module becomes a `PhysicalPart` + `Placement`, and `talos.host` CPU/DIMM depth. These are what a new user with an mdraid box or a Talos cluster hits on day one. |
 | 9.6 | **Finish the Phase-2 tail** | Probe-level schedules and assertion cadences inside the daemon, so "continuous" means per-probe cadence rather than one discovery interval for everything. |
-| 9.7 | **Web UI (the deferred 4.5)** | *Optional, and deliberately last.* Chat, a findings browser, and the trust surface read-only. The CLI and MCP already cover this, and a UI is the easiest thing to half-build. |
+| 9.7 | **Status endpoint, then (maybe) a Web UI** | 9.7a: a read-only `GET /status` rollup (findings, pending approvals, discovery age, trust cells) and `helper status`, so the harness lands on the operator's existing dashboard (Homepage, Home Assistant) instead of growing its own. 9.7b, *optional and deliberately last*: chat, a findings browser, and the trust surface read-only. The CLI and MCP already cover this, and a UI is the easiest thing to half-build. |
 
 **Non-goals.** No new adapters, no new action kinds, no predictive work, no
 hosted service. Phase 9 earns its keep by finishing things, not starting them.

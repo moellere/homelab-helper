@@ -1088,8 +1088,18 @@ real for someone other than its author. Slices in delivery order.
   with nothing due costs no connection; an unreachable target fails alone.
   AC #6 met: two probes on different cadences from one daemon, an assertion on
   its own schedule (`tests/test_schedule.py`).
-- [ ] **9.7 Web UI (the deferred 4.5)** — optional and last: chat, findings
-  browser, trust surface read-only.
+- [x] **9.7a Status endpoint** (`engine/status.py` + `status_api.py` +
+  `helper status show|serve`, `docs/status-endpoint.md`) — the dashboard
+  answer to "anything wrong, anything waiting on me?": open findings by
+  severity and kind, action proposals awaiting approval, newest discovery and
+  assertion runs, trust cells by level, the day's receipts, a three-step
+  `health`. Served as `GET /status` + `GET /healthz` (FastAPI, optional
+  `HOMELAB_HELPER_STATUS_TOKEN`) for a Homepage `customapi` tile or a Home
+  Assistant REST sensor; GET-only and executor-free by test. The UI *is* the
+  operator's existing dashboard, which is why there is no 9.7b yet.
+- [ ] **9.7b Web UI (the deferred 4.5)** — optional and last: chat, findings
+  browser, trust surface read-only. Not needed for 1.0; the CLI, MCP tools and
+  the status tile cover it.
 
 Not in Phase 9: new adapters, new action kinds, predictive work, hosted
 service. It earns its keep by finishing things rather than starting them.

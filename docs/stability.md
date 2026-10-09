@@ -178,9 +178,9 @@ The database is reachable, not readable:
   CLI and the MCP tools; a query against the schema may break in any release.
 
 `HOMELAB_HELPER_DATABASE_URL` accepts SQLite (the default, a per-user file)
-and Postgres (the `postgres` extra). CI runs the suite against SQLite only;
-Postgres is supported but not yet exercised in CI, and this page will say so
-until it is.
+and Postgres (the `postgres` extra). CI runs the whole suite against both —
+SQLite under every supported Python, and Postgres 16 in its own job — so a
+release that works on one and not the other does not ship.
 
 ## Configuration
 

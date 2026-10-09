@@ -13,9 +13,10 @@ Cross-cutting conventions for the harness DB (per ``harness-schema-slice1.md``):
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import uuid6
+from sqlalchemy import DateTime
 from sqlalchemy.orm import DeclarativeBase
 
 if TYPE_CHECKING:
@@ -27,7 +28,13 @@ class Base(DeclarativeBase):
 
     Centralizing this here gives Alembic a single ``Base.metadata`` to autogenerate
     migrations against, and keeps per-model files focused on the model itself.
+
+    Every ``Mapped[datetime]`` is ``timestamptz`` on Postgres: asyncpg refuses an
+    aware value for a naive column, and ``now()`` only ever hands out aware ones.
+    SQLite has no such type and stores the same ISO text either way.
     """
+
+    type_annotation_map: ClassVar[dict[Any, Any]] = {datetime: DateTime(timezone=True)}
 
 
 def uuid7() -> uuid.UUID:

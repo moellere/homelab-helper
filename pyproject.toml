@@ -154,6 +154,9 @@ minversion = "8.0"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+    "sqlite_only: inspects the SQLite file itself; skipped when the suite runs against Postgres",
+]
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:sqlalchemy.*",

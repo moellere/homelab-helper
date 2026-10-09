@@ -80,6 +80,54 @@ jobs:
       - name: Pytest
         run: uv run pytest -q
 
+  quality-postgres:
+    name: Tests against Postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: helper
+          POSTGRES_PASSWORD: helper
+          POSTGRES_DB: helper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U helper"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      PG_URL: postgresql://helper:helper@localhost:5432/helper
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --group dev
+
+      # A throwaway database: durability off makes the per-test reset and the
+      # schema build an order of magnitude faster.
+      - name: Relax durability
+        run: |
+          psql "$PG_URL" -c "ALTER SYSTEM SET fsync = off"                          -c "ALTER SYSTEM SET synchronous_commit = off"                          -c "ALTER SYSTEM SET full_page_writes = off"                          -c "SELECT pg_reload_conf()"
+
+      - name: Pytest (Postgres)
+        env:
+          HELPER_TEST_DATABASE_URL: postgresql+asyncpg://helper:helper@localhost:5432/helper
+        run: uv run pytest -q
+
   docs:
     name: Docs build (strict)
     runs-on: ubuntu-latest

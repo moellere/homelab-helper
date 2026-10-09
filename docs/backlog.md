@@ -1074,8 +1074,15 @@ from 1.0.0 is the operator-time list under 9.1.
   the Python versions to the code. The gate ran green under 3.13 before it
   was declared; CI now runs it on 3.12 and 3.13 as separately named jobs, so
   the existing required check keeps its name.
-  - [ ] Postgres in CI: the `postgres` extra is supported but the suite only
-    runs against SQLite there; the stability page says so until it is fixed.
+  - [x] Postgres in CI: a `quality-postgres` job runs the whole suite against
+    Postgres 16. `tests/conftest.py` redirects every engine the code builds to
+    `HELPER_TEST_DATABASE_URL` (the Alembic env included) and empties the
+    tables between tests; the handful of tests that inspect the SQLite file
+    carry `@pytest.mark.sqlite_only`. The first run found the real bug:
+    every timestamp column was `timestamp without time zone`, which asyncpg
+    refuses to bind an aware `now()` to — `Base.type_annotation_map` now maps
+    `datetime` to `DateTime(timezone=True)` and migration `c8d1e4f7a2b9`
+    converts existing Postgres columns (a no-op on SQLite).
 - [x] **9.5 The last Phase-1 probes** — `host.raid`, `host.shares`, and
   `talos.host` CPU/DIMM depth (see the P1 rows); dmidecode DIMM depth was
   already done. Phase 9 AC #5 met: a host with an mdraid array reports its

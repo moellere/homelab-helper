@@ -1293,6 +1293,14 @@ def discover_versions() -> None:
     )
 
 
+@discover_app.command(name="storage")
+def discover_storage() -> None:
+    """Storage efficiency (Phase 8.5): headroom trends, stale snapshots, clutter, released PVs."""
+    raise typer.Exit(
+        code=_category_discovery("storage", FindingKind.STORAGE_EFFICIENCY, "storage efficiency")
+    )
+
+
 @discover_app.command(name="backups")
 def discover_backups() -> None:
     """Backup posture (Phase 8.2): uncovered, stale or unverified guests; orphans; capacity."""

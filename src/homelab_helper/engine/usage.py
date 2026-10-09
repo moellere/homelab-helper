@@ -67,6 +67,8 @@ GUEST_FIELDS = {
     "diskread": "disk_read",
     "diskwrite": "disk_write",
 }
+STORAGE_FIELDS = {"used": "disk_used", "total": "disk_total"}
+"""A pool's RRD carries only these two; 8.5 projects time-to-full from them."""
 NODE_EXTRA = ("iowait", "loadavg", "pressurecpusome", "pressurememorysome", "pressureiosome")
 _INT_COLUMNS = {"mem_used", "mem_total", "disk_used", "disk_total"}
 
@@ -218,6 +220,38 @@ def percentile(values: list[float], q: float) -> float | None:
     return ordered[max(0, math.ceil(q * len(ordered)) - 1)]
 
 
+async def pool_history(
+    session: AsyncSession,
+    storage: str,
+    *,
+    window: timedelta = timedelta(days=30),
+    resolution: str = DAY,
+    now: datetime | None = None,
+) -> list[UsageSample]:
+    """A storage pool's samples over ``window``, oldest first (for 8.5's slope).
+
+    Daily by default: an hourly series makes the fit chase backup churn, while
+    a day's mean is what actually moves a pool.
+    """
+    since = (now or datetime.now(UTC)).replace(tzinfo=None) - window
+    return list(
+        (
+            await session.execute(
+                select(UsageSample)
+                .where(
+                    UsageSample.subject_type == "storage",
+                    UsageSample.subject_key == storage,
+                    UsageSample.resolution == resolution,
+                    UsageSample.ts >= since,
+                )
+                .order_by(UsageSample.ts)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 async def summarize(
     session: AsyncSession,
     *,
@@ -276,9 +310,11 @@ __all__ = [
     "NODE_EXTRA",
     "NODE_FIELDS",
     "SOURCE_TIMEFRAME",
+    "STORAGE_FIELDS",
     "Bucket",
     "UsageWrite",
     "percentile",
+    "pool_history",
     "prune_usage",
     "record_usage",
     "retention",

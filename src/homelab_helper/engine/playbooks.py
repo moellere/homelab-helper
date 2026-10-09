@@ -10,7 +10,7 @@ adversarial finding description says can pick a different action. An LLM may
 Drafting writes a PENDING ``ProposalLog`` (``proposed_by="playbook:<name>"``,
 ``finding_id`` set) and records the proposal on the finding's
 ``proposed_actions``. Policy and the operator decide from there, as for any
-other proposal. Four guards keep this from looping or asking about noise:
+other proposal. Five guards keep this from looping or asking about noise:
 
 - a finding must have persisted for ``min_age`` (default 15 min) before it is
   drafted for — a transient blip that the platform heals itself (an Argo CD app
@@ -19,6 +19,10 @@ other proposal. Four guards keep this from looping or asking about noise:
   means nothing new is drafted;
 - a cooldown after any decided proposal (accepted, rejected, deferred), so a
   fix that did not clear the finding is not retried every pass;
+- a playbook marked ``redraft_after_success=False`` never drafts an action
+  identical to one already executed for the same finding: a resize applied to a
+  VM that has not restarted yet still *measures* as the old size, and drafting
+  it again would only ask the operator for something already done;
 - a pending playbook proposal whose finding has RESOLVED is withdrawn
   (``EXPIRED``) so the listener never asks about a problem that is gone.
 """
@@ -68,6 +72,8 @@ class Playbook:
     target_type: str
     build: Builder
     description: str
+    redraft_after_success: bool = True
+    """False when an executed draft's effect can lag its finding (see module docstring)."""
 
 
 def _target(finding: ReconciliationFinding, target_type: str) -> str | None:
@@ -228,6 +234,7 @@ PLAYBOOKS: tuple[Playbook, ...] = (
         target_type="guest",
         build=_rightsize,
         description="Usage history says a guest's cores or memory are wrong → resize to the proposed value.",
+        redraft_after_success=False,
     ),
     Playbook(
         name="node-update",
@@ -258,7 +265,27 @@ class PlaybookResult:
     """Findings not yet open for ``min_age``."""
     withdrawn: list[str] = field(default_factory=list)
     """Pending playbook proposals expired because their finding resolved."""
+    skipped_done: list[str] = field(default_factory=list)
+    """Findings whose identical action was already executed (awaiting its effect)."""
     no_playbook: int = 0
+
+
+async def _already_done(
+    session: AsyncSession, finding: ReconciliationFinding, artifact: dict[str, Any]
+) -> bool:
+    accepted = (
+        (
+            await session.execute(
+                select(ProposalLog).where(
+                    ProposalLog.finding_id == finding.id,
+                    ProposalLog.outcome == ProposalOutcome.USER_ACCEPTED,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return any((p.artifact or {}).get("action") == artifact.get("action") for p in accepted)
 
 
 async def _blocking_proposal(
@@ -361,6 +388,9 @@ async def run_playbooks(
             continue
         if blocker == "cooldown":
             result.skipped_cooldown.append(finding.fingerprint)
+            continue
+        if not pb.redraft_after_success and await _already_done(session, finding, draft.artifact):
+            result.skipped_done.append(finding.fingerprint)
             continue
         proposal = ProposalLog(
             proposed_by=f"playbook:{pb.name}",

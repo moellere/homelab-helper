@@ -3,6 +3,7 @@ and the daemon's --once pass. Fakes only."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -31,7 +32,7 @@ from homelab_helper.db.session import make_engine, make_sessionmaker, session_sc
 from homelab_helper.engine.approval import ApprovalResult
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
 from homelab_helper.engine.k8s_workloads import reconcile_workload_health
-from homelab_helper.engine.listener import ask_pending
+from homelab_helper.engine.listener import MAX_ASKS, REASK_AFTER, ask_pending
 from homelab_helper.engine.playbooks import PLAYBOOKS, playbook_for, run_playbooks
 from homelab_helper.engine.trust import grant_cell, seed_domains
 
@@ -293,8 +294,11 @@ class _Channel:
         self.answer = answer
         self.asked: list[str] = []
 
-    async def request(self, manifest, decision, *, proposal_id: str) -> ApprovalResult:
+    async def request(
+        self, manifest, decision, *, proposal_id: str, title=None, why=None
+    ) -> ApprovalResult:
         self.asked.append(proposal_id)
+        self.titles = [*getattr(self, "titles", []), title]
         return ApprovalResult(approved=self.answer, channel=self.name, responder="test-phone")
 
 
@@ -367,6 +371,98 @@ async def test_listener_never_reasks_a_denied_proposal(sessionmaker) -> None:
     assert len(channel.asked) == 1
 
 
+async def _two_pending_restarts(s) -> None:
+    await seed_domains(s)
+    await grant_cell(
+        s,
+        TrustDomain.CONTAINERS,
+        "workload-restart",
+        "single-service",
+        AutonomyLevel.CONFIRM,
+        actor="op",
+    )
+    await reconcile_workload_health(s, [_workload("web", ready=0), _workload("api", ready=0)])
+    await run_playbooks(s, min_age=NOW)
+
+
+async def test_every_prompt_goes_out_before_any_waits_out(sessionmaker) -> None:
+    """Concurrent asking: each fake prompt only approves once *both* are on the phone."""
+    both_out = asyncio.Event()
+    sent: list[str] = []
+
+    class _Together(_Channel):
+        async def request(self, manifest, decision, *, proposal_id, title=None, why=None):
+            sent.append(title)
+            if len(sent) == 2:  # noqa: PLR2004 - the two proposals
+                both_out.set()
+            try:
+                await asyncio.wait_for(both_out.wait(), timeout=1)
+            except TimeoutError:
+                return ApprovalResult(
+                    approved=False, channel="fake", detail={"reason": "no answer"}
+                )
+            return ApprovalResult(approved=True, channel="fake", responder="phone")
+
+    async def adapters_for(manifest):
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+
+    async with session_scope(sessionmaker) as s:
+        await _two_pending_restarts(s)
+        r = await ask_pending(s, channel=_Together(answer=True), adapters_for=adapters_for)
+    assert len(r.executed) == 2
+    assert all(
+        t and t.startswith("Rollout restart") for t in sent
+    )  # the proposal title, not boilerplate
+
+
+async def test_an_expired_prompt_is_asked_again_later_but_not_forever(sessionmaker) -> None:
+    class _Unseen(_Channel):
+        async def request(self, manifest, decision, *, proposal_id, title=None, why=None):
+            self.asked.append(proposal_id)
+            return ApprovalResult(
+                approved=False, channel="fake", detail={"reason": "no answer within 900s"}
+            )
+
+    async def adapters_for(manifest):
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+
+    channel = _Unseen(answer=False)
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "workload-restart",
+            "single-service",
+            AutonomyLevel.CONFIRM,
+            actor="op",
+        )
+        await reconcile_workload_health(s, [_workload("web", ready=0)])
+        await run_playbooks(s, min_age=NOW)
+
+        async def age_asks() -> None:
+            for event in (
+                await s.execute(select(TrustHistory).where(TrustHistory.event == "approval"))
+            ).scalars():
+                event.at = event.at - REASK_AFTER - timedelta(minutes=1)
+            await s.flush()
+
+        assert len((await ask_pending(s, channel=channel, adapters_for=adapters_for)).asked) == 1
+        soon = await ask_pending(s, channel=channel, adapters_for=adapters_for)
+        assert soon.asked == []  # too soon after the last expiry
+        for _ in range(MAX_ASKS - 1):
+            await age_asks()
+            assert (
+                len((await ask_pending(s, channel=channel, adapters_for=adapters_for)).asked) == 1
+            )
+        await age_asks()
+        done = await ask_pending(s, channel=channel, adapters_for=adapters_for)
+        assert done.asked == []  # MAX_ASKS reached; the proposal waits for the operator's CLI
+        proposal = (await s.execute(select(ProposalLog))).scalar_one()
+        assert proposal.outcome is ProposalOutcome.PENDING
+    assert len(channel.asked) == MAX_ASKS
+
+
 async def test_listener_skips_cells_at_propose_without_asking(sessionmaker) -> None:
     channel = _Channel(answer=True)
 
@@ -388,7 +484,7 @@ async def test_listener_ignores_operator_authored_proposals(sessionmaker) -> Non
     channel = _Channel(answer=True)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
 
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)

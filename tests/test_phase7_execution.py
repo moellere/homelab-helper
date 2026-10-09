@@ -518,6 +518,8 @@ class _Manifest:
     action_kind = "migrate"
     target_label = "qemu/105 on pve1 -> pve2"
     cell_key = "hypervisor/migrate/single-host"
+    domain = TrustDomain.HYPERVISOR
+    vm_kind = "qemu"
 
 
 class _Decision:
@@ -530,16 +532,31 @@ class _Decision:
 async def test_home_assistant_channel_round_trip(answer, approved) -> None:
     sent: list[dict[str, Any]] = []
     channel = _channel(sent, answer)
-    result = await channel.request(_Manifest(), _Decision(), proposal_id="abc123")  # type: ignore[arg-type]
+    result = await channel.request(
+        _Manifest(),  # type: ignore[arg-type]
+        _Decision(),  # type: ignore[arg-type]
+        proposal_id="abc123",
+        title="Migrate web01 to pve2",
+        why="pve1 is at 92% memory",
+    )
     assert result.approved is approved
     assert result.channel == "home-assistant"
-    assert sent[0]["data"]["actions"] == [
+    prompt, clear = sent
+    assert prompt["title"] == "Migrate web01 to pve2"  # each prompt says what it is
+    assert prompt["message"].startswith("pve1 is at 92% memory.")
+    assert "hypervisor/migrate" in prompt["message"]
+    assert "Expand for Approve / Deny" in prompt["message"]
+    data = prompt["data"]
+    assert data["actions"] == [
         {"action": "HELPER_APPROVE_abc123", "title": "Approve"},
         {"action": "HELPER_DENY_abc123", "title": "Deny"},
     ]
-    assert "hypervisor/migrate/single-host" in sent[0]["message"]
-    assert "Expand this notification" in sent[0]["message"]
-    assert sent[0]["data"]["clickAction"] == "noAction"  # a plain tap is not an answer
+    assert data["clickAction"] == "noAction"  # a plain tap is not an answer
+    assert data["channel"] == "homelab-helper approvals"
+    assert (data["priority"], data["ttl"], data["sticky"]) == ("high", 0, True)
+    assert data["push"] == {"interruption-level": "time-sensitive"}
+    # Answered or expired, the prompt leaves the phone.
+    assert clear == {"message": "clear_notification", "data": {"tag": "homelab_helper_abc123"}}
     if answer is None:
         assert "no answer within 1s" in result.detail["reason"]
     else:

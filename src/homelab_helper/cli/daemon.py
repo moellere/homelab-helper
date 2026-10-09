@@ -88,6 +88,7 @@ async def run_playbook_pass() -> dict[str, Any]:
                 "skipped_cooldown": len(r.skipped_cooldown),
                 "skipped_young": len(r.skipped_young),
                 "withdrawn": r.withdrawn,
+                "skipped_done": len(r.skipped_done),
                 "no_playbook": r.no_playbook,
             }
     finally:

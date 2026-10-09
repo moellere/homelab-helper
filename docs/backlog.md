@@ -1045,11 +1045,19 @@ real for someone other than its author. Slices in delivery order.
   writes each field. The existing design docs joined the site unchanged.
   - [ ] Enable Pages once: repository Settings → Pages → Source "GitHub
     Actions". Until then `docs.yml` fails on `main` without touching CI.
-- [ ] **9.4 Declare the 1.0 surface** — `docs/stability.md` naming each public
-  surface and its promise: probe entry points, the `ProposalLog.artifact`
-  manifest schema, the DB through migrations, the CLI verbs, the MCP tool
-  names, plus a deprecation policy. Pin the Python matrix in CI (3.12 now;
-  3.13 once upstream deps settle).
+- [x] **9.4 Declare the 1.0 surface** — `docs/stability.md`: every public
+  surface and its promise (the invariants first; CLI verbs; MCP tool names;
+  the probe contract; the manifest envelope and shipped kinds; the DB as
+  forward-only migrations with the schema explicitly not an API; the
+  `HOMELAB_HELPER_*` variables, references and precedence; the operator YAML
+  formats, versioned or not; NetBox fields; Python versions; and what is
+  *not* stable, the Python API), plus a deprecation policy for before and
+  after 1.0. `tests/test_stability_doc.py` holds the CLI and MCP tables and
+  the Python versions to the code. The gate ran green under 3.13 before it
+  was declared; CI now runs it on 3.12 and 3.13 as separately named jobs, so
+  the existing required check keeps its name.
+  - [ ] Postgres in CI: the `postgres` extra is supported but the suite only
+    runs against SQLite there; the stability page says so until it is fixed.
 - [ ] **9.5 The last Phase-1 probes** — two, not three: the roadmap's
   "dmidecode DIMM depth" was already done (a serialled module *is* a
   `PhysicalPart` + `Placement`; verified against the bundled `asymmetric` lab,

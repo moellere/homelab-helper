@@ -7,9 +7,10 @@ below exists to keep that true as the code grows.
 
 ## Before you start
 
-- `uv sync --all-extras --group dev`, then `uv run ruff check src tests`,
-  `uv run ruff format --check src tests`, `uv run mypy src`, `uv run pytest -q`.
-  CI runs exactly these four; a red one blocks merge.
+- `uv sync --all-extras --group dev --group docs`, then `uv run ruff check src tests`,
+  `uv run ruff format --check src tests`, `uv run mypy src`, `uv run pytest -q`,
+  `uv run mkdocs build --strict`. CI runs exactly these five; a red one blocks
+  merge.
 - Read `CLAUDE.md` (the invariants, and the test patterns), then the part of
   `docs/architecture.md` your change touches. The architecture doc records
   *locked* decisions; propose changing one in an issue first.
@@ -22,11 +23,13 @@ below exists to keep that true as the code grows.
   norm, so a branch's history does not need to be pretty.
 - Fork PRs are welcome. If GitHub refuses your PR, open an issue with a link
   to the branch on your fork and the commit; that is how #43 landed.
-- Every PR that changes behaviour updates the docs in the same PR: `README.md`
-  for operators, `docs/architecture.md` for decisions, `docs/backlog.md` for
-  what is now done or newly owed, `CLAUDE.md` for invariants and patterns a
-  future session must know. Doc-only PRs are fine too.
-- Say in the PR body what you ran. "All four checks pass on Python 3.12" is
+- Every PR that changes behaviour updates the docs in the same PR: the docs
+  site page an operator would read (`docs/getting-started.md`,
+  `docs/trust-gradient.md`, …) and `README.md`, `docs/architecture.md` for
+  decisions, `docs/backlog.md` for what is now done or newly owed, `CLAUDE.md`
+  for invariants and patterns a future session must know. Doc-only PRs are
+  fine too; `uv run mkdocs serve` previews the site.
+- Say in the PR body what you ran. "All five checks pass on Python 3.12" is
   the expected line.
 - Use conventional, descriptive commit titles. We do not require a prefix.
 

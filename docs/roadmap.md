@@ -424,7 +424,7 @@ capability. It makes the existing capability **real for someone other than its
 author** — and tells that author which of its promises are actually tested.
 
 The on-ramp already exists and is undocumented: `helper discover replay` seeds
-a synthetic lab from `fixtures/example-lab.yaml` and produces 13 findings with
+a synthetic lab that ships in the wheel and produces 13 findings with
 no hardware, no credentials and no SSH. A stranger should meet that in the
 first five minutes, not discover it in the backlog.
 

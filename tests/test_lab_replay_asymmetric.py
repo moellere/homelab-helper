@@ -11,7 +11,6 @@ recommendation changes with it.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -28,12 +27,15 @@ from homelab_helper.engine.lab_replay import (
     LabFixtureError,
     load_lab_fixture,
     parse_lab_fixture,
+    resolve_lab_fixture,
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from homelab_helper.engine.bottlenecks import BottleneckHit
 
-_FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "asymmetric-lab.yaml"
+_FIXTURE = resolve_lab_fixture("asymmetric")
 _SLOW_NODE = "ceph-c"
 
 runner = CliRunner()

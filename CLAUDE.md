@@ -17,7 +17,10 @@ Before any non-trivial change, skim:
 - `docs/harness-schema-slice1.md` — DB schema + forward-spec for L2 trust tables
 
 `README.md` is the operator-facing intro; the docs above are what to consult
-when making implementation decisions.
+when making implementation decisions. The same `docs/` folder is the mkdocs
+site (getting-started, CLI reference, the trust-gradient explainer, the probe
+and adapter guides): a behaviour change that an operator would notice updates
+the relevant page in the same PR.
 
 ## Repo layout
 
@@ -56,24 +59,28 @@ mcp_server.py       MCP tools over stdio (helper mcp serve)
 secrets.py          secret references (env:/file:/keyring:) + redact()
 config.py           .env loading, per-user data/config dirs, source status
 tests/              pytest, asyncio_mode = "auto"
-├── data/           starter workload library (ships in the wheel)
+├── data/           starter workload library, OS EOL table, and labs/ — the
+│                   bundled `example` and `asymmetric` labs behind
+│                   `helper discover replay` (all ship in the wheel)
 fixtures/           operator-editable YAML examples (assertion starter,
-                    network topology, service aliases, example lab, and the
-                    asymmetric lab that supplies the link asymmetry a symmetric
-                    fleet cannot — see `helper discover replay`)
+                    network topology, service aliases)
 ```
 
 ## Toolchain — every command goes through `uv`
 
 ```bash
 # One-time / after pulling
-uv sync --all-extras --group dev
+uv sync --all-extras --group dev --group docs
 
-# Before every commit (CI runs all four; if any fails, fix it)
+# Before every commit (CI runs all five; if any fails, fix it)
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run mypy src
 uv run pytest -q
+uv run mkdocs build --strict   # the docs site; a broken link is a red build
+
+# Preview the docs site
+uv run mkdocs serve
 
 # Quick auto-fix during dev
 uv run ruff check --fix src tests
@@ -89,9 +96,12 @@ uv run helper db status
 uv run helper db reset --yes  # DESTRUCTIVE; dev only
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint → format → mypy → pytest on push +
-PR against `main` under Python 3.12 (matches `.python-version`). Don't push
-red commits. Releases are tag-driven (`.github/workflows/release.yml`, see
+CI (`.github/workflows/ci.yml`) runs lint → format → mypy → pytest, and a
+strict docs build, on push + PR against `main` under Python 3.12 (matches
+`.python-version`). Don't push red commits. The docs site (`mkdocs.yml`,
+pages under `docs/`, CLI reference generated from the Typer app via
+`cli/main.py::click_app`) publishes to GitHub Pages from `main` through
+`.github/workflows/docs.yml`. Releases are tag-driven (`.github/workflows/release.yml`, see
 `docs/releasing.md`): the tag must match `pyproject.toml`'s version.
 
 ## Workflow
@@ -276,7 +286,7 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 3 — Management-plane adapters | Complete (6 adapters, split-brain, drift, stray-config) |
 | 4 — Conversational + MCP | Complete (router, chat, narrator, onboard, skills, MCP server); Web UI deferred to 4.5 |
 | 5 — Planning & recommendations | Build complete (all six ACs implemented) |
-| 9 — Road to 1.0 | 9.1: `fixtures/asymmetric-lab.yaml` closes P5-AC4 and P4-AC2's derivation through the real CLI; the rest is operator time on hardware. 9.2 done: placement targets are cluster nodes by one shared rule, daemon defaults follow `helper config`, examples carry no lab names. 9.3–9.7 planned (`roadmap.md` Phase 9) |
+| 9 — Road to 1.0 | 9.1: the bundled `asymmetric` lab closes P5-AC4 and P4-AC2's derivation through the real CLI; the rest is operator time on hardware. 9.2 done: placement targets are cluster nodes by one shared rule, daemon defaults follow `helper config`, examples carry no lab names. 9.3 done: mkdocs site, getting-started led by `discover replay` (labs now ship in the wheel), generated CLI reference, trust-gradient explainer, probe/adapter guides, NetBox field reference, strict build in CI. 9.4–9.7 planned (`roadmap.md` Phase 9) |
 | 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F), agent-side `propose_action` + manifest schema + secret references (agent-access items 4–6). All six ACs implemented; live-fleet validation outstanding |
 
 Live-fleet validation: Phases 4–7 have run against the operator's lab

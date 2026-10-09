@@ -66,6 +66,10 @@ Repository = "https://github.com/moellere/homelab-helper"
 Issues = "https://github.com/moellere/homelab-helper/issues"
 
 [dependency-groups]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocs-click>=0.8",
+]
 dev = [
     "ruff>=0.5.0",
     "mypy>=1.10.0",

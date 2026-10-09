@@ -92,7 +92,7 @@ The rest of Phase 1, and all of Phase 6, is below.
     each setting's source (env/default/unset); tokens reported set/unset, never
     printed.
 - [x] **Replayable lab fixture + loader** (`engine/lab_replay.py` +
-  `fixtures/example-lab.yaml` + `helper discover replay`) — seeds Host rows +
+  `data/labs/example-lab.yaml` + `helper discover replay`) — seeds Host rows +
   Observations from a committed synthetic fixture, reconciles each host, and
   loads+runs a bundled assertion library — no live SSH. The fixture yields 13
   day-one findings (inventory-gap + storage-provenance + config-drift, with an
@@ -101,7 +101,8 @@ The rest of Phase 1, and all of Phase 6, is below.
   library is `fixtures/assertion-library-starter.yaml`; operators bind it to
   their own hostnames in a local (un-committed) copy. Phase 9.1 added an
   optional `clusters:` block (Cluster + VirtualMachine rows) and a second
-  fixture, `fixtures/asymmetric-lab.yaml`.
+  lab, `asymmetric`; 9.3 moved both into the wheel (`data/labs/`) so the
+  on-ramp works from a bare install.
 
 ### Discovery sources & probes (landed)
 
@@ -993,7 +994,7 @@ real for someone other than its author. Slices in delivery order.
     pre-dispatch checkpoint.
   - [ ] Part 4 rolling `node-update` on one drained node, including the
     zero-API-call check at the propose floor (read the node's auth log).
-  - [x] P4-AC2 / P5-AC4: `fixtures/asymmetric-lab.yaml` — a three-node cluster
+  - [x] P4-AC2 / P5-AC4: the bundled `asymmetric` lab — a three-node cluster
     with one node left at 1 GbE. `discover replay` + `bottlenecks` produce the
     `CEPH_BOTTLENECK` finding and all four mitigations through the real CLI,
     with no hardware (`tests/test_lab_replay_asymmetric.py`, including the
@@ -1023,12 +1024,19 @@ real for someone other than its author. Slices in delivery order.
     cluster's `nodes:` the way discovery persists it. Written down rather than
     changed: `plan placement` is deliberately *not* restricted to cluster
     nodes — a Docker host is a legitimate target for a container.
-- [ ] **9.3 Docs site** (mkdocs-material) — getting-started **led by
-  `helper discover replay`**, which already produces 13 findings with no
-  hardware and is currently undocumented as the on-ramp; CLI reference; probe
-  SDK guide; adapter authoring guide; NetBox custom-field reference; an
-  operator's explainer for the trust gradient (what the levels mean, how to
-  raise a floor without regretting it).
+- [x] **9.3 Docs site** (mkdocs-material; `mkdocs.yml`, pages in `docs/`,
+  published to GitHub Pages from `main` by `.github/workflows/docs.yml`, built
+  `--strict` in CI so a broken link is red). Getting-started is led by
+  `helper discover replay`, which needed one change to be an on-ramp at all:
+  the labs lived in `fixtures/`, which a `uv tool install` user never has.
+  They now ship in the wheel (`data/labs/`) and `discover replay` takes a
+  bundled name, `example` by default, or a path. Also: the CLI reference,
+  generated from the Typer app (`mkdocs-click` over `cli/main.py::click_app`)
+  so it cannot drift; the trust-gradient explainer from the operator's seat;
+  the probe and adapter guides; the NetBox custom-field reference with who
+  writes each field. The existing design docs joined the site unchanged.
+  - [ ] Enable Pages once: repository Settings → Pages → Source "GitHub
+    Actions". Until then `docs.yml` fails on `main` without touching CI.
 - [ ] **9.4 Declare the 1.0 surface** — `docs/stability.md` naming each public
   surface and its promise: probe entry points, the `ProposalLog.artifact`
   manifest schema, the DB through migrations, the CLI verbs, the MCP tool

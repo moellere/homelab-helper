@@ -79,7 +79,7 @@ topology.
 
 #### The asymmetric fixture — when your own fleet is symmetric
 
-`fixtures/asymmetric-lab.yaml` is a three-node cluster with one node left at
+The bundled `asymmetric` lab is a three-node cluster with one node left at
 1 GbE while the others run at 2.5 GbE. It needs no hardware, no credentials and
 no SSH, so it runs in CI and in a cloud session as well as on your machine. Use
 a throwaway database — this seeds synthetic hosts:
@@ -87,7 +87,7 @@ a throwaway database — this seeds synthetic hosts:
 ```bash
 export HOMELAB_HELPER_DATABASE_URL="sqlite+aiosqlite:///$HOME/.homelab-asym.db"
 uv run helper db init
-uv run helper discover replay fixtures/asymmetric-lab.yaml
+uv run helper discover replay asymmetric
 uv run helper bottlenecks
 ```
 
@@ -507,7 +507,7 @@ shape — see the asymmetric fixture under P4-AC2.
 | Criterion | Result | Notes |
 |---|---|---|
 | P4-AC1 chat grounded | ✅ 10/03/2026 | 17 hosts named from inventory, cloud footer honest. Found: the footer said "cloud" but not that Ollama had been tried and was unreachable — `RouterResult.skipped` + a `skipped:` line (PR #52). |
-| P4-AC2 Ceph narration | ✅ derivation 10/09/2026 · ⏳ narration | Not observable on this fleet by construction: bmax0–3 are symmetric 1 GbE, Ceph HEALTH_OK, covomv on 10 GbE, so the analyser is correctly silent. `fixtures/asymmetric-lab.yaml` supplies the asymmetry — `discover replay` + `bottlenecks` produce the `CEPH_BOTTLENECK` finding a narrator would cite, through the real CLI, with no hardware (`tests/test_lab_replay_asymmetric.py`). The prose half is one `helper bottlenecks --narrate` against your own router; still to run. |
+| P4-AC2 Ceph narration | ✅ derivation 10/09/2026 · ⏳ narration | Not observable on this fleet by construction: bmax0–3 are symmetric 1 GbE, Ceph HEALTH_OK, covomv on 10 GbE, so the analyser is correctly silent. the bundled `asymmetric` lab supplies the asymmetry — `discover replay` + `bottlenecks` produce the `CEPH_BOTTLENECK` finding a narrator would cite, through the real CLI, with no hardware (`tests/test_lab_replay_asymmetric.py`). The prose half is one `helper bottlenecks --narrate` against your own router; still to run. |
 | P4-AC3 onboard | ⏳ | Interactive; not yet run. |
 | P4-AC4 MCP discovery | ✅ 10/03/2026 | `probe_host bmax3` from Claude Code: 4 probes, 33 observations, 0 failures, capability changes reconciled. |
 | P4-AC5 strict-local refusal | ✅ 10/03/2026 | Names the tier, the policy, each backend's exclusion reason, and the three options. |

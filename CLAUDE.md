@@ -117,6 +117,14 @@ pages under `docs/`, CLI reference generated from the Typer app via
 - **Commits:** never amend an existing commit unless explicitly asked. Pre-
   commit hooks live in `.pre-commit-config.yaml`; install with
   `uv run pre-commit install` if you want them local.
+- **Releases.** Claude may bump the version, open the release-prep PR, and —
+  once that PR is merged and `main` is green — create and push the
+  `v<version>` tag when the user has asked for that release by version
+  ("release 1.0.0rc1", "cut rc2"). A pre-release (`a`/`b`/`rc`) on an
+  explicit ask needs no further confirmation; a final `X.Y.0` is confirmed
+  once more before the tag. Never retag, never delete a tag, never `--force`.
+  The `pypi` environment's required reviewer is the operator's final click;
+  Claude says when the publish job is waiting on it.
 - **PRs are drafts until the user says merge.** Open the draft, report CI,
   wait for the word; the user merges (or says "merge when green").
 - **Never commit secrets.** No `.env` files, no NetBox tokens, no SSH keys.

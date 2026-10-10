@@ -13,23 +13,31 @@ artifacts attached and notes generated from the merged PRs.
    publisher with owner `moellere`, repository `homelab-helper`, workflow
    `release.yml`, environment `pypi`. No API token is stored anywhere.
 2. **GitHub environment.** Under the repo's Settings → Environments, create
-   `pypi`. Optionally require a reviewer so a tag push still needs a click
-   before anything reaches PyPI.
+   `pypi` and add yourself as a **required reviewer**. The workflow then stops
+   at the `publish-pypi` job until you approve it, so whoever pushes the tag
+   — a person or an agent acting on their instruction — cannot reach PyPI
+   alone. The gate, build and smoke test have already run by then.
 3. **Tag protection** (optional). Restrict who can push `v*` tags.
 
 ## Cutting a release
 
 ```bash
 # on main, green CI
-uv version 0.1.0b3                 # bumps pyproject.toml; pick the next version
-git commit -am "Release 0.1.0b3"
-git push origin main               # let CI pass on the release commit
-git tag v0.1.0b3
-git push origin v0.1.0b3           # triggers the release workflow
+uv version 1.0.0rc1                # bumps pyproject.toml; pick the next version
+git commit -am "Release 1.0.0rc1"  # on a branch — main takes PRs only
+git push origin main               # after the squash-merge, let CI pass on the release commit
+git tag v1.0.0rc1
+git push origin v1.0.0rc1          # triggers the release workflow
 ```
 
 The workflow refuses a tag that doesn't match `pyproject.toml`'s version, so
-a typo in the tag fails fast instead of publishing a mislabelled build.
+a typo in the tag fails fast instead of publishing a mislabelled build. A tag
+is never moved or deleted: a bad release is followed by the next version.
+
+An agent session may do all of this on the operator's say-so — the version
+bump PR, the tag, the push — under the rule in `CLAUDE.md` ("Releases"); the
+required reviewer on the `pypi` environment is where the operator's own click
+stays in the loop.
 
 Versions follow PEP 440. Pre-releases (`a`, `b`, `rc`) are marked as
 pre-releases on GitHub; `pip`/`uv` won't install them unless asked

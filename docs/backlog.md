@@ -1161,8 +1161,24 @@ keeps; no model anywhere.
   - [ ] Follow-ups: per-drive temperature baselines instead of fixed lines once
     a season of history exists; NVMe `media_errors` / `available_spare` (the
     probe does not record them yet); a `helper host show` drive table.
-- [ ] **10.2 Capacity trends** — time-to-full for host filesystems and the NAS,
-  node memory/CPU trend findings, the digest leading with what runs out first.
+- [x] **10.2 Capacity trends** (10/11/2026) — `engine/capacity.py`, `helper
+  discover capacity`, `run_discovery("capacity")`, `FindingKind.CAPACITY`:
+  `filesystem-full` (newest sample ≥ 85%, HIGH ≥ 95%) and
+  `filesystem-headroom` (8.5's least-squares fit reaching full within 90 days,
+  HIGH within 30) for every node root filesystem in the usage history and for
+  NAS filesystems, which the OpenMediaVault discoverers now record as one daily
+  `filesystem` usage sample each (`record_filesystem_samples`); `memory-headroom`
+  and `cpu-headroom` when a node's daily mean trends across 90% of RAM / 80% CPU
+  inside the horizon. The digest leads with "What runs out first" (capacity and
+  8.5 headroom findings, soonest first). Also `db/enum_sync.py` + migration
+  `e3f8b2c6d9a1`: every Python enum member missing from its Postgres type is
+  added (`ALTER TYPE … ADD VALUE IF NOT EXISTS`, derived from the models) — a
+  Postgres database upgraded by migrations could not store eight finding kinds
+  until now; a `postgres_only` test holds the live types to the enums.
+  - [ ] Follow-ups: filesystems on hosts outside Proxmox and OMV (a `df`-style
+    probe or `host.storage` FSAVAIL into usage samples); per-guest root
+    filesystems; the digest's lead as a phone notification when the soonest is
+    under 30 days.
 - [ ] **10.3 Baselines and anomalies** — per-subject percentile bands from the
   usage history; departure findings with the band as evidence.
 - [ ] **10.4 Maintenance runs** — `maintenance_run` sequencing drain →

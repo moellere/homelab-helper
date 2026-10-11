@@ -39,6 +39,7 @@ from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.enums import DiscoverySource, FindingKind, FindingSeverity, FindingStatus
 from homelab_helper.db.models import Host, Observation, ReconciliationFinding
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.capacity import record_filesystem_samples
 from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
@@ -1183,6 +1184,7 @@ def discover_omv(
                 result = await reconcile_stray_exports(
                     session, filesystems, shares, [*nfs, *smb], when=datetime.now(UTC)
                 )
+                await record_filesystem_samples(session, "omv", filesystems)
         finally:
             await engine.dispose()
         console.print(
@@ -1331,6 +1333,12 @@ def discover_storage() -> None:
     raise typer.Exit(
         code=_category_discovery("storage", FindingKind.STORAGE_EFFICIENCY, "storage efficiency")
     )
+
+
+@discover_app.command(name="capacity")
+def discover_capacity() -> None:
+    """Capacity trends (Phase 10.2): filesystems filling, node memory and CPU crossing their lines."""
+    raise typer.Exit(code=_category_discovery("capacity", FindingKind.CAPACITY, "capacity trends"))
 
 
 @discover_app.command(name="backups")

@@ -136,6 +136,8 @@ def _postgres_redirect(request: pytest.FixtureRequest, monkeypatch: pytest.Monke
     database, emptied first. Tests that inspect the SQLite file itself carry
     ``@pytest.mark.sqlite_only`` and are skipped."""
     if not _PG_URL:
+        if request.node.get_closest_marker("postgres_only"):
+            pytest.skip("needs a real Postgres (set HELPER_TEST_DATABASE_URL)")
         return
     if request.node.get_closest_marker("sqlite_only"):
         pytest.skip("inspects the SQLite file; the suite is running against Postgres")

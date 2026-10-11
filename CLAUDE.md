@@ -49,6 +49,7 @@ src/homelab_helper/
 │                   rightsizing (8.4: cores/memory from history),
 │                   raid_health (9.5: host.raid → storage-health findings),
 │                   disk_health (10.1: host.smart + history → storage-health),
+│                   capacity (10.2: usage history → time-to-full / memory / CPU trends),
 │                   schedule (9.6: per-probe/assertion cadences from a YAML file),
 │                   suggestions (8.7 idle capability, missing blocks),
 │                   cluster_nodes (9.2: the one rule for "is this host a

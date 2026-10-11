@@ -47,6 +47,7 @@ See [`architecture.md`](./docs/architecture.md) for the design,
 - Keep usage history from Proxmox's RRDs and recommend cores and memory per guest from it
 - Check version currency (OS, Ceph, Kubernetes and Talos end of support, pending updates), backup posture, storage efficiency, and suggest services your hardware could run
 - Judge every drive against its own SMART history — failing, reallocating, CRC errors on the rise, running hot, wearing out, simply old — before it is an outage
+- Project filesystems, node memory and CPU forward from the usage history and say when each runs out
 - Run probes and assertions on their own cadences from one daemon, draft remediations from findings through deterministic playbooks, and ask your phone before acting
 - Execute a proposed action only after you raise its trust cell — deterministic gate, receipts, snapshots, rollback, elevation windows, kill switch, and a notification after every run you were not asked about
 - Serve a one-screen status (`helper status`, `GET /status`) for Homepage or Home Assistant, and send a weekly digest
@@ -348,6 +349,15 @@ rate that reaches 100% within six months, and spinning drives past 50 000
 hours. They land as `storage-health` findings keyed by serial, so a replaced
 drive closes the old finding and starts clean. Thresholds are constants in
 `engine/disk_health.py`, with the evidence on every finding.
+
+### Capacity trends (Phase 10.2)
+
+`helper discover capacity` projects the usage history forward: every node root
+filesystem and NAS filesystem gets a `filesystem-full` finding when it is past
+85 % today and a `filesystem-headroom` one when its daily growth reaches full
+within 90 days (HIGH within 30), and a node whose daily mean memory or CPU
+trends across 90 % of RAM / 80 % CPU inside the horizon gets `memory-headroom`
+/ `cpu-headroom`. The weekly digest leads with what runs out first.
 
 ### Storage efficiency, service suggestions, the weekly digest (Phase 8.5–8.7)
 

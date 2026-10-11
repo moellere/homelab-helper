@@ -1169,7 +1169,12 @@ keeps; no model anywhere.
   NAS filesystems, which the OpenMediaVault discoverers now record as one daily
   `filesystem` usage sample each (`record_filesystem_samples`); `memory-headroom`
   and `cpu-headroom` when a node's daily mean trends across 90% of RAM / 80% CPU
-  inside the horizon. The digest leads with "What runs out first" (capacity and
+  inside the horizon. Two things the first live preview taught: a step is not
+  a trend (the fit restarts after the last day-to-day jump above 10% of the
+  total — HA moving onto bmax2 read as "crosses 90% in 11 days"), and a node's
+  memory climb is guests touching their allocations, so the memory trend is
+  judged only where the running guests' commitment plus the OS reserve could
+  carry it across the line. The digest leads with "What runs out first" (capacity and
   8.5 headroom findings, soonest first). Also `db/enum_sync.py` + migration
   `e3f8b2c6d9a1`: every Python enum member missing from its Postgres type is
   added (`ALTER TYPE … ADD VALUE IF NOT EXISTS`, derived from the models) — a

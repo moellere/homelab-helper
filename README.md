@@ -357,7 +357,10 @@ filesystem and NAS filesystem gets a `filesystem-full` finding when it is past
 85 % today and a `filesystem-headroom` one when its daily growth reaches full
 within 90 days (HIGH within 30), and a node whose daily mean memory or CPU
 trends across 90 % of RAM / 80 % CPU inside the horizon gets `memory-headroom`
-/ `cpu-headroom`. The weekly digest leads with what runs out first.
+/ `cpu-headroom`. A step is not a trend — the fit restarts after the last jump
+(a guest moving in, a big copy) — and a node's memory trend only counts where
+its guests' allocations could actually carry it over the line. The weekly
+digest leads with what runs out first.
 
 ### Storage efficiency, service suggestions, the weekly digest (Phase 8.5–8.7)
 

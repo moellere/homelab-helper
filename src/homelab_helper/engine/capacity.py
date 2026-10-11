@@ -11,7 +11,11 @@ into ``capacity`` findings:
   within ``HEADROOM_MEDIUM_DAYS`` (MEDIUM) or ``HEADROOM_HIGH_DAYS`` (HIGH),
   from the same least-squares fit 8.5 uses.
 - ``memory-headroom`` — a node whose daily mean memory use trends across
-  ``MEMORY_LINE`` of its RAM inside the horizon.
+  ``MEMORY_LINE`` of its RAM inside the horizon. Only where the running
+  guests' allocations (plus ``OS_RESERVE``) could carry it there: a node's
+  memory grows as guests touch their allocations and stops at them, so on a
+  node committed below the line the climb is a ramp to a plateau, and only a
+  new guest — a placement decision, not a trend — can cross it.
 - ``cpu-headroom`` — a node whose daily mean CPU trends across ``CPU_LINE``
   inside the horizon.
 
@@ -38,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from homelab_helper.db.enums import FindingKind, FindingSeverity
-from homelab_helper.db.models import Host, UsageSample
+from homelab_helper.db.models import Host, UsageSample, VirtualMachine
 from homelab_helper.engine.category_findings import (
     CategoryIssue,
     CategoryResult,
@@ -65,6 +69,8 @@ MEMORY_LINE = 0.90
 CPU_LINE = 0.80
 TREND_WINDOW = timedelta(days=60)
 STEP_RATIO = 0.10
+OS_RESERVE = 1 * 1024**3
+"""What the hypervisor itself needs on top of its guests' allocations."""
 """A day-to-day change above this share of the total is a step, not a trend."""
 _GIB = 1024**3
 _RATIO_SCALE = 10**11
@@ -215,13 +221,20 @@ def node_issues(
     samples: Sequence[UsageSample],
     *,
     now: datetime,
+    memory_ceiling: int | None = None,
 ) -> list[CategoryIssue]:
-    """Memory and CPU trend findings for one node's daily samples."""
+    """Memory and CPU trend findings for one node's daily samples.
+
+    ``memory_ceiling`` is the running guests' committed memory plus the OS
+    reserve; when it sits under the line the memory trend is not judged.
+    """
     issues: list[CategoryIssue] = []
     mem = [(s.ts, int(s.mem_used)) for s in samples if s.mem_used is not None and s.mem_total]
     total = next((int(s.mem_total) for s in reversed(samples) if s.mem_total), 0)
+    line_bytes = int(total * MEMORY_LINE)
+    if memory_ceiling is not None and memory_ceiling < line_bytes:
+        mem = []
     if mem and total:
-        line_bytes = int(total * MEMORY_LINE)
         segment, _ = after_last_step(mem, total)
         issue = _line_issue(
             "memory-headroom",
@@ -309,9 +322,13 @@ async def evaluate(
     """``(issues, observed categories)`` over nodes and NAS filesystems with history."""
     moment = now or datetime.now(UTC)
     since = moment.replace(tzinfo=None) - TREND_WINDOW
-    host_ids = {
-        h.hostname: str(h.id) for h in (await session.execute(select(Host))).scalars().all()
-    }
+    hosts = (await session.execute(select(Host))).scalars().all()
+    host_ids = {h.hostname: str(h.id) for h in hosts}
+    committed: dict[Any, int] = {}
+    for vm in (await session.execute(select(VirtualMachine))).scalars().all():
+        if vm.status == "running" and vm.node_host_id is not None and vm.memory_bytes:
+            committed[vm.node_host_id] = committed.get(vm.node_host_id, 0) + int(vm.memory_bytes)
+    ceilings = {h.hostname: committed[h.id] + OS_RESERVE for h in hosts if h.id in committed}
     issues: list[CategoryIssue] = []
     observed: set[str] = set()
     for hostname, samples in (await _daily(session, "host", since)).items():
@@ -319,7 +336,9 @@ async def evaluate(
         if len(samples) < MIN_HEADROOM_SAMPLES:
             continue
         observed |= {"memory-headroom", "cpu-headroom"}
-        issues += node_issues(hostname, target_id, samples, now=moment)
+        issues += node_issues(
+            hostname, target_id, samples, now=moment, memory_ceiling=ceilings.get(hostname)
+        )
         disk = [(s.ts, int(s.disk_used)) for s in samples if s.disk_used is not None]
         total = next((int(s.disk_total) for s in reversed(samples) if s.disk_total), 0)
         if disk and total:
@@ -353,6 +372,7 @@ __all__ = [
     "FULL_HIGH",
     "FULL_WARN",
     "MEMORY_LINE",
+    "OS_RESERVE",
     "STEP_RATIO",
     "after_last_step",
     "evaluate",

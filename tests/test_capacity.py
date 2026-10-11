@@ -260,3 +260,15 @@ def test_node_memory_step_is_not_a_trend() -> None:
     for s in samples[10:]:
         s.mem_used = 19 * G
     assert node_issues("n", "h", samples, now=NOW) == []
+
+
+def test_memory_trend_needs_a_commitment_that_can_cross_the_line() -> None:
+    # 10 → 25 GiB over 30 days on a 32 GiB node, but its guests commit only 24 GiB:
+    # the climb is guests touching their allocations, and it stops at 25.
+    ramp = _samples(30, 10, 0.5, 0.2, 0)
+    assert node_issues("n", "h", ramp, now=NOW, memory_ceiling=24 * G) == []
+    # Over-committed (36 GiB promised on 32): the same climb can cross the line.
+    over = node_issues("n", "h", ramp, now=NOW, memory_ceiling=36 * G)
+    assert [i.category for i in over] == ["memory-headroom"]
+    # Unknown commitment (no guest rows): judged on the trend alone.
+    assert [i.category for i in node_issues("n", "h", ramp, now=NOW)] == ["memory-headroom"]

@@ -29,6 +29,7 @@ WRITE_METHODS = (
     "update_dns_record",
     "delete_dns_record",
     "apt_dist_upgrade",
+    "reboot_node",
 )
 ALLOWED = {
     SRC / "adapters" / "proxmox.py",  # the definitions

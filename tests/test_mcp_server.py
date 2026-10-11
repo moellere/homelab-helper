@@ -114,6 +114,9 @@ EXPECTED_TOOLS = {
     "execute_proposal",
     # Phase 7 slice 3: deterministic playbooks draft proposals (harness-DB write).
     "draft_remediations",
+    "plan_maintenance_run",
+    "list_maintenance_runs",
+    "execute_maintenance_run",
 }
 
 # Anything that grants, elevates, overrides, rolls back, or opens a window

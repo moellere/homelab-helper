@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
@@ -68,6 +69,7 @@ from homelab_helper.db.models import (
     Domain,
     ExecutionReceipt,
     Host,
+    MaintenanceRun,
     ProposalLog,
     ReconciliationFinding,
     Service,
@@ -117,6 +119,12 @@ from homelab_helper.engine.host_probe import HostProbeRequest, UnknownProbeError
 from homelab_helper.engine.host_probe import probe_host as _probe_host
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.k8s_workloads import reconcile_workload_health
+from homelab_helper.engine.maintenance import (
+    MaintenanceError,
+    execute_maintenance,
+    plan_maintenance,
+    run_summary,
+)
 from homelab_helper.engine.manifest import (
     BLAST_RADII,
     DNS_RECORD_TYPES,
@@ -2256,6 +2264,127 @@ def _execution_adapters(manifest: Any) -> tuple[_Adapters | None, str | None]:
             )
     ssh = KernelSSHAdapter() if manifest.is_node else None
     return _Adapters(proxmox, k8s, argocd, unifi, ssh), None
+
+
+_RUN_ASK_STEPS = 4
+"""How many step names the one phone prompt for a maintenance run lists."""
+
+
+@server.tool()
+async def plan_maintenance_run(node: str, target_node: str | None = None) -> dict[str, Any]:
+    """Draft a maintenance run for one Proxmox node (Phase 10.4): one proposal per
+    step — migrate (or shut down, for node-local disks) every running guest off it,
+    apt dist-upgrade, reboot and wait for its return, then bring the guests back.
+    Harness-DB write only; nothing executes. Returns the run with its steps."""
+    engine = make_engine(database_url())
+    try:
+        adapter = _load_proxmox_adapter()
+    except ProxmoxConfigError as exc:
+        return {"error": f"Proxmox adapter: {exc}"}
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            try:
+                run = await plan_maintenance(
+                    session, adapter, node, actor="agent:mcp", target_node=target_node
+                )
+            except MaintenanceError as exc:
+                return {"error": str(exc)}
+            return run_summary(run)
+    finally:
+        await adapter.aclose()
+        await engine.dispose()
+
+
+@server.tool()
+async def list_maintenance_runs(limit: int = 20) -> list[dict[str, Any]]:
+    """Maintenance runs, newest first, each with its steps and their states."""
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with sm() as session:
+            rows = (
+                await session.execute(
+                    select(MaintenanceRun).order_by(MaintenanceRun.created_at.desc()).limit(limit)
+                )
+            ).scalars()
+            return [run_summary(r) for r in rows]
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
+async def execute_maintenance_run(run_id: str) -> dict[str, Any]:
+    """Run a planned maintenance run step by step through the executor (Phase 10.4).
+    A trigger, not an authority: each step passes `decide()` on its own cell; the
+    operator is asked ONCE on the phone for the whole run and that answer is
+    relayed to every step at CONFIRM. The run stops at the first failed or refused
+    step. node-reboot has no inverse, so a run never executes unattended."""
+    engine = make_engine(database_url())
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            found = await session.get(MaintenanceRun, uuid.UUID(run_id))
+            if found is None:
+                return {"error": f"no maintenance run {run_id}"}
+            run: MaintenanceRun = found
+            pending = [st for st in run.steps if st["state"] == "planned"]
+            if not pending:
+                return {"error": "nothing left to run", **run_summary(run)}
+            try:
+                channel = approval_channel_from_env()
+            except ApprovalConfigError:
+                channel = None
+            answers: dict[str, Any] = {}
+
+            async def _confirm(m: Any, decision: Any) -> Any:
+                if channel is None:
+                    raise ExecutionRefused(
+                        "policy says CONFIRM and no approval channel is configured "
+                        "(HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE) — an operator runs "
+                        f"`helper maintenance run {str(run.id)[:8]}`",
+                        decision,
+                    )
+                if "run" not in answers:
+                    answers["run"] = await channel.request(
+                        m,
+                        decision,
+                        proposal_id=str(run.id),
+                        title=f"Maintenance {run.node}: {len(pending)} step(s)",
+                        why=(
+                            f"Run all {len(pending)} step(s) on {run.node} in order — "
+                            + "; ".join(st["name"] for st in pending[:_RUN_ASK_STEPS])
+                            + (" …" if len(pending) > _RUN_ASK_STEPS else "")
+                            + ". Stops at the first failure"
+                        ),
+                    )
+                return answers["run"]
+
+            try:
+                adapter = _load_proxmox_adapter()
+            except ProxmoxConfigError as exc:
+                return {"error": f"Proxmox adapter: {exc}"}
+            k8s = _load_k8s_adapter() if shutil.which("kubectl") else None
+            try:
+                run = await execute_maintenance(
+                    session,
+                    run,
+                    adapter,
+                    actor="agent:mcp",
+                    confirm_cb=_confirm,
+                    ssh_adapter=KernelSSHAdapter(),
+                    k8s_adapter=k8s,
+                    notifier=notifier_from_env(),
+                )
+            except MaintenanceError as exc:
+                return {"error": str(exc)}
+            except ApprovalError as exc:
+                return {"refused": f"approval channel failed: {exc}"}
+            finally:
+                await adapter.aclose()
+            return run_summary(run)
+    finally:
+        await engine.dispose()
 
 
 @server.tool()

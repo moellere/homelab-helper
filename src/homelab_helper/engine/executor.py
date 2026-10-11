@@ -42,6 +42,7 @@ written to ``TrustHistory`` as an ``approval`` event.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -496,31 +497,38 @@ def _ssh_credentials(host: Host) -> tuple[str, str | None]:
     return user, key_path or None
 
 
-async def _dispatch_node(
+REBOOT_TIMEOUT_S = 900
+"""How long a rebooted node may take to be back online, quorate and reachable."""
+REBOOT_POLL_S = 10
+REBOOT_GOING_DOWN_S = 90
+"""How long to wait for the API to notice the node leaving before watching for its return."""
+
+
+async def _node_preflight(
     manifest: ActionManifest,
     adapter: ProxmoxAdapter,
     ssh: KernelSSHAdapter | None,
     host: Host | None,
-) -> tuple[str, Any]:
-    """Apply a node's pending packages over SSH, refusing an undrained node.
+    verb: str,
+) -> tuple[str, KernelSSHAdapter, Host, str, Any]:
+    """Shared by every node action: credentials, and a refusal for an undrained node.
 
     The precondition is a refusal, not a warning: ``apt dist-upgrade`` on a
-    Proxmox node restarts cluster services and usually wants a reboot after,
-    so running it under live guests risks them. Checked here, before any
-    write, so an undrained node produces no change at all.
+    Proxmox node restarts cluster services and a reboot takes everything on it
+    down, so running either under live guests risks them. Checked here, before
+    any write, so an undrained node produces no change at all.
     """
     node = manifest.node
     if node is None:
         raise ManifestError("node target is incomplete")
     if ssh is None:
-        raise ValueError("no SSH adapter is configured; a node update needs one")
+        raise ValueError(f"no SSH adapter is configured; a node {verb} needs one")
     if host is None:
         raise ValueError(
             f"{node} is not a known host, so the harness has no credentials for it — "
             "add it with `helper discover host` first"
         )
     user, key_path = _ssh_credentials(host)
-
     running = [
         v
         for v in await adapter.cluster_resources("vm")
@@ -530,8 +538,73 @@ async def _dispatch_node(
         names = ", ".join(str(v.get("name") or v.get("vmid")) for v in running[:6])
         raise ValueError(
             f"{node} still runs {len(running)} guest(s) ({names}) — drain it first "
-            "(migrate them off), then update"
+            f"(migrate them off), then {verb}"
         )
+    return node, ssh, host, user, key_path
+
+
+async def _node_is_back(
+    adapter: ProxmoxAdapter, ssh: KernelSSHAdapter, host: Host, node: str, user: str, key_path: Any
+) -> bool:
+    nodes = await adapter.list_nodes()
+    online = any(str(n.get("node")) == node and n.get("status") == "online" for n in nodes)
+    if not online:
+        return False
+    if not (await adapter.cluster_status()).get("quorate", True):
+        return False
+    ok, _ = await ssh.health_check(host.primary_ip or node, user=user, key_path=key_path)
+    return ok
+
+
+async def _dispatch_node_reboot(
+    manifest: ActionManifest,
+    adapter: ProxmoxAdapter,
+    ssh: KernelSSHAdapter | None,
+    host: Host | None,
+) -> tuple[str, Any]:
+    """Reboot a drained node and wait until it is online, quorate and reachable again.
+
+    The wait is the point: a reboot whose receipt said "succeeded" the moment
+    the command returned would hide the one failure that matters, a node that
+    never comes back. So the dispatch only succeeds once the Proxmox API shows
+    the node online, the cluster quorate, and SSH answers — or fails after
+    ``REBOOT_TIMEOUT_S`` with how long it waited, and the receipt says so.
+    """
+    node, ssh, host, user, key_path = await _node_preflight(manifest, adapter, ssh, host, "reboot")
+    result = await ssh.reboot_node(host.primary_ip or node, user=user, key_path=key_path)
+    if not result.ok:
+        raise ValueError(
+            f"reboot command exited {result.exit_code}: "
+            f"{(result.stderr or result.stdout or '').strip()[:300]}"
+        )
+    started = time.monotonic()
+    # First let the API notice the node leaving, so a stale "online" from
+    # before the reboot is not mistaken for its return.
+    while time.monotonic() - started < REBOOT_GOING_DOWN_S:
+        nodes = await adapter.list_nodes()
+        if not any(str(n.get("node")) == node and n.get("status") == "online" for n in nodes):
+            break
+        await asyncio.sleep(REBOOT_POLL_S)
+    while time.monotonic() - started < REBOOT_TIMEOUT_S:
+        if await _node_is_back(adapter, ssh, host, node, user, key_path):
+            return "reboot", {"came_back_s": int(time.monotonic() - started)}
+        await asyncio.sleep(REBOOT_POLL_S)
+    raise ValueError(
+        f"{node} did not come back within {REBOOT_TIMEOUT_S} s of the reboot — "
+        "check its console; nothing else in this run proceeds"
+    )
+
+
+async def _dispatch_node(
+    manifest: ActionManifest,
+    adapter: ProxmoxAdapter,
+    ssh: KernelSSHAdapter | None,
+    host: Host | None,
+) -> tuple[str, Any]:
+    """Apply a node's pending packages over SSH, refusing an undrained node."""
+    if manifest.action_kind == "node-reboot":
+        return await _dispatch_node_reboot(manifest, adapter, ssh, host)
+    node, ssh, host, user, key_path = await _node_preflight(manifest, adapter, ssh, host, "update")
 
     result = await ssh.apt_dist_upgrade(host.primary_ip or node, user=user, key_path=key_path)
     if not result.ok:

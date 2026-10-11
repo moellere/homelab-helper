@@ -248,6 +248,16 @@ class FindingStatus(StrEnum):
 # ---------------------------------------------------------------------------
 
 
+class MaintenanceStatus(StrEnum):
+    """Where a maintenance run stands (Phase 10.4)."""
+
+    PLANNED = "planned"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    ABORTED = "aborted"
+
+
 class ProposalOutcome(StrEnum):
     """Final disposition of a proposal.
 

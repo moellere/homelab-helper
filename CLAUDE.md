@@ -51,6 +51,7 @@ src/homelab_helper/
 │                   disk_health (10.1: host.smart + history → storage-health),
 │                   capacity (10.2: usage history → time-to-full / memory / CPU trends),
 │                   baselines (10.3: per-subject percentile bands → anomaly findings),
+│                   maintenance (10.4: drain → update → reboot → return as gated steps),
 │                   schedule (9.6: per-probe/assertion cadences from a YAML file),
 │                   suggestions (8.7 idle capability, missing blocks),
 │                   cluster_nodes (9.2: the one rule for "is this host a
@@ -185,7 +186,7 @@ Every write path routes through `engine/executor.py`, which is the only caller
 of an adapter's mutate methods (Proxmox `vm_power`/snapshots/`migrate_guest`/
 `set_vm_config` (cpu-type, resize), K8s `rollout_restart`/`scale_workload`/`rollout_undo`, Argo CD
 `sync_application`/`rollback_application`, UniFi `create/update/delete_dns_record`,
-KernelSSH `apt_dist_upgrade`);
+KernelSSH `apt_dist_upgrade`/`reboot_node`);
 adapter writes carry a
 block comment saying so, and `tests/test_write_isolation.py` fails if any
 other module names one — add every new write method to its `WRITE_METHODS`.
@@ -216,7 +217,11 @@ action whose inverse does not exist takes the `no-inverse` strategy, whose
 verifier always reports unverified *with the reason* — that degrades
 AUTONOMOUS to CONFIRM and, with the kind absent from
 `REVERSIBLE_ACTION_KINDS`, pins it below autonomy for good (`node-update` is
-the first). A node action's manifest carries a node name and nothing else:
+the first, `node-reboot` the second — its dispatch only succeeds once the node
+is back online, quorate and reachable, never when the command returned). A
+`MaintenanceRun` (`engine/maintenance.py`) is a sequencer, not an authority:
+its steps are ordinary proposals executed through `execute_proposal`, each on
+its own cell, and one operator consent is relayed to each CONFIRM. A node action's manifest carries a node name and nothing else:
 what it runs is fixed in code, or a proposal becomes remote code execution
 gated by one cell. Two ordering rules in the executor are
 load-bearing, not stylistic: the gate runs **pessimistically first** (assuming

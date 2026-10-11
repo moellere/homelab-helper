@@ -36,6 +36,7 @@ from homelab_helper.cli.discover import discover_app
 from homelab_helper.cli.execute import exec_app
 from homelab_helper.cli.findings import findings_app
 from homelab_helper.cli.host import host_app
+from homelab_helper.cli.maintenance import maintenance_app
 from homelab_helper.cli.mcp import mcp_app
 from homelab_helper.cli.netbox import netbox_app
 from homelab_helper.cli.part import part_app
@@ -76,6 +77,7 @@ app.add_typer(approvals_app)
 app.add_typer(daemon_app)
 app.add_typer(usage_app)
 app.add_typer(window_app)
+app.add_typer(maintenance_app)
 app.add_typer(part_app)
 app.add_typer(schedule_app)
 app.add_typer(service_app)

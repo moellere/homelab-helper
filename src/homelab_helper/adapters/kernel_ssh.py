@@ -259,6 +259,29 @@ class KernelSSHAdapter:
         ) as ssh:
             return await ssh.run(command, timeout=timeout)
 
+    async def reboot_node(
+        self,
+        host: str,
+        *,
+        user: str,
+        key_path: Path | str | None = None,
+        password: str | None = None,
+        port: int = 22,
+    ) -> CommandResult:
+        """Reboot the node. Executor use only — the second no-inverse action.
+
+        ``systemctl reboot`` returns at once and the connection drops; the
+        executor, not this method, waits for the node to come back. A
+        non-zero exit here means the reboot was never issued.
+        """
+        command = "systemctl reboot"
+        if user != "root":
+            command = f"sudo -n {command}"
+        async with self.session(
+            host, user=user, key_path=key_path, password=password, port=port
+        ) as ssh:
+            return await ssh.run(command, timeout=30)
+
     async def health_check(
         self,
         host: str,

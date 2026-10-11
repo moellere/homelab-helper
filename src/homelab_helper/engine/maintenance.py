@@ -109,21 +109,33 @@ def _pick_target(
     guest: _Guest,
     free: dict[str, int],
     preferred: str | None,
+    closed: dict[str, int],
 ) -> str:
-    """The emptiest node with room, or the preferred one when it has room."""
+    """The emptiest open node with room, or the preferred one when it has room.
+
+    A ``no-new-guests`` host is never chosen, but may be *named*: the operator
+    overriding their own standing intent for one maintenance window is a
+    decision, and the plan says so in the step.
+    """
     if preferred is not None:
-        if preferred not in free:
-            raise MaintenanceError(f"{preferred} is not an available target node")
-        if free[preferred] < guest.maxmem:
+        room = free.get(preferred, closed.get(preferred))
+        if room is None:
+            raise MaintenanceError(f"{preferred} is not an online node of this cluster")
+        if room < guest.maxmem:
             raise MaintenanceError(
                 f"{preferred} cannot hold {guest.name} ({guest.maxmem / 1024**3:.0f} GiB)"
             )
         return preferred
     fits = [n for n, room in free.items() if room >= guest.maxmem]
     if not fits:
+        hint = (
+            f"; {', '.join(sorted(closed))} would fit but is no-new-guests — name it with --target "
+            "to override that for this run"
+            if any(room >= guest.maxmem for room in closed.values())
+            else "; free memory elsewhere first, or shut it down by hand"
+        )
         raise MaintenanceError(
-            f"no node can take {guest.name} ({guest.maxmem / 1024**3:.0f} GiB) — "
-            "free memory elsewhere first, or shut it down by hand"
+            f"no node can take {guest.name} ({guest.maxmem / 1024**3:.0f} GiB){hint}"
         )
     return max(fits, key=lambda n: free[n])
 
@@ -182,44 +194,11 @@ async def plan_maintenance(
     nodes = await adapter.cluster_resources("node")
     if not any(str(n.get("node")) == node for n in nodes):
         raise MaintenanceError(f"{node} is not a node of the Proxmox cluster")
-    closed = await _closed_hosts(session)
-    free: dict[str, int] = {}
-    for n in nodes:
-        name = str(n.get("node"))
-        if name == node or n.get("status") != "online" or name in closed:
-            continue
-        free[name] = int(n.get("maxmem") or 0) - int(n.get("mem") or 0) - _OS_RESERVE
-
+    free, closed = _room_by_node(nodes, node, await _closed_hosts(session))
     local = await _local_storage_vmids(session, cluster_name)
-    guests = [
-        _Guest(
-            vmid=int(v["vmid"]),
-            name=str(v.get("name") or v["vmid"]),
-            kind=str(v.get("type") or "qemu"),
-            maxmem=int(v.get("maxmem") or 0),
-            local_storage=int(v["vmid"]) in local,
-        )
-        for v in await adapter.cluster_resources("vm")
-        if str(v.get("node")) == node and v.get("status") == "running" and not v.get("template")
-    ]
-    guests.sort(key=lambda g: -g.maxmem)
-
-    drain: list[tuple[str, str, dict[str, Any], _Guest, str | None]] = []
-    for g in guests:
-        if g.local_storage:
-            art = build_artifact(action_kind="shutdown", node=node, vmid=g.vmid, vm_kind=g.kind)
-            drain.append(
-                ("drain-shutdown", f"shut down {g.name} ({g.vmid}) — node-local disk", art, g, None)
-            )
-            continue
-        target = _pick_target(g, free, target_node)
-        free[target] -= g.maxmem
-        art = build_artifact(
-            action_kind="migrate", node=node, vmid=g.vmid, vm_kind=g.kind, target_node=target
-        )
-        drain.append(("drain-migrate", f"migrate {g.name} ({g.vmid}) → {target}", art, g, target))
-
-    planned: list[tuple[str, str, dict[str, Any]]] = [(k, t, a) for k, t, a, _, _ in drain]
+    guests = _running_guests(await adapter.cluster_resources("vm"), node, local)
+    drain = _drain_steps(guests, node, free, closed, target_node)
+    planned = [(k, t, a) for k, t, a, _, _ in drain]
     planned.append(("node-update", f"apt dist-upgrade {node}", build_node_artifact(node=node)))
     planned.append(
         (
@@ -228,21 +207,7 @@ async def plan_maintenance(
             build_node_artifact(node=node, action_kind="node-reboot"),
         )
     )
-    for kind, _, _, g, parked_on in reversed(drain):
-        if kind == "drain-shutdown":
-            art = build_artifact(action_kind="start", node=node, vmid=g.vmid, vm_kind=g.kind)
-            planned.append(("return-start", f"start {g.name} ({g.vmid})", art))
-        else:
-            art = build_artifact(
-                action_kind="migrate",
-                node=str(parked_on),
-                vmid=g.vmid,
-                vm_kind=g.kind,
-                target_node=node,
-            )
-            planned.append(
-                ("return-migrate", f"migrate {g.name} ({g.vmid}) back from {parked_on}", art)
-            )
+    planned += _return_steps(drain, node)
 
     run = MaintenanceRun(node=node, created_by=actor, status=MaintenanceStatus.PLANNED)
     session.add(run)
@@ -266,6 +231,90 @@ async def plan_maintenance(
     run.steps = steps
     await session.flush()
     return run
+
+
+def _room_by_node(
+    nodes: list[dict[str, Any]], node: str, closed_hosts: set[str]
+) -> tuple[dict[str, int], dict[str, int]]:
+    """``(open, closed)`` free memory per online node other than ``node``."""
+    free: dict[str, int] = {}
+    closed: dict[str, int] = {}
+    for n in nodes:
+        name = str(n.get("node"))
+        if name == node or n.get("status") != "online":
+            continue
+        room = int(n.get("maxmem") or 0) - int(n.get("mem") or 0) - _OS_RESERVE
+        (closed if name in closed_hosts else free)[name] = room
+    return free, closed
+
+
+def _running_guests(resources: list[dict[str, Any]], node: str, local: set[int]) -> list[_Guest]:
+    guests = [
+        _Guest(
+            vmid=int(v["vmid"]),
+            name=str(v.get("name") or v["vmid"]),
+            kind=str(v.get("type") or "qemu"),
+            maxmem=int(v.get("maxmem") or 0),
+            local_storage=int(v["vmid"]) in local,
+        )
+        for v in resources
+        if str(v.get("node")) == node and v.get("status") == "running" and not v.get("template")
+    ]
+    guests.sort(key=lambda g: -g.maxmem)
+    return guests
+
+
+_Drain = tuple[str, str, dict[str, Any], _Guest, str | None]
+
+
+def _drain_steps(
+    guests: list[_Guest],
+    node: str,
+    free: dict[str, int],
+    closed: dict[str, int],
+    target_node: str | None,
+) -> list[_Drain]:
+    drain: list[_Drain] = []
+    for g in guests:
+        if g.local_storage:
+            art = build_artifact(action_kind="shutdown", node=node, vmid=g.vmid, vm_kind=g.kind)
+            drain.append(
+                ("drain-shutdown", f"shut down {g.name} ({g.vmid}) — node-local disk", art, g, None)
+            )
+            continue
+        target = _pick_target(g, free, target_node, closed)
+        if target in free:
+            free[target] -= g.maxmem
+        else:
+            closed[target] -= g.maxmem
+        art = build_artifact(
+            action_kind="migrate", node=node, vmid=g.vmid, vm_kind=g.kind, target_node=target
+        )
+        note = " (no-new-guests, named by you)" if target in closed else ""
+        drain.append(
+            ("drain-migrate", f"migrate {g.name} ({g.vmid}) → {target}{note}", art, g, target)
+        )
+    return drain
+
+
+def _return_steps(drain: list[_Drain], node: str) -> list[tuple[str, str, dict[str, Any]]]:
+    planned: list[tuple[str, str, dict[str, Any]]] = []
+    for kind, _, _, g, parked_on in reversed(drain):
+        if kind == "drain-shutdown":
+            art = build_artifact(action_kind="start", node=node, vmid=g.vmid, vm_kind=g.kind)
+            planned.append(("return-start", f"start {g.name} ({g.vmid})", art))
+        else:
+            art = build_artifact(
+                action_kind="migrate",
+                node=str(parked_on),
+                vmid=g.vmid,
+                vm_kind=g.kind,
+                target_node=node,
+            )
+            planned.append(
+                ("return-migrate", f"migrate {g.name} ({g.vmid}) back from {parked_on}", art)
+            )
+    return planned
 
 
 async def _reject_remaining(

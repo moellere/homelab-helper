@@ -378,7 +378,8 @@ the recent values are on the finding; no model anywhere.
 The rolling node procedure, inside the gradient. `helper maintenance plan
 <node>` drafts one proposal per step — migrate every running guest to the
 emptiest cluster-mate with room (a guest on node-local storage is shut down
-instead; a `no-new-guests` host is never a target), `node-update`,
+instead; a `no-new-guests` host is never chosen, though `--target` may name
+one for this run), `node-update`,
 `node-reboot`, then bring everything back — and `helper maintenance run <id>`
 executes them in order after one consent, relaying it to each step's CONFIRM.
 Every step is gated by `decide()` on its own cell and leaves its own receipt;

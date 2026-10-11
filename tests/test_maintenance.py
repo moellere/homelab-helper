@@ -248,9 +248,12 @@ async def test_plan_honours_no_new_guests_and_capacity(sessionmaker) -> None:
     pve = make_proxmox(requests, guests=GUESTS, nodes=NODES)
     async with session_scope(sessionmaker) as s:
         await seed(s, close_pve2=True)
-        # pve2 is closed; pve3 has 16-12-1 = 3 GiB free: ha (12 GiB) fits nowhere.
-        with pytest.raises(MaintenanceError, match="no node can take ha"):
+        # pve2 is closed; pve3 has 16-12-1 = 3 GiB free: ha (12 GiB) fits nowhere on its own.
+        with pytest.raises(MaintenanceError, match="pve2 would fit but is no-new-guests"):
             await plan_maintenance(s, pve, NODE, actor="enoch")
+        # Naming the closed host is the operator overriding their own intent for this run.
+        run = await plan_maintenance(s, pve, NODE, actor="enoch", target_node="pve2")
+        assert "→ pve2 (no-new-guests, named by you)" in run.steps[0]["name"]
     await pve.aclose()
 
 
@@ -261,7 +264,7 @@ async def test_plan_refuses_a_second_open_run_an_unknown_host_and_a_bad_target(
     pve = make_proxmox(requests, guests=GUESTS, nodes=NODES)
     async with session_scope(sessionmaker) as s:
         await seed(s)
-        with pytest.raises(MaintenanceError, match="not an available target"):
+        with pytest.raises(MaintenanceError, match="not an online node"):
             await plan_maintenance(s, pve, NODE, actor="enoch", target_node="pve4")  # offline
         with pytest.raises(MaintenanceError, match="cannot hold ha"):
             await plan_maintenance(s, pve, NODE, actor="enoch", target_node="pve3")  # 3 GiB free

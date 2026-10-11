@@ -1184,8 +1184,21 @@ keeps; no model anywhere.
     probe or `host.storage` FSAVAIL into usage samples); per-guest root
     filesystems; the digest's lead as a phone notification when the soonest is
     under 30 days.
-- [ ] **10.3 Baselines and anomalies** — per-subject percentile bands from the
-  usage history; departure findings with the band as evidence.
+- [x] **10.3 Baselines and anomalies** (10/11/2026) — `engine/baselines.py`,
+  `helper discover anomalies`, `run_discovery("anomalies")`,
+  `FindingKind.ANOMALY` (migration `f4a9c3d7e2b5`, one line via
+  `enum_statements()`). Every guest and node with ≥ 14 days of hourly history
+  gets p10/p50/p95 bands per metric (CPU, network, disk I/O, memory) over its
+  own last 28 days; a departure is the newest 3 hourly samples all past
+  `p95 × 1.5` (and an absolute floor) — `<metric>-above-baseline` — or, for CPU
+  and network on a subject whose p10 clears the floor, all under `p10 × 0.5` —
+  `<metric>-below-baseline` (the backup that silently stopped). LOW, MEDIUM
+  after 6 hours; stale history (> 6 h) is not judged. Live calibration on the
+  fleet's fat-tailed hours (HA's CPU p95 is 3.5× its median) is why the band is
+  a whole-day percentile with a margin rather than an hour-of-day band.
+  - [ ] Follow-ups: hour-of-day / weekday shape once a season of history
+    exists; a per-subject "expected quiet" declaration so a nightly job's
+    silence is judged in its window only; K8s pod baselines from metrics-server.
 - [ ] **10.4 Maintenance runs** — `maintenance_run` sequencing drain →
   `node-update` → `node-reboot` → return, one receipt per step; `node-reboot` as
   the second no-inverse kind.

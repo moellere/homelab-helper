@@ -447,54 +447,57 @@ unset the approval service if you do not want agents able to ask.
 
 ---
 
-## Part 4 — rolling a node update (Phase 8)
+## Part 4 — a maintenance run on one node (Phases 8 and 10.4)
 
-`node-update` is the first action with **no inverse**. There is no rollback, no
-snapshot and no undo: if a dist-upgrade breaks a node, you recover it from a
-backup. So it can never be auto-promoted and never runs unattended — every one
-is a decision you make.
+`node-update` and `node-reboot` are the two actions with **no inverse**. There
+is no rollback, no snapshot and no undo: if a dist-upgrade breaks a node, or a
+node does not come back from its reboot, you recover it by hand. So neither can
+be auto-promoted and neither runs unattended — every one is a decision you make.
 
-Sequencing is **your** procedure, not one action. One action is one decision
-and one receipt, which is the gradient's unit; a composite drain-update-reboot
-action would hide which step failed. Do one node at a time, and never start the
-next until the last is verified.
+A **maintenance run** is that decision made once for the whole procedure. It
+plans one node's drain → update → reboot → return as ordinary proposals and
+executes them in order; every step still passes `decide()` on its own cell and
+leaves its own receipt, and the first failed or refused step ends the run.
 
 ### Before the first one
 
 ```bash
 uv run helper discover versions        # 8.1 names which nodes are behind
-uv run helper exec list                # the node-update drafts, if the daemon has run
+uv run helper trust show               # the cells the steps will land on
 ```
 
-Confirm `helper trust show` has **no** grant on `host-os/node-update/single-host`
-yet. Grant it when you are ready to do the first one by hand, and consider
-removing the grant afterwards until the next maintenance window.
+Grant what the steps need, at CONFIRM: `hypervisor migrate single-host`
+(and `shutdown` / `start` if any guest lives on node-local storage),
+`containers migrate single-host` for containers, `host-os node-update
+single-host`, `host-os node-reboot single-host`. Consider revoking the two
+`host-os` grants afterwards until the next maintenance window.
 
 ### Per node
 
-1. **Drain.** Migrate the node's running guests off it. `helper plan rebalance`
-   proposes targets; each move is a `migrate` proposal with a real rollback
-   (`prior-node`), so this step is the reversible one.
-2. **Confirm it is drained.** The executor refuses an undrained node, but check
-   first — a refusal costs you a round trip. Stopped guests are fine.
-3. **Update.** `helper exec run <id>` on the node-update proposal. It needs a
-   `CONFIRM` grant and your consent; expect minutes, not seconds, and watch the
-   receipt rather than the terminal.
-4. **Reboot.** By hand, from the Proxmox UI or console. Deliberately not an
-   action: a node that does not come back is the hairiest failure mode here, and
-   an action whose receipt already said "succeeded" would be a poor place for
-   it.
-5. **Verify.** The node is back, quorate, and `helper discover versions` no
-   longer names it. Migrate guests back if you want them there.
-6. **Next.** Only now.
+```bash
+uv run helper maintenance plan bmax2            # drafts the steps; nothing moves
+uv run helper maintenance run <id>              # one consent, then step by step
+uv run helper maintenance show <id>             # where it got to, with receipts
+```
 
-**Pass:** each node updates with a receipt naming the exit code, the undrained
-refusal produces no SSH call at all (check the node's auth log), and
-`helper discover versions` resolves that node's `pve-updates` finding on the
-next pass.
+The plan migrates every running guest to the emptiest cluster-mate with room
+(a `no-new-guests` host is never a target; a guest whose volumes are on
+node-local storage is shut down instead), then `node-update`, then
+`node-reboot` — whose dispatch only succeeds once the node is online, quorate
+and answering SSH again, and fails after 15 minutes otherwise — then brings
+everything back. One consent at the prompt is relayed to every step's CONFIRM;
+over MCP (`execute_maintenance_run`) the phone is asked once for the run.
 
-**Stop if:** a node does not come back, a dist-upgrade exits non-zero, or
-quorum drops. There is no undo — recover that node before touching another.
+**Pass:** one receipt per step, in order; `maintenance show` ends `succeeded`
+with every guest back where it was; `helper discover versions` no longer names
+the node; a step whose cell sits at PROPOSE is refused and the run stops there
+with the remaining proposals rejected (check `exec list`: nothing from that run
+is left pending).
+
+**Stop if:** a node does not come back (the run has already stopped — the
+reboot receipt says `failed: … did not come back`), a dist-upgrade exits
+non-zero, or quorum drops. There is no undo — recover that node before planning
+another.
 
 ---
 
@@ -521,7 +524,7 @@ shape — see the asymmetric fixture under P4-AC2.
 | P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 and step 6 ran live 10/11/2026 against a `migrate` of a vmid that does not exist: step 6 first — window open, `exec run` stopped at the confirm prompt, `window kill --yes` from the side, answer `y` → `refused: elevation window … closed before dispatch — halting`, nothing dispatched; then step 5 without a window — Proxmox answered 500 on the migrate POST, a `failed` receipt was written, the proposal stayed pending, and `hypervisor/migrate/single-host` dropped to `propose (probation)` with a `demote` row on the audit spine and a phone notice. Re-grant pending. |
 | P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 | P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
-| P8 node-update (rolling, per node) | ⏳ | Not yet run. No inverse: see Part 3 before the first one. |
+| P8 node-update (rolling, per node) | ⏳ | Not yet run. No inverse: see Part 4 before the first one — as a maintenance run (10.4) once a node has updates pending. |
 | P7 step 8 (unattended run notice) | ✅ 10/05/2026 | `containers/workload-restart/single-service` granted AUTONOMOUS; an agent-drafted restart of `homepage/deployment/homepage` ran from `helper daemon run --once` with no tap (rev 20 → 21, receipt actor `listener`, rollback `rollout-undo` verified); the phone showed the ✓ notice with `unattended` and the `helper exec rollback` line, after the receipt. Failure/demotion path not forced live — it needs a write that fails after a read that succeeds; pinned by tests. Cell left at AUTONOMOUS by the operator's choice. Found: the 15-min cron listener asked about the proposal while the cell was still CONFIRM, the ask timed out, and the listener then (correctly) refused to run it unattended after the grant — draft *after* granting. |
 
 Open as of 10/11/2026, one row, and it waits on the fleet rather than on code:

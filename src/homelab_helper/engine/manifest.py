@@ -54,7 +54,7 @@ GUEST_ACTION_KINDS: tuple[str, ...] = (*POWER_ACTION_KINDS, "migrate", "cpu-type
 WORKLOAD_ACTION_KINDS: tuple[str, ...] = ("workload-restart", "workload-scale")
 ARGOCD_ACTION_KINDS: tuple[str, ...] = ("argocd-sync",)
 DNS_ACTION_KINDS: tuple[str, ...] = ("dns-record",)
-NODE_ACTION_KINDS: tuple[str, ...] = ("node-update",)
+NODE_ACTION_KINDS: tuple[str, ...] = ("node-update", "node-reboot")
 NODE_DOMAIN = TrustDomain.HOST_OS
 ACTION_KINDS: tuple[str, ...] = (
     *GUEST_ACTION_KINDS,
@@ -90,6 +90,7 @@ ActionKind = Literal[
     "argocd-sync",
     "dns-record",
     "node-update",
+    "node-reboot",
 ]
 VMKind = Literal["qemu", "lxc"]
 WorkloadKind = Literal["deployment", "statefulset", "daemonset"]

@@ -75,6 +75,7 @@ every option.
 | `exec` | `accept` `list` `receipts` `reject` `rollback` `run` |
 | `findings` | `ack` `list` `narrate` `resolve` `show` `suppress` |
 | `host` | `intent` `retire` `show` |
+| `maintenance` | `abort` `list` `plan` `run` `show` |
 | `mcp` | `serve` `tools` |
 | `netbox` | `bootstrap` `health` `sync-cluster` `sync-host` |
 | `onboard` | — |
@@ -109,6 +110,7 @@ stable; results are JSON objects that only ever gain keys.
 | Discovery | `run_discovery` `probe_host` `probe_talos` `retire_host` |
 | Planning | `list_workloads` `recommend_placement` `plan_rebalance` `analyze_bottlenecks` `analyze_surplus` `network_path` `rightsizing` `usage_summary` |
 | Proposals | `propose_action` `propose_workload_action` `propose_argocd_sync` `propose_dns_record` `draft_remediations` `list_proposals` `get_proposal` `pending_actions` `execute_proposal` |
+| Maintenance | `plan_maintenance_run` `list_maintenance_runs` `execute_maintenance_run` |
 | Trust, read-only | `trust_status` `list_receipts` |
 
 Two conventions are part of the contract. A lookup that misses returns
@@ -155,7 +157,7 @@ the executor validates before it runs — has a fixed envelope:
 The shipped action kinds and their target fields are stable: `start` `stop`
 `shutdown` `restart` `migrate` `cpu-type` `resize` (a Proxmox guest),
 `workload-restart` `workload-scale` (a Kubernetes workload), `argocd-sync`,
-`dns-record`, `node-update`. New kinds are added; the authoring schema in
+`dns-record`, `node-update`, `node-reboot`. New kinds are added; the authoring schema in
 `engine/manifest.py` and the executor's `parse_manifest` are held in agreement
 by a test. Two things are deliberately **not** promised: that a manifest
 written by a newer release is accepted by an older executor (it is rejected,

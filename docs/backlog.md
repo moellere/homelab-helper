@@ -1199,9 +1199,26 @@ keeps; no model anywhere.
   - [ ] Follow-ups: hour-of-day / weekday shape once a season of history
     exists; a per-subject "expected quiet" declaration so a nightly job's
     silence is judged in its window only; K8s pod baselines from metrics-server.
-- [ ] **10.4 Maintenance runs** — `maintenance_run` sequencing drain →
-  `node-update` → `node-reboot` → return, one receipt per step; `node-reboot` as
-  the second no-inverse kind.
+- [x] **10.4 Maintenance runs** (10/12/2026) — `node-reboot` is the second
+  no-inverse action kind (`KernelSSHAdapter.reboot_node`, executor dispatch
+  that refuses an undrained node, issues `systemctl reboot`, waits for the API
+  to see the node leave and then for online + quorate + SSH, and fails the
+  receipt after 15 minutes rather than succeeding the moment the command
+  returned; never promotable). `engine/maintenance.py` + `MaintenanceRun`
+  (migration `a1b7c4d9e6f2`) plan one node's run as ordinary proposals —
+  migrate each running guest to the emptiest cluster-mate with room (honouring
+  `no-new-guests` and `shared_storage`; node-local guests are shut down
+  instead), `node-update`, `node-reboot`, then the mirror image — and execute
+  them in order through `execute_proposal`, relaying one operator consent to
+  every CONFIRM, stopping at the first failed or refused step and rejecting
+  the rest. `helper maintenance plan|run|show|list|abort`; MCP
+  `plan_maintenance_run`, `list_maintenance_runs`, `execute_maintenance_run`
+  (one phone prompt per run). Also fixed: `helper exec run` never passed an
+  SSH adapter, so a `node-update` could only be run from MCP.
+  - [ ] Follow-ups: a Talos node variant (`talosctl upgrade` is the same shape:
+    drain, act, wait for return); pre-flight "newest installed kernel is the
+    running one" after the reboot; Ceph "PGs clean" in the return wait when the
+    cluster runs Ceph.
 
 ## Not tracked here
 

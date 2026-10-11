@@ -21,6 +21,7 @@ from rich.table import Table
 from sqlalchemy import select
 
 from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDAPIError, ArgoCDConfigError
+from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter, KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxAPIError, ProxmoxConfigError
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiAPIError, UniFiConfig, UniFiConfigError
@@ -296,6 +297,7 @@ def exec_run(
                         k8s_adapter=_build_k8s_adapter(),
                         argocd_adapter=_build_argocd_adapter(),
                         unifi_adapter=_build_unifi_adapter(manifest.controller),
+                        ssh_adapter=KernelSSHAdapter() if manifest.is_node else None,
                         notifier=notifier_from_env(),
                     )
                 except ManifestError as exc:

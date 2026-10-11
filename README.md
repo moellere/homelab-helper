@@ -50,6 +50,7 @@ See [`architecture.md`](./docs/architecture.md) for the design,
 - Project filesystems, node memory and CPU forward from the usage history and say when each runs out; flag a guest or node that departs from its own baseline
 - Run probes and assertions on their own cadences from one daemon, draft remediations from findings through deterministic playbooks, and ask your phone before acting
 - Execute a proposed action only after you raise its trust cell — deterministic gate, receipts, snapshots, rollback, elevation windows, kill switch, and a notification after every run you were not asked about
+- Run a node's drain → update → reboot → return as one sequence of gated steps that stops at the first failure
 - Serve a one-screen status (`helper status`, `GET /status`) for Homepage or Home Assistant, and send a weekly digest
 
 ## Running it locally
@@ -264,7 +265,7 @@ Write surfaces today, each with a verified rollback path:
 | containers (Kubernetes) | `workload-restart`, `workload-scale` on a deployment / statefulset / daemonset | rollout undo, prior replicas |
 | containers (Argo CD) | `argocd-sync` (optionally pinned to a revision, optionally pruning) | Argo CD's own sync history |
 | dns (UniFi static DNS) | `dns-record` (create or update one name + type) | the prior record, or deleting the created one |
-| host-os (Proxmox nodes over SSH) | `node-update` (`apt dist-upgrade` on one named node; what runs is fixed in code) | **none** — reported as unverified, so the cell can never reach AUTONOMOUS |
+| host-os (Proxmox nodes over SSH) | `node-update` (`apt dist-upgrade` on one named node; what runs is fixed in code), `node-reboot` (reboots a drained node and only succeeds once it is online, quorate and reachable again) | **none** — reported as unverified, so these cells can never reach AUTONOMOUS |
 
 ```bash
 helper trust show                                   # every cell sits at PROPOSE by default
@@ -275,6 +276,7 @@ helper trust grant containers argocd-sync single-service confirm
 helper trust grant dns dns-record single-service confirm
 helper trust grant hypervisor resize single-host confirm
 helper trust grant host-os node-update single-host confirm   # stays at CONFIRM for good: no inverse
+helper trust grant host-os node-reboot single-host confirm
 helper approvals show                               # channel status, what would ask you, who answered
 helper daemon run --once                            # discovery → playbooks → listener, one pass (cron-friendly)
 helper daemon run                                   # the same on cadences, until Ctrl-C
@@ -370,6 +372,26 @@ I/O, memory — and an `anomaly` finding when the newest three hours all sit
 well above the band (a service that started spinning) or, for a subject that
 is normally busy, well below it (a backup that silently stopped). The band and
 the recent values are on the finding; no model anywhere.
+
+### Maintenance runs (Phase 10.4)
+
+The rolling node procedure, inside the gradient. `helper maintenance plan
+<node>` drafts one proposal per step — migrate every running guest to the
+emptiest cluster-mate with room (a guest on node-local storage is shut down
+instead; a `no-new-guests` host is never chosen, though `--target` may name
+one for this run), `node-update`,
+`node-reboot`, then bring everything back — and `helper maintenance run <id>`
+executes them in order after one consent, relaying it to each step's CONFIRM.
+Every step is gated by `decide()` on its own cell and leaves its own receipt;
+the first failed or refused step ends the run and the remaining proposals are
+rejected. Over MCP the same run asks your phone once. Because `node-reboot`
+has no inverse, a run can never execute unattended.
+
+```bash
+helper maintenance plan bmax2            # the steps, as proposals
+helper maintenance run 01a1…  --yes      # drain → update → reboot → return
+helper maintenance list                  # every run and how far it got
+```
 
 ### Storage efficiency, service suggestions, the weekly digest (Phase 8.5–8.7)
 

@@ -81,6 +81,7 @@ _DEFAULT_STRATEGY = {
     "workload-scale": PRIOR_REPLICAS,
     "workload-restart": ROLLOUT_UNDO,
     "node-update": NO_INVERSE,
+    "node-reboot": NO_INVERSE,
 }
 _SNAPSHOT_PREFIX = "helper"
 _TARGET_KEYS = (

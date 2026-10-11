@@ -13,6 +13,7 @@ from .discovery import DiscoveryRun, Observation
 from .finding import ReconciliationFinding
 from .host import Host
 from .intent import OperationalIntent
+from .maintenance import MaintenanceRun
 from .part import PhysicalPart
 from .placement import Placement
 from .probe import Probe
@@ -35,6 +36,7 @@ __all__ = [
     "ElevationWindow",
     "ExecutionReceipt",
     "Host",
+    "MaintenanceRun",
     "Observation",
     "OperationalIntent",
     "PhysicalPart",

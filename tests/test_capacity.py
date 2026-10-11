@@ -125,7 +125,7 @@ async def test_nas_filesystem_samples_upsert_one_bucket_per_day(sessionmaker) ->
     assert rows[0].subject_key == "omv:/srv/dev-disk-by-uuid-1"
     assert rows[0].label == "data"
     assert rows[0].disk_used == 2461 * G
-    assert rows[0].ts == NOW.replace(tzinfo=None, hour=0, minute=0)
+    assert rows[0].ts.replace(tzinfo=None) == NOW.replace(tzinfo=None, hour=0, minute=0)  # aware on Postgres
 
 
 async def test_evaluate_covers_hosts_and_filesystems_and_resolves(sessionmaker) -> None:

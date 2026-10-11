@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from homelab_helper.db.enums import FindingSeverity, FindingStatus, ProposalOutcome
+from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus, ProposalOutcome
 from homelab_helper.db.models import (
     DigestRun,
     ExecutionReceipt,
@@ -119,6 +119,8 @@ class Digest:
     pending_proposals: list[str] = field(default_factory=list)
     executed: list[ReceiptLine] = field(default_factory=list)
     authority: list[AuthorityLine] = field(default_factory=list)
+    runs_out: list[tuple[float, str]] = field(default_factory=list)
+    """Open capacity/headroom findings as ``(days, title)``, soonest first (Phase 10.2)."""
 
     @property
     def executed_ok(self) -> int:
@@ -176,6 +178,18 @@ async def resolve_window(
     return Window(start, end, f"since the last digest ({start:%Y-%m-%d %H:%M} UTC)")
 
 
+def _days_from(finding: ReconciliationFinding) -> float | None:
+    """``days_to_full`` / ``days_to_line`` from a category finding's evidence, if any."""
+    for ref in finding.evidence_refs or []:
+        if ref.get("type") != "evidence":
+            continue
+        for key in ("days_to_full", "days_to_line"):
+            value: Any = ref.get(key)
+            if isinstance(value, int | float):
+                return float(value)
+    return None
+
+
 def _line(finding: ReconciliationFinding) -> FindingLine:
     return FindingLine(
         severity=finding.severity,
@@ -213,6 +227,13 @@ async def build_digest(
     open_by_severity: dict[str, int] = {}
     for line in still_open:
         open_by_severity[line.severity.value] = open_by_severity.get(line.severity.value, 0) + 1
+    runs_out = sorted(
+        (eta, f.title)
+        for f in findings
+        if f.status is FindingStatus.OPEN
+        and f.kind in (FindingKind.CAPACITY, FindingKind.STORAGE_EFFICIENCY)
+        and (eta := _days_from(f)) is not None
+    )
 
     receipts = (
         (
@@ -288,6 +309,7 @@ async def build_digest(
         pending_proposals=[p.title for p in pending],
         executed=executed,
         authority=authority,
+        runs_out=runs_out,
     )
 
 
@@ -325,6 +347,11 @@ def render_markdown(digest: Digest) -> str:
     ]
     if digest.quiet:
         out += ["Nothing changed, ran, or moved in this window.", ""]
+
+    if digest.runs_out:
+        out += ["## What runs out first", ""]
+        out += _bullets([f"- in ~{days:.0f} day(s): {title}" for days, title in digest.runs_out])
+        out.append("")
 
     out += ["## What was done", ""]
     if digest.executed:

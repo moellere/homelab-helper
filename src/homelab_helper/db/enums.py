@@ -208,6 +208,8 @@ class FindingKind(StrEnum):
     BACKUP_GAP = "backup-gap"
     RIGHTSIZING = "rightsizing"
     STORAGE_HEALTH = "storage-health"
+    CAPACITY = "capacity"
+    """A filesystem, node memory or node CPU trending into its limit (Phase 10.2)."""
     SERVICE_SUGGESTION = "service-suggestion"
     STORAGE_EFFICIENCY = "storage-efficiency"
     """A Kubernetes workload has fewer ready replicas than it asks for, with its rollout settled (Phase 7)."""

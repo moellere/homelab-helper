@@ -71,7 +71,7 @@ every option.
 | `db` | `init` `migrate` `reset` `status` |
 | `diff` | `git-vs-cluster` |
 | `digest` | `history` `send` `show` |
-| `discover` | `argocd` `backups` `cloudflare` `hass` `host` `import` `k8s` `mikrotik` `network` `omv` `proxmox` `replay` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
+| `discover` | `argocd` `backups` `capacity` `cloudflare` `hass` `host` `import` `k8s` `mikrotik` `network` `omv` `proxmox` `replay` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
 | `exec` | `accept` `list` `receipts` `reject` `rollback` `run` |
 | `findings` | `ack` `list` `narrate` `resolve` `show` `suppress` |
 | `host` | `intent` `retire` `show` |

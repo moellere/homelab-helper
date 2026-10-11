@@ -129,6 +129,41 @@ def _reset_postgres_schema(url: str) -> None:
         raise errors[0]
 
 
+def drop_postgres_schema(url: str) -> None:
+    """Start from an empty schema — for a test that must run the migrations itself.
+
+    Tables and enum types left by other tests' ``create_all`` would collide
+    with Alembic's ``CREATE TYPE``; after this the migrations own the schema and
+    later tests' ``create_all`` finds everything already there.
+    """
+    import threading  # noqa: PLC0415
+
+    import asyncpg  # noqa: PLC0415 - only when the suite targets Postgres
+
+    dsn = url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+    async def _go() -> None:
+        conn = await asyncpg.connect(dsn)
+        try:
+            await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        finally:
+            await conn.close()
+
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            asyncio.run(_go())
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test thread
+            errors.append(exc)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    t.join()
+    if errors:
+        raise errors[0]
+
+
 @pytest.fixture(autouse=True)
 def _postgres_redirect(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """With ``HELPER_TEST_DATABASE_URL`` set, every engine the code builds —
@@ -136,6 +171,8 @@ def _postgres_redirect(request: pytest.FixtureRequest, monkeypatch: pytest.Monke
     database, emptied first. Tests that inspect the SQLite file itself carry
     ``@pytest.mark.sqlite_only`` and are skipped."""
     if not _PG_URL:
+        if request.node.get_closest_marker("postgres_only"):
+            pytest.skip("needs a real Postgres (set HELPER_TEST_DATABASE_URL)")
         return
     if request.node.get_closest_marker("sqlite_only"):
         pytest.skip("inspects the SQLite file; the suite is running against Postgres")

@@ -489,23 +489,73 @@ ever met a mock.
 
 ---
 
-## Post-roadmap (Phase 10+)
+## Phase 10 — Predictive operations
+
+Phase 8 answered "what is wrong now"; Phase 10 answers "what is about to be".
+The substrate is already in place — a year of daily usage rollups from 8.3, and
+per-drive SMART counters the `host.smart` probe has recorded since Phase 1 that
+nothing consumed. With roughly 26 subjects this is thresholds, trends and
+per-subject baselines, named as such; it is not fleet ML, and nothing here
+needs a model.
+
+### Goals
+
+- A drive that is failing, wearing out or quietly reallocating sectors is a
+  finding before it is an outage, judged on its own history rather than on a
+  single reading.
+- Capacity and load trends say *when* something runs out, not only that it
+  is high today.
+- Every rule is a stated threshold or trend in code, with its evidence on the
+  finding, so an operator can disagree with a number rather than with a model.
+
+### Slices, in delivery order
+
+| # | Slice | Delivers |
+|---|---|---|
+| 10.1 | **Disk health** | `engine/disk_health.py`: `host.smart` → `storage-health` findings per drive — SMART FAILED, reallocated/pending sectors (HIGH when growing), CRC errors that grow inside the window, temperature over the line for that kind of drive (judged on the window's peak), NVMe wear past a threshold or on a rate that reaches 100% within six months, and spinning drives past 50 000 hours. History is the host's own earlier observations; resolution is per host, like RAID. |
+| 10.2 | **Capacity trends** | Time-to-full for every pool and filesystem the usage history covers (8.5 does Proxmox storage; extend to hosts' root filesystems and the NAS), memory and CPU trend per node with a "crosses the constrained line in N days" finding, and the digest naming what runs out first. |
+| 10.3 | **Baselines and anomalies** | Per-subject baselines from the usage history (weekday/hour shape) so a guest that departs from *its own* normal — a backup that silently stopped, a service that started spinning — raises a finding with the baseline as evidence. Deterministic (percentile bands), no model. |
+| 10.4 | **Maintenance runs** | A `maintenance_run` that sequences drain → `node-update` → `node-reboot` → return guests as one operator-approved procedure with one receipt per step; `node-reboot` as the second no-inverse action kind. The rolling procedure the operator scripts by hand today, inside the gradient. |
+
+**Non-goals.** No machine learning, no hosted service, no new adapters. A
+threshold the operator can read beats a score they cannot.
+
+### Acceptance criteria
+
+1. **A drive with growing reallocated sectors is a HIGH finding**, a drive with
+   a static count from years ago is at most MEDIUM, and a CRC count that has not
+   moved raises nothing — demonstrated on the bundled fixtures and on the live
+   fleet's NAS.
+2. **A replaced drive closes the old finding and starts clean**: identity is the
+   serial, resolution is per host.
+3. **Every pool and filesystem with history carries a time-to-full**, and the
+   digest leads with the earliest.
+4. **A guest departing from its own baseline is a finding whose evidence shows
+   the band it left.**
+5. **One maintenance run on one node produces one receipt per step**, stops on
+   the first failure, and never reaches AUTONOMOUS.
+
+### Effort
+
+**6–10 weeks.** 10.1 is a week — the probe and the finding machinery exist.
+10.2 and 10.3 are mostly deciding what a trend means for this fleet; 10.4 is
+the largest because sequencing a no-inverse action is new ground for the
+executor.
+
+### Stop-here value
+
+After 10.1 alone: no disk in the lab dies unannounced.
+
+---
+
+## Post-roadmap (Phase 11+)
 
 These are real future phases, deliberately not committed in this roadmap:
 
-- **Predictive operations**. Failure prediction and anomaly detection on the Phase 8 usage history.
 - **Multi-tenant + hosted service**. The Nabu-Casa-style subscription tier — managed LLM access, off-site backup, remote access, mobile push, community template marketplace.
 - **Heterogeneous architecture support beyond Linux**. FreeBSD probes (TrueNAS Core, pfSense/OPNsense), macOS probes (Mac mini servers), Windows probes (Windows hosts in mixed labs).
 
-Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–9).
-
-**Predictive operations is the strongest candidate** and its substrate is
-already in place: 8.3 backfills up to a year of daily rollups on first run, and
-the `host.smart` probe already collects per-drive status, power-on hours,
-temperature and reallocated-sector counts that **nothing currently consumes** —
-a failing disk is invisible today. With roughly 26 subjects that work is
-thresholds, trends and per-subject baselines rather than fleet ML, and should
-be named that way.
+Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–10). Predictive operations, the former strongest candidate here, became Phase 10.
 
 ---
 

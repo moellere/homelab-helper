@@ -1139,8 +1139,35 @@ service. It earns its keep by finishing things rather than starting them.
 
 ---
 
+## Phase 10 — Predictive operations
+
+See `roadmap.md` Phase 10. Thresholds and trends on data the harness already
+keeps; no model anywhere.
+
+- [x] **10.1 Disk health** (10/11/2026) — `engine/disk_health.py`: the newest
+  `host.smart.devices` observation judged against the host's own earlier ones
+  (90-day window, `Reconciler._observation_history`). Categories under
+  `storage-health`: `disk-failing` (SMART FAILED, HIGH), `disk-reallocating`
+  (MEDIUM; HIGH when the count grew in the window or ≥ 50), `disk-link-errors`
+  (CRC errors that grew, MEDIUM — a static count raises nothing),
+  `disk-hot` (window peak over the line for that kind of drive: 50/55 °C
+  spinning, 65/70 °C flash), `disk-worn` (NVMe/SSD ≥ 80% used, HIGH ≥ 95%, or a
+  rate over ≥ 14 days of history that reaches 100% within 180 days),
+  `disk-aged` (spinning drive past 50 000 h, LOW). Identity is the serial, so a
+  replaced drive closes the old finding; resolution is per host, like RAID.
+  - [ ] Follow-ups: per-drive temperature baselines instead of fixed lines once
+    a season of history exists; NVMe `media_errors` / `available_spare` (the
+    probe does not record them yet); a `helper host show` drive table.
+- [ ] **10.2 Capacity trends** — time-to-full for host filesystems and the NAS,
+  node memory/CPU trend findings, the digest leading with what runs out first.
+- [ ] **10.3 Baselines and anomalies** — per-subject percentile bands from the
+  usage history; departure findings with the band as evidence.
+- [ ] **10.4 Maintenance runs** — `maintenance_run` sequencing drain →
+  `node-update` → `node-reboot` → return, one receipt per step; `node-reboot` as
+  the second no-inverse kind.
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but
 deliberately deferred — Phase 7 slice 2 picks it up as the scheduler. Post-roadmap
-(Phase 8+) items are deliberately not tracked.
+(Phase 11+) items are deliberately not tracked.

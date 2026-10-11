@@ -74,6 +74,7 @@ from homelab_helper.db.models import (
     Placement,
     ReconciliationFinding,
 )
+from homelab_helper.engine.disk_health import HISTORY_WINDOW, reconcile_disk_health
 from homelab_helper.engine.fingerprint import make_fingerprint
 from homelab_helper.engine.raid_health import reconcile_raid_health
 from homelab_helper.engine.stray_export import host_exports, reconcile_stray_exports
@@ -93,6 +94,7 @@ _DIMMS_KEY = "host.memory.dimms"
 _STORAGE_DEVICES_KEY = "host.storage.devices"
 _INTERFACES_KEY = "host.network.interfaces"
 _RAID_ARRAYS_KEY = "host.raid.arrays"
+_SMART_DEVICES_KEY = "host.smart.devices"
 _SHARES_KEY = "host.shares.exports"
 _SHARE_FOLDERS_KEY = "host.shares.folders"
 _SHARE_FS_KEY = "host.shares.filesystems"
@@ -443,14 +445,8 @@ class Reconciler:
         # Phase 3: Auto-resolve findings whose conditions are no longer present.
         await self._auto_resolve_findings(session, host_id, ledger)
 
-        # Phase 4: RAID health. Only when host.raid has reported for this host —
-        # its findings resolve per host, never from another host's silence.
-        raid_raw = await self._latest_observation_value(session, host_id, _RAID_ARRAYS_KEY)
-        if isinstance(raid_raw, list):
-            raid = await reconcile_raid_health(session, str(host_id), host.hostname, raid_raw)
-            ledger["findings_opened"] += raid.fingerprints["opened"] + raid.fingerprints["reopened"]
-            ledger["findings_updated"] += raid.fingerprints["updated"]
-            ledger["findings_resolved"] += raid.fingerprints["resolved"]
+        # Phase 4 / 10.1: RAID and drive health, each scoped per host.
+        storage_seen = await self._reconcile_storage_health(session, host_id, host, ledger)
 
         # Phase 5: host shares → the same stray-export check OMV gets, scoped to
         # this host so its paths never share a finding with another machine's.
@@ -470,8 +466,8 @@ class Reconciler:
             ledger["findings_updated"] += stray.updated
             ledger["findings_resolved"] += stray.resolved
 
-        lineage_seen = sum(
-            1 for raw in (dimms_raw, storage_raw, nic_raw, raid_raw, shares_raw) if raw is not None
+        lineage_seen = int(storage_seen) + sum(
+            1 for raw in (dimms_raw, storage_raw, nic_raw, shares_raw) if raw is not None
         )
         if latest or lineage_seen:
             now_ts = datetime.now(UTC)
@@ -541,6 +537,67 @@ class Reconciler:
         best = await self._best_per_key(session, host_id, [key])
         obs = best.get(key)
         return obs.value if obs is not None else None
+
+    async def _reconcile_storage_health(
+        self,
+        session: AsyncSession,
+        host_id: uuid.UUID,
+        host: Host,
+        ledger: dict[str, Any],
+    ) -> bool:
+        """RAID arrays and SMART drives → ``storage-health`` findings, per host.
+
+        Only when the probe has reported for *this* host: its findings resolve
+        per host, never from another host's silence. Returns whether either
+        probe has ever reported here.
+        """
+        # Phase 4: RAID health. Only when host.raid has reported for this host —
+        # its findings resolve per host, never from another host's silence.
+        raid_raw = await self._latest_observation_value(session, host_id, _RAID_ARRAYS_KEY)
+        if isinstance(raid_raw, list):
+            raid = await reconcile_raid_health(session, str(host_id), host.hostname, raid_raw)
+            ledger["findings_opened"] += raid.fingerprints["opened"] + raid.fingerprints["reopened"]
+            ledger["findings_updated"] += raid.fingerprints["updated"]
+            ledger["findings_resolved"] += raid.fingerprints["resolved"]
+
+        # Phase 10.1: drive health from host.smart, judged against the host's own
+        # earlier observations so a moving counter outranks a static one. Same
+        # per-host scoping as RAID: silence resolves nothing.
+        smart_raw = await self._latest_observation_value(session, host_id, _SMART_DEVICES_KEY)
+        if isinstance(smart_raw, list):
+            history = await self._observation_history(
+                session, host_id, _SMART_DEVICES_KEY, since=datetime.now(UTC) - HISTORY_WINDOW
+            )
+            disk = await reconcile_disk_health(
+                session, str(host_id), host.hostname, smart_raw, history
+            )
+            ledger["findings_opened"] += disk.fingerprints["opened"] + disk.fingerprints["reopened"]
+            ledger["findings_updated"] += disk.fingerprints["updated"]
+            ledger["findings_resolved"] += disk.fingerprints["resolved"]
+        return raid_raw is not None or smart_raw is not None
+
+    async def _observation_history(
+        self,
+        session: AsyncSession,
+        host_id: uuid.UUID,
+        key: str,
+        *,
+        since: datetime,
+    ) -> list[tuple[datetime, Any]]:
+        """Every observation of ``key`` for the host since ``since``, oldest first."""
+        rows = (
+            await session.execute(
+                select(Observation)
+                .where(
+                    Observation.target_type == IntentTargetType.HOST,
+                    Observation.target_id == str(host_id),
+                    Observation.key == key,
+                    Observation.recorded_at >= since,
+                )
+                .order_by(Observation.recorded_at)
+            )
+        ).scalars()
+        return [(o.recorded_at, o.value) for o in rows]
 
     async def _reconcile_dimm_lineage(
         self,

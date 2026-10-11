@@ -46,6 +46,7 @@ See [`architecture.md`](./docs/architecture.md) for the design,
 - Recommend placement, rebalancing, and reconfiguration, and flag known bottleneck patterns — respecting node-local storage and the hosts you mark `no-new-guests`
 - Keep usage history from Proxmox's RRDs and recommend cores and memory per guest from it
 - Check version currency (OS, Ceph, Kubernetes and Talos end of support, pending updates), backup posture, storage efficiency, and suggest services your hardware could run
+- Judge every drive against its own SMART history — failing, reallocating, CRC errors on the rise, running hot, wearing out, simply old — before it is an outage
 - Run probes and assertions on their own cadences from one daemon, draft remediations from findings through deterministic playbooks, and ask your phone before acting
 - Execute a proposed action only after you raise its trust cell — deterministic gate, receipts, snapshots, rollback, elevation windows, kill switch, and a notification after every run you were not asked about
 - Serve a one-screen status (`helper status`, `GET /status`) for Homepage or Home Assistant, and send a weekly digest
@@ -335,6 +336,18 @@ Like every other action it runs only through the trust gate: grant
 (containers) at CONFIRM and the daemon asks your phone; a VM's new size takes
 effect at its next stop/start, and `helper exec rollback` restores the prior
 values.
+
+### Disk health (Phase 10.1)
+
+Every deep-probed host's drives are judged on each reconcile against the host's
+own SMART history: SMART FAILED, reallocated or pending sectors (HIGH when the
+count is growing), CRC errors that grow inside the window (a cable, usually — a
+static count from years ago raises nothing), temperature over the line for that
+kind of drive judged on the window's peak, NVMe wear past a threshold or on a
+rate that reaches 100% within six months, and spinning drives past 50 000
+hours. They land as `storage-health` findings keyed by serial, so a replaced
+drive closes the old finding and starts clean. Thresholds are constants in
+`engine/disk_health.py`, with the evidence on every finding.
 
 ### Storage efficiency, service suggestions, the weekly digest (Phase 8.5–8.7)
 

@@ -26,6 +26,10 @@ def test_statements_cover_every_member_of_every_native_enum() -> None:
     assert "ALTER TYPE intentstate ADD VALUE IF NOT EXISTS 'NO_NEW_GUESTS'" in statements
     assert len(statements) == sum(len(list(e)) for e in declared.values())
     assert statements == sorted(statements, key=lambda s: s.split()[2])  # grouped by type
+    # A migration older than a type's table must not try to alter that type.
+    narrowed = enum_statements({"findingkind"})
+    assert narrowed
+    assert all(s.startswith("ALTER TYPE findingkind ") for s in narrowed)
 
 
 @pytest.mark.postgres_only

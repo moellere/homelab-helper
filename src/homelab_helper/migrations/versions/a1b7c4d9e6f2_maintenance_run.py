@@ -16,7 +16,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-from homelab_helper.db.enum_sync import enum_statements
+from homelab_helper.db.enum_sync import apply_enum_sync
 
 # revision identifiers, used by Alembic.
 revision: str = "a1b7c4d9e6f2"
@@ -47,9 +47,7 @@ def upgrade() -> None:
     op.create_index("ix_maintenance_run_node", "maintenance_run", ["node"])
     op.create_index("ix_maintenance_run_status", "maintenance_run", ["status"])
     op.create_index("ix_maintenance_run_created_at", "maintenance_run", ["created_at"])
-    if op.get_bind().dialect.name == "postgresql":
-        for statement in enum_statements():
-            op.execute(statement)
+    apply_enum_sync(op)
 
 
 def downgrade() -> None:

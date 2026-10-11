@@ -16,7 +16,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-from homelab_helper.db.enum_sync import enum_statements
+from homelab_helper.db.enum_sync import apply_enum_sync
 
 # revision identifiers, used by Alembic.
 revision: str = "f4a9c3d7e2b5"
@@ -26,10 +26,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    if op.get_bind().dialect.name != "postgresql":
-        return
-    for statement in enum_statements():
-        op.execute(statement)
+    apply_enum_sync(op)
 
 
 def downgrade() -> None:

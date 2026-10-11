@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 from alembic import command
@@ -12,6 +13,7 @@ from homelab_helper.db.enum_sync import declared_enums, enum_statements
 from homelab_helper.db.enums import FindingKind, IntentState
 from homelab_helper.db.migrate import alembic_config
 from homelab_helper.db.session import make_engine
+from tests.conftest import PG_VAR, drop_postgres_schema
 
 
 def test_statements_cover_every_member_of_every_native_enum() -> None:
@@ -32,6 +34,7 @@ def test_migrated_postgres_types_hold_every_member(tmp_path, monkeypatch) -> Non
     url = f"sqlite+aiosqlite:///{tmp_path / 'enums.db'}"
     monkeypatch.delenv("HOMELAB_HELPER_DATABASE_URL", raising=False)
     monkeypatch.chdir(tmp_path)
+    drop_postgres_schema(os.environ[PG_VAR])  # other tests' create_all left types behind
     command.upgrade(alembic_config(url), "head")
 
     async def _labels() -> list[tuple[str, str]]:

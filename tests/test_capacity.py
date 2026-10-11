@@ -12,6 +12,7 @@ from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus
 from homelab_helper.db.models import Host, ReconciliationFinding, UsageSample
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.capacity import (
+    after_last_step,
     evaluate,
     filesystem_issues,
     node_issues,
@@ -125,7 +126,9 @@ async def test_nas_filesystem_samples_upsert_one_bucket_per_day(sessionmaker) ->
     assert rows[0].subject_key == "omv:/srv/dev-disk-by-uuid-1"
     assert rows[0].label == "data"
     assert rows[0].disk_used == 2461 * G
-    assert rows[0].ts.replace(tzinfo=None) == NOW.replace(tzinfo=None, hour=0, minute=0)  # aware on Postgres
+    assert rows[0].ts.replace(tzinfo=None) == NOW.replace(
+        tzinfo=None, hour=0, minute=0
+    )  # aware on Postgres
 
 
 async def test_evaluate_covers_hosts_and_filesystems_and_resolves(sessionmaker) -> None:
@@ -229,3 +232,31 @@ async def test_digest_leads_with_what_runs_out_first(sessionmaker) -> None:
     page = render_markdown(digest)
     assert page.index("## What runs out first") < page.index("## What was done")
     assert "n0:/ fills in about" in page
+
+
+def test_a_step_is_not_a_trend() -> None:
+    total = 100 * G
+    # 20 GiB for ten days, then a 40 GiB copy lands and it stays at 60: no growth.
+    base = NOW.replace(tzinfo=None) - timedelta(days=30)
+    stepped = [(base + timedelta(days=d), (20 if d < 10 else 60) * G) for d in range(31)]
+    segment, stepped_at = after_last_step(stepped, total)
+    assert stepped_at == base + timedelta(days=10)
+    assert len(segment) == 21
+    assert filesystem_issues("n:/", "host", "h", stepped, total, now=NOW) == []
+    # The same step followed by real growth is judged on the growth alone.
+    growing = [(ts, used + max(0, d - 10) * G) for d, (ts, used) in enumerate(stepped)]
+    issues = filesystem_issues("n:/", "host", "h", growing, total, now=NOW)
+    assert [i.category for i in issues] == ["filesystem-headroom"]
+    assert issues[0].evidence["since_step"] == (base + timedelta(days=10)).isoformat()
+    assert "since the step on" in issues[0].description
+    # Too few samples after the step: no verdict yet.
+    late = [(base + timedelta(days=d), (20 if d < 28 else 60) * G) for d in range(31)]
+    assert filesystem_issues("n:/", "host", "h", late, total, now=NOW) == []
+
+
+def test_node_memory_step_is_not_a_trend() -> None:
+    # A 12 GiB guest moves onto a 32 GiB node and the node then idles at 19 GiB.
+    samples = _samples(30, 7, 0, 0.1, 0)
+    for s in samples[10:]:
+        s.mem_used = 19 * G
+    assert node_issues("n", "h", samples, now=NOW) == []

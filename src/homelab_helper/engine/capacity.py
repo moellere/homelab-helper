@@ -15,6 +15,13 @@ into ``capacity`` findings:
 - ``cpu-headroom`` — a node whose daily mean CPU trends across ``CPU_LINE``
   inside the horizon.
 
+A trend is a slope, not a step: a guest moving onto a node, or a big copy
+onto a filesystem, is a jump followed by a plateau, and a straight line fitted
+across the jump reads it as growth that is not happening. The fit therefore
+restarts after the last step larger than ``STEP_RATIO`` of the subject's
+total, and needs ``MIN_HEADROOM_SAMPLES`` daily samples after it before it
+says anything — "since the step" is on the finding.
+
 Filesystem samples for a NAS come from ``record_filesystem_samples``, which
 the OpenMediaVault discoverers call once per run (one daily bucket, upserted),
 so the NAS accrues the history the fit needs. Nodes and pools already have
@@ -57,6 +64,8 @@ FULL_HIGH = 0.95
 MEMORY_LINE = 0.90
 CPU_LINE = 0.80
 TREND_WINDOW = timedelta(days=60)
+STEP_RATIO = 0.10
+"""A day-to-day change above this share of the total is a step, not a trend."""
 _GIB = 1024**3
 _RATIO_SCALE = 10**11
 """CPU is a fraction; the fit wants integers and has a bytes-per-day floor, so ratios are
@@ -75,6 +84,23 @@ def _issue(category: str, target_type: str, target_id: str, **kw: Any) -> Catego
         target_id=target_id,
         **kw,
     )
+
+
+def after_last_step(
+    points: Sequence[tuple[datetime, int]], total: int
+) -> tuple[list[tuple[datetime, int]], datetime | None]:
+    """The points after the last day-to-day jump above ``STEP_RATIO`` of ``total``.
+
+    Returns the trailing segment and the step's timestamp (``None`` when the
+    series has no step), so the fit sees a slope and not a move.
+    """
+    if not total:
+        return list(points), None
+    cut, stepped_at = 0, None
+    for i in range(1, len(points)):
+        if abs(points[i][1] - points[i - 1][1]) >= total * STEP_RATIO:
+            cut, stepped_at = i, points[i][0]
+    return list(points[cut:]), stepped_at
 
 
 def _severity_for(days: float) -> FindingSeverity:
@@ -112,11 +138,13 @@ def filesystem_issues(
                 evidence={"used": used, "total": total, "ratio": round(ratio, 3)},
             )
         )
-    projection = project_headroom(points, total)
+    segment, stepped_at = after_last_step(points, total)
+    projection = project_headroom(segment, total)
     if projection is not None and projection.days_to_full is not None:
         days = projection.days_to_full
         if days <= HEADROOM_MEDIUM_DAYS:
             full_on = now + timedelta(days=days)
+            since = f" since the step on {stepped_at:%Y-%m-%d}" if stepped_at else ""
             issues.append(
                 _issue(
                     "filesystem-headroom",
@@ -127,7 +155,7 @@ def filesystem_issues(
                     description=(
                         f"{_human(projection.used)} of {_human(projection.total)} used "
                         f"({projection.ratio:.0%}), growing {_human(projection.bytes_per_day)}/day "
-                        f"over {projection.samples} daily sample(s) — full around "
+                        f"over {projection.samples} daily sample(s){since} — full around "
                         f"{full_on:%Y-%m-%d} at this rate."
                     ),
                     evidence={
@@ -136,6 +164,7 @@ def filesystem_issues(
                         "bytes_per_day": round(projection.bytes_per_day),
                         "days_to_full": round(days, 1),
                         "samples": projection.samples,
+                        "since_step": stepped_at.isoformat() if stepped_at else None,
                     },
                 )
             )
@@ -193,12 +222,13 @@ def node_issues(
     total = next((int(s.mem_total) for s in reversed(samples) if s.mem_total), 0)
     if mem and total:
         line_bytes = int(total * MEMORY_LINE)
+        segment, _ = after_last_step(mem, total)
         issue = _line_issue(
             "memory-headroom",
             label,
             "memory use",
             target_id,
-            project_headroom(mem, line_bytes),
+            project_headroom(segment, line_bytes),
             MEMORY_LINE,
             "its RAM",
             now=now,
@@ -207,12 +237,13 @@ def node_issues(
             issues.append(issue)
     cpu = [(s.ts, int(float(s.cpu) * _RATIO_SCALE)) for s in samples if s.cpu is not None]
     if cpu:
+        segment, _ = after_last_step(cpu, _RATIO_SCALE)
         issue = _line_issue(
             "cpu-headroom",
             label,
             "CPU",
             target_id,
-            project_headroom(cpu, int(CPU_LINE * _RATIO_SCALE)),
+            project_headroom(segment, int(CPU_LINE * _RATIO_SCALE)),
             CPU_LINE,
             "its cores",
             now=now,
@@ -322,6 +353,8 @@ __all__ = [
     "FULL_HIGH",
     "FULL_WARN",
     "MEMORY_LINE",
+    "STEP_RATIO",
+    "after_last_step",
     "evaluate",
     "filesystem_issues",
     "node_issues",

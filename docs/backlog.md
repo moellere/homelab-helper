@@ -1013,13 +1013,16 @@ from 1.0.0 is the operator-time list under 9.1.
   - [x] P4-AC2 narration (10/09/2026): `helper bottlenecks --narrate` against
     the asymmetric fixture through the router named `ceph-c`, the 1000 vs
     2500 Mbps links and the four mitigations with their trade-offs.
-  - [ ] P4-AC3 onboarding, interactively, on a host the harness has never seen.
-  - [ ] P6 step 5 live: a *dispatch failure* demotes the cell. Needs a write
-    that fails after a read that succeeds — pinned by tests, never forced live.
-  - [ ] P6 step 6 live: the kill switch halts a run mid-flight at the
-    pre-dispatch checkpoint.
+  - [x] P4-AC3 onboarding (10/11/2026): a never-seen devbox clone, interview →
+    confirm → registered → warm discovery; retired and destroyed afterwards.
+  - [x] P6 step 5 live (10/11/2026): a `migrate` of a nonexistent vmid — Proxmox
+    500 on the POST, failed receipt, proposal pending, cell demoted to
+    `propose (probation)`, demote row on the spine, phone notice.
+  - [x] P6 step 6 live (10/11/2026): window open, run stopped at the confirm
+    prompt, `window kill --yes` from the side — refused before dispatch.
   - [ ] Part 4 rolling `node-update` on one drained node, including the
-    zero-API-call check at the propose floor (read the node's auth log).
+    zero-API-call check at the propose floor (read the node's auth log) —
+    waits for the next node with pending updates; the only open row.
   - [x] P4-AC2 / P5-AC4: the bundled `asymmetric` lab — a three-node cluster
     with one node left at 1 GbE. `discover replay` + `bottlenecks` produce the
     `CEPH_BOTTLENECK` finding and all four mitigations through the real CLI,

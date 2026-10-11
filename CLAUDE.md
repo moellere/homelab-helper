@@ -50,6 +50,7 @@ src/homelab_helper/
 │                   raid_health (9.5: host.raid → storage-health findings),
 │                   disk_health (10.1: host.smart + history → storage-health),
 │                   capacity (10.2: usage history → time-to-full / memory / CPU trends),
+│                   baselines (10.3: per-subject percentile bands → anomaly findings),
 │                   schedule (9.6: per-probe/assertion cadences from a YAML file),
 │                   suggestions (8.7 idle capability, missing blocks),
 │                   cluster_nodes (9.2: the one rule for "is this host a

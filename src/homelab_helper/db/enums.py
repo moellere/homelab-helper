@@ -210,6 +210,8 @@ class FindingKind(StrEnum):
     STORAGE_HEALTH = "storage-health"
     CAPACITY = "capacity"
     """A filesystem, node memory or node CPU trending into its limit (Phase 10.2)."""
+    ANOMALY = "anomaly"
+    """A guest or node outside its own usage baseline (Phase 10.3)."""
     SERVICE_SUGGESTION = "service-suggestion"
     STORAGE_EFFICIENCY = "storage-efficiency"
     """A Kubernetes workload has fewer ready replicas than it asks for, with its rollout settled (Phase 7)."""

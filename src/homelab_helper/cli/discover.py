@@ -1335,6 +1335,12 @@ def discover_storage() -> None:
     )
 
 
+@discover_app.command(name="anomalies")
+def discover_anomalies() -> None:
+    """Anomalies (Phase 10.3): guests and nodes outside their own usage baseline."""
+    raise typer.Exit(code=_category_discovery("anomalies", FindingKind.ANOMALY, "anomalies"))
+
+
 @discover_app.command(name="capacity")
 def discover_capacity() -> None:
     """Capacity trends (Phase 10.2): filesystems filling, node memory and CPU crossing their lines."""

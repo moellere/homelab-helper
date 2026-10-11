@@ -90,6 +90,7 @@ from homelab_helper.engine.backups import (
     orphan_issues,
     reconcile_backup_findings,
 )
+from homelab_helper.engine.baselines import reconcile_anomaly_findings
 from homelab_helper.engine.bottlenecks import analyze_bottlenecks as _analyze_bottlenecks
 from homelab_helper.engine.bottlenecks import persist_bottlenecks
 from homelab_helper.engine.capacity import (
@@ -1152,6 +1153,18 @@ async def _discover_capacity(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _discover_anomalies(session: AsyncSession) -> dict[str, Any]:
+    """Phase 10.3: guests and nodes outside their own usage baseline. The history is
+    the source; a subject with too little or too stale history is not judged."""
+    result, issues = await reconcile_anomaly_findings(session, now=datetime.now(UTC))
+    return {
+        "issues": [
+            {"category": i.category, "severity": i.severity.value, "title": i.title} for i in issues
+        ],
+        "findings": result.counts(),
+    }
+
+
 _DISCOVERERS = {
     "unifi": _discover_unifi,
     "cloudflare": _discover_cloudflare,
@@ -1167,6 +1180,7 @@ _DISCOVERERS = {
     "suggestions": _discover_suggestions,
     "storage": _discover_storage,
     "capacity": _discover_capacity,
+    "anomalies": _discover_anomalies,
 }
 
 
@@ -1177,7 +1191,8 @@ async def run_discovery(source: str) -> dict[str, Any]:
     versions (Phase 8.1: package lag, mixed versions, OS end of life, HA updates),
     backups (Phase 8.2: uncovered/stale/unverified guests, orphaned backups, capacity),
     usage (Phase 8.3: hourly/daily usage rollups from Proxmox RRD, backfilled, pruned),
-    storage, suggestions, capacity (Phase 10.2: filesystem, memory and CPU trends).
+    storage, suggestions, capacity (Phase 10.2: filesystem, memory and CPU trends),
+    anomalies (Phase 10.3: guests and nodes outside their own usage baseline).
     Reads the live source (credentials from HOMELAB_HELPER_* env vars); never
     writes to the infrastructure itself."""
     discoverer = _DISCOVERERS.get(source)

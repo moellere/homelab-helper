@@ -1215,10 +1215,14 @@ keeps; no model anywhere.
   `plan_maintenance_run`, `list_maintenance_runs`, `execute_maintenance_run`
   (one phone prompt per run). Also fixed: `helper exec run` never passed an
   SSH adapter, so a `node-update` could only be run from MCP.
-  - [ ] Follow-ups: a Talos node variant (`talosctl upgrade` is the same shape:
-    drain, act, wait for return); pre-flight "newest installed kernel is the
-    running one" after the reboot; Ceph "PGs clean" in the return wait when the
-    cluster runs Ceph.
+  - [x] `plan --resume <run>` (10/12/2026): a run that stopped after its
+    drain is finished by a second one — the guests the stopped run moved and
+    never returned join the new run's return leg, checked against where each
+    guest is now. Born of the first live run, which drained bmax3 and stopped
+    at the update step for want of a `credentials_ref`.
+  - [ ] Follow-ups: the Talos node variant landed as 11.3; pre-flight "newest
+    installed kernel is the running one" after the reboot; Ceph "PGs clean" in
+    the return wait when the cluster runs Ceph.
 
 ## Phase 11 — Talos as a managed plane
 

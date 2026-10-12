@@ -1220,6 +1220,38 @@ keeps; no model anywhere.
     running one" after the reboot; Ceph "PGs clean" in the return wait when the
     cluster runs Ceph.
 
+## Phase 11 — Talos as a managed plane
+
+See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
+`talosctl` adapter that already probes them.
+
+- [x] **11.1 `talos-upgrade`** (10/12/2026) — `TalosTarget {node, version}`
+  in `engine/manifest.py` (`build_talos_artifact`; `version` must match
+  `^v\d+\.\d+\.\d+$`, extra fields refused) and the executor's
+  `_parse_talos_target`; `TalosAdapter.install_image` (the one field read from
+  the machine config — the rest, which holds the cluster secrets, is discarded),
+  `machine_ready`, the `upgrade_node` / `rollback_node` writes and
+  `wait_for_tag`; `prior-image` rollback strategy (verifier: node answers, is
+  ready, runs a release other than the target; restore: `talosctl rollback`
+  then wait for the prior tag) — in `REVERSIBLE_ACTION_KINDS`, the first node
+  action that can earn autonomy; `_dispatch_talos_upgrade` derives the image
+  from the node's own `machine.install.image` with the tag swapped, refuses a
+  node already on the tag or not ready, and only succeeds once the node is back
+  on the new tag and ready (fails after 15 minutes). `propose_talos_upgrade`
+  over MCP; `helper exec run|rollback` build a `TalosAdapter` when the manifest
+  or receipt calls for one.
+  - [ ] Follow-ups: a CLI draft path (lands with 11.3's `helper maintenance
+    plan --talos`); `talosctl health` in the return wait; honour a per-node
+    `talosconfig` from `schedule.yaml` when building the executor's adapter.
+- [ ] **11.2 `k8s-upgrade`** — `talosctl upgrade-k8s --to <ver>` as a
+  `cluster`-radius `no-inverse` action; preflight on node readiness, uniform
+  Talos release, supported skew.
+- [ ] **11.3 Talos maintenance run** — control planes then workers, each step
+  gated on the previous node's return and `talosctl health`; a playbook from
+  `talos-eol` / `k8s-eol`; `helper maintenance plan --talos`.
+- [ ] **11.4 Workload usage** — metrics-server pod CPU/memory as `workload`
+  usage subjects for baselines, rightsizing and the digest.
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but

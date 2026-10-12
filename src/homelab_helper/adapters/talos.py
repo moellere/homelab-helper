@@ -18,6 +18,14 @@ Three call shapes are exposed:
 - :meth:`version` — ``talosctl -n <node> version``; the one fact that isn't a
   resource. Parsed for the *server* arch + tag (the client line is dropped).
 
+Phase 11.1 adds the two writes the executor owns — :meth:`upgrade_node`
+(``talosctl upgrade --image``) and :meth:`rollback_node` (``talosctl
+rollback``, Talos's own inverse: boot the previous install again) — plus the
+reads they lean on: :meth:`install_image` (the node's configured installer
+image, the one field taken from its machine config; the rest, which holds the
+cluster's secrets, is discarded unread), :meth:`machine_ready` and
+:func:`wait_for_tag`, the return wait both writes share.
+
 The binary invocation is injectable via ``runner`` so probe/adapter tests run
 without a real ``talosctl`` or a live cluster.
 """
@@ -27,10 +35,19 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import time
 from typing import TYPE_CHECKING, Any, Protocol
+
+import yaml
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+RETURN_TIMEOUT_S = 900
+"""How long an upgraded or rolled-back node may take to boot the other install and report ready."""
+RETURN_POLL_S = 10
+GOING_DOWN_S = 120
+"""How long to wait for the node to actually leave before its old version is mistaken for its return."""
 
 
 class TalosError(RuntimeError):
@@ -69,6 +86,26 @@ def parse_resource_stream(stdout: str) -> list[dict[str, Any]]:
     return docs
 
 
+def install_image_from_config(spec: str) -> str:
+    """``machine.install.image`` out of a machine config document; nothing else is read."""
+    try:
+        doc = yaml.safe_load(spec)
+    except yaml.YAMLError as exc:
+        raise TalosError(f"machine config is not YAML: {exc}") from exc
+    image = (((doc or {}).get("machine") or {}).get("install") or {}).get("image")
+    if not image or not isinstance(image, str):
+        raise TalosError("machine config names no machine.install.image")
+    return image
+
+
+def image_with_tag(image: str, tag: str) -> str:
+    """The same installer image at another tag: the registry and schematic are the node's own."""
+    base, sep, last = image.rpartition(":")
+    if not sep or "/" in last:
+        return f"{image}:{tag}"
+    return f"{base}:{tag}"
+
+
 def parse_version_server(stdout: str) -> dict[str, str]:
     """Extract the *server* arch + tag from ``talosctl version`` text output.
 
@@ -99,7 +136,11 @@ def parse_version_server(stdout: str) -> dict[str, str]:
 
 
 class TalosAdapter:
-    """Read-only adapter that drives ``talosctl`` against the machine API."""
+    """Adapter that drives ``talosctl`` against the machine API.
+
+    Read-only except for :meth:`upgrade_node` and :meth:`rollback_node`, which
+    only the executor and the rollback orchestrator call.
+    """
 
     name = "talos"
 
@@ -183,11 +224,91 @@ class TalosAdapter:
             return False, str(exc)
         return True, None
 
+    async def install_image(self, node: str, *, timeout: int | None = None) -> str:
+        """The installer image the node's machine config names (``machine.install.image``)."""
+        docs = await self.get_resources(node, "machineconfig", timeout=timeout)
+        spec = next(
+            (d.get("spec") for d in docs if d.get("metadata", {}).get("id") == "v1alpha1"), None
+        )
+        if spec is None:
+            spec = next((d.get("spec") for d in docs if isinstance(d.get("spec"), str)), None)
+        if not isinstance(spec, str):
+            raise TalosError(f"{node} returned no machine config document")
+        return install_image_from_config(spec)
+
+    async def machine_ready(self, node: str, *, timeout: int | None = None) -> tuple[bool, str]:
+        """``(ready, stage)`` from the node's ``machinestatus`` resource."""
+        docs = await self.get_resources(node, "machinestatus", timeout=timeout)
+        spec = docs[0].get("spec", {}) if docs else {}
+        stage = str(spec.get("stage") or "unknown")
+        ready = stage == "running" and bool((spec.get("status") or {}).get("ready"))
+        return ready, stage
+
+    # --- writes --------------------------------------------------------------
+    # Only ``engine/executor.py`` (and ``engine/rollback.py``, which it drives)
+    # may call these; ``tests/test_write_isolation.py`` enforces it.
+
+    async def upgrade_node(self, node: str, image: str, *, timeout: int | None = None) -> str:
+        """``talosctl upgrade --image <image>`` without waiting: the caller watches the return."""
+        return await self._run(
+            node, "upgrade", "--image", image, "--wait=false", timeout=timeout or 120
+        )
+
+    async def rollback_node(self, node: str, *, timeout: int | None = None) -> str:
+        """``talosctl rollback``: boot the previous install again. The caller watches the return."""
+        return await self._run(node, "rollback", timeout=timeout or 120)
+
+
+async def wait_for_tag(
+    talos: TalosAdapter,
+    node: str,
+    tag: str,
+    *,
+    timeout_s: int = RETURN_TIMEOUT_S,
+    poll_s: int = RETURN_POLL_S,
+    going_down_s: int = GOING_DOWN_S,
+) -> int:
+    """Block until ``node`` answers with Talos ``tag`` and reports ready; return the seconds it took.
+
+    First waits for the node to stop answering, so the version it ran before
+    the reboot is not mistaken for the one it comes back with; a node that
+    never leaves is still accepted once it reports the wanted tag. Raises
+    :class:`TalosError` after ``timeout_s`` — the one failure that matters is a
+    node that never comes back, and it must fail the receipt, not succeed it.
+    """
+    started = time.monotonic()
+    while time.monotonic() - started < going_down_s:
+        try:
+            current = await talos.version(node, timeout=10)
+        except TalosError:
+            break
+        if current.get("tag") == tag:
+            break
+        await asyncio.sleep(poll_s)
+    while time.monotonic() - started < timeout_s:
+        try:
+            current = await talos.version(node, timeout=10)
+            ready, _ = await talos.machine_ready(node, timeout=10)
+        except TalosError:
+            current, ready = {}, False
+        if ready and current.get("tag") == tag:
+            return int(time.monotonic() - started)
+        await asyncio.sleep(poll_s)
+    raise TalosError(
+        f"{node} did not come back running {tag} within {timeout_s} s — check its console"
+    )
+
 
 __all__ = [
+    "GOING_DOWN_S",
+    "RETURN_POLL_S",
+    "RETURN_TIMEOUT_S",
     "TalosAdapter",
     "TalosCommandRunner",
     "TalosError",
+    "image_with_tag",
+    "install_image_from_config",
     "parse_resource_stream",
     "parse_version_server",
+    "wait_for_tag",
 ]

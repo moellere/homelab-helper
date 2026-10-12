@@ -35,12 +35,14 @@ from typing import TYPE_CHECKING, Any
 from homelab_helper.adapters.argocd import ArgoCDAPIError
 from homelab_helper.adapters.kubernetes import KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAPIError
+from homelab_helper.adapters.talos import TalosError, wait_for_tag
 from homelab_helper.adapters.unifi import UniFiAPIError
 
 if TYPE_CHECKING:
     from homelab_helper.adapters.argocd import ArgoCDAdapter
     from homelab_helper.adapters.kubernetes import K8sAdapter
     from homelab_helper.adapters.proxmox import ProxmoxAdapter
+    from homelab_helper.adapters.talos import TalosAdapter
     from homelab_helper.adapters.unifi import UniFiAdapter
     from homelab_helper.engine.executor import ActionManifest
 
@@ -52,6 +54,8 @@ ROLLOUT_UNDO = "rollout-undo"
 PRIOR_CONFIG = "prior-config"
 ARGOCD_HISTORY = "argocd-history"
 PRIOR_DNS_RECORD = "prior-dns-record"
+PRIOR_IMAGE = "prior-image"
+"""Talos keeps the previous install in its other boot partition; ``talosctl rollback`` boots it."""
 NO_INVERSE = "no-inverse"
 """Named rather than implied: some actions genuinely cannot be undone, and
 a strategy that says so is better than one that quietly fails to verify."""
@@ -66,6 +70,7 @@ STRATEGIES: frozenset[str] = frozenset(
         PRIOR_CONFIG,
         ARGOCD_HISTORY,
         PRIOR_DNS_RECORD,
+        PRIOR_IMAGE,
         NO_INVERSE,
     }
 )
@@ -82,6 +87,7 @@ _DEFAULT_STRATEGY = {
     "workload-restart": ROLLOUT_UNDO,
     "node-update": NO_INVERSE,
     "node-reboot": NO_INVERSE,
+    "talos-upgrade": PRIOR_IMAGE,
 }
 _SNAPSHOT_PREFIX = "helper"
 _TARGET_KEYS = (
@@ -175,6 +181,8 @@ class RollbackPlan:
             required = ("application",)
         elif strategy == PRIOR_DNS_RECORD:
             required = ("dns_hostname", "record_type")
+        elif strategy == PRIOR_IMAGE:
+            required = ("node",)
         else:
             required = ("node", "vmid", "vm_kind")
         missing = [k for k in required if state.get(k) is None]
@@ -448,6 +456,42 @@ async def _verify_no_inverse(manifest: ActionManifest) -> tuple[bool, str, dict[
     )
 
 
+async def _verify_prior_image(
+    talos: TalosAdapter | None, manifest: ActionManifest
+) -> tuple[bool, str, dict[str, Any]]:
+    """Read-only: the node answers, is ready, and runs a release other than the target.
+
+    The inverse is Talos's own — the previous install stays in the other boot
+    partition and ``talosctl rollback`` boots it — so what is verified here is
+    that the node is in a state where that partition will hold a known
+    release: the one it reports now.
+    """
+    if not manifest.is_talos or manifest.node is None or talos is None:
+        why = (
+            "no Talos adapter is configured" if manifest.is_talos else "only undoes a talos-upgrade"
+        )
+        return False, f"prior-image: {why}", {}
+    try:
+        current = await talos.version(manifest.node)
+        ready, stage = await talos.machine_ready(manifest.node)
+        image = await talos.install_image(manifest.node)
+    except TalosError as exc:
+        return False, f"could not read the node's version: {exc}", {}
+    tag = current.get("tag")
+    if not tag or tag == manifest.talos_version:
+        why = (
+            f"{manifest.node} already runs {tag}; nothing to undo" if tag else "no version reported"
+        )
+        return False, why, {"tag": tag} if tag else {}
+    if not ready:
+        return False, f"{manifest.node} is not ready (stage {stage})", {"tag": tag, "stage": stage}
+    return (
+        True,
+        f"{manifest.node} runs {tag}; `talosctl rollback` boots that install again",
+        {"prior_tag": tag, "prior_image": image},
+    )
+
+
 async def verify_rollback(
     adapter: ProxmoxAdapter,
     manifest: ActionManifest,
@@ -455,6 +499,7 @@ async def verify_rollback(
     k8s: K8sAdapter | None = None,
     argocd: ArgoCDAdapter | None = None,
     unifi: UniFiAdapter | None = None,
+    talos: TalosAdapter | None = None,
 ) -> RollbackVerification:
     """Read-only: can this action be undone? Runs *before* ``decide()``."""
     strategy = select_strategy(manifest)
@@ -476,6 +521,8 @@ async def verify_rollback(
         verified, evidence, probe = await _verify_argocd_history(argocd, manifest)
     elif strategy == PRIOR_DNS_RECORD:
         verified, evidence, probe = await _verify_prior_dns_record(unifi, manifest)
+    elif strategy == PRIOR_IMAGE:
+        verified, evidence, probe = await _verify_prior_image(talos, manifest)
     elif strategy == NO_INVERSE:
         verified, evidence, probe = await _verify_no_inverse(manifest)
     else:
@@ -697,6 +744,20 @@ async def _restore_prior_dns_record(unifi: UniFiAdapter | None, plan: RollbackPl
     return f"restored the prior {rtype} value {prior.get('value')} for {plan.dns_hostname}"
 
 
+async def _restore_prior_image(talos: TalosAdapter | None, plan: RollbackPlan) -> str:
+    prior = str((plan.state.get("prior") or {}).get("prior_tag") or "")
+    if not prior or plan.node is None:
+        raise RollbackError("captured state names no prior Talos release to roll back to")
+    if talos is None:
+        raise RollbackError("no Talos adapter is configured; rolling back needs talosctl")
+    try:
+        await talos.rollback_node(plan.node)
+        took = await wait_for_tag(talos, plan.node, prior)
+    except TalosError as exc:
+        raise RollbackError(str(exc)) from exc
+    return f"rolled {plan.node} back to {prior}; ready again after {took} s"
+
+
 async def restore(
     adapter: ProxmoxAdapter,
     plan: RollbackPlan,
@@ -704,6 +765,7 @@ async def restore(
     k8s: K8sAdapter | None = None,
     argocd: ArgoCDAdapter | None = None,
     unifi: UniFiAdapter | None = None,
+    talos: TalosAdapter | None = None,
 ) -> str:
     """Drive the target back to the captured state; returns what was done."""
     guest = {
@@ -722,6 +784,8 @@ async def restore(
         return await _restore_argocd_history(argocd, plan)
     if plan.strategy == PRIOR_DNS_RECORD:
         return await _restore_prior_dns_record(unifi, plan)
+    if plan.strategy == PRIOR_IMAGE:
+        return await _restore_prior_image(talos, plan)
     if plan.strategy == NO_INVERSE:
         raise RollbackError(
             "this action was recorded as having no inverse, so there is nothing to "
@@ -735,6 +799,7 @@ __all__ = [
     "NO_INVERSE",
     "PRIOR_CONFIG",
     "PRIOR_DNS_RECORD",
+    "PRIOR_IMAGE",
     "PRIOR_NODE",
     "PRIOR_POWER_STATE",
     "PRIOR_REPLICAS",

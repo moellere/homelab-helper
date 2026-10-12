@@ -548,14 +548,72 @@ After 10.1 alone: no disk in the lab dies unannounced.
 
 ---
 
-## Post-roadmap (Phase 11+)
+## Phase 11 — Talos as a managed plane
+
+Through Phase 10 the Kubernetes nodes were inventory: `talos.host` probed them,
+`talos-eol` / `k8s-eol` findings said when they were behind, and the operator
+upgraded them with a shell script. Phase 11 brings them inside the gradient —
+the same cells, receipts, rollback findings and maintenance-run sequencing the
+Proxmox nodes already have — without a new adapter: `talosctl` is already the
+adapter.
+
+### Goals
+
+- A Talos upgrade is an action kind with a *verified* inverse: Talos keeps the
+  previous install in its other boot partition and `talosctl rollback` boots
+  it, so this is the first node-level action that can earn autonomy.
+- A Kubernetes upgrade is an action kind with no inverse, pinned at CONFIRM like
+  `node-update`.
+- A whole-cluster upgrade is one maintenance run — control planes first, then
+  workers, each step health-gated — drafted by a playbook from the EOL findings.
+- Workload usage (metrics-server) joins the usage history so 10.3's baselines
+  and 8.4's rightsizing see pods, not only guests.
+
+### Slices, in delivery order
+
+| # | Slice | Delivers |
+|---|---|---|
+| 11.1 | **`talos-upgrade`** | `TalosTarget {node, version}` manifest variant — a release tag, never an image; the executor derives the image from the node's own `machine.install.image`. `TalosAdapter.upgrade_node` / `rollback_node` writes (executor-only), `prior-image` rollback strategy whose verifier reads the node's current release and readiness, a dispatch that waits for the node to leave and come back ready on the new tag (fails the receipt after 15 minutes), `propose_talos_upgrade` over MCP. In `REVERSIBLE_ACTION_KINDS`. |
+| 11.2 | **`k8s-upgrade`** | `talosctl upgrade-k8s` against the cluster endpoint as a `cluster`-radius action with the `no-inverse` strategy: CONFIRM for good. Preflight: every node ready, control planes on one Talos release, the target a supported skew. |
+| 11.3 | **Talos maintenance run** | `MaintenanceRun` grows a Talos variant: `talos-upgrade` per control plane, then per worker, each gated on the previous node's return and on cluster health (`talosctl health`), then `k8s-upgrade`. A playbook drafts it from a `talos-eol` / `k8s-eol` finding; `helper maintenance plan --talos`. |
+| 11.4 | **Workload usage** | metrics-server pod CPU/memory into `usage_sample` as `workload` subjects, so baselines, rightsizing and the digest cover the cluster's workloads. |
+
+**Non-goals.** No Talos machine-config edits through the gradient (a config
+patch is remote code execution with a YAML accent), no node adds/removes, no
+Kubernetes API writes beyond the Phase-7 workload kinds.
+
+### Acceptance criteria
+
+1. **`talos-upgrade` of one node produces one receipt** whose rollback state
+   names the prior release, and `helper exec rollback` on it boots that
+   release again — demonstrated against the lab.
+2. **A manifest cannot name an installer image**; a version that is not a
+   release tag is refused before the gate.
+3. **A node that never comes back is a failed receipt**, never a success.
+4. **A cluster upgrade is one maintenance run** that stops at the first node
+   that does not return healthy and leaves the rest un-upgraded.
+5. **A pod with a week of usage history has a baseline** like a guest does.
+
+### Effort
+
+**4–6 weeks.** 11.1 reuses the node-reboot dispatch shape; 11.3 reuses the
+maintenance-run sequencer; 11.2 is small; 11.4 is a probe and a subject type.
+
+### Stop-here value
+
+After 11.1 alone: the lab's Talos upgrades go through the same gate, receipts
+and rollback as everything else, with a one-command undo.
+
+---
+
+## Post-roadmap (Phase 12+)
 
 These are real future phases, deliberately not committed in this roadmap:
 
 - **Multi-tenant + hosted service**. The Nabu-Casa-style subscription tier — managed LLM access, off-site backup, remote access, mobile push, community template marketplace.
 - **Heterogeneous architecture support beyond Linux**. FreeBSD probes (TrueNAS Core, pfSense/OPNsense), macOS probes (Mac mini servers), Windows probes (Windows hosts in mixed labs).
 
-Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–10). Predictive operations, the former strongest candidate here, became Phase 10.
+Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–11). Predictive operations became Phase 10; Talos as a managed plane became Phase 11.
 
 ---
 

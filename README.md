@@ -266,6 +266,7 @@ Write surfaces today, each with a verified rollback path:
 | containers (Argo CD) | `argocd-sync` (optionally pinned to a revision, optionally pruning) | Argo CD's own sync history |
 | dns (UniFi static DNS) | `dns-record` (create or update one name + type) | the prior record, or deleting the created one |
 | host-os (Proxmox nodes over SSH) | `node-update` (`apt dist-upgrade` on one named node; what runs is fixed in code), `node-reboot` (reboots a drained node and only succeeds once it is online, quorate and reachable again) | **none** — reported as unverified, so these cells can never reach AUTONOMOUS |
+| host-os (Talos nodes over `talosctl`) | `talos-upgrade` (one node to a release tag; the installer image is the node's own with the tag swapped, and the receipt only says succeeded once the node is back on the new tag and ready) | `talosctl rollback` — the previous install stays in the other boot partition |
 
 ```bash
 helper trust show                                   # every cell sits at PROPOSE by default
@@ -277,6 +278,7 @@ helper trust grant dns dns-record single-service confirm
 helper trust grant hypervisor resize single-host confirm
 helper trust grant host-os node-update single-host confirm   # stays at CONFIRM for good: no inverse
 helper trust grant host-os node-reboot single-host confirm
+helper trust grant host-os talos-upgrade single-host confirm # has a verified inverse, so it can be promoted
 helper approvals show                               # channel status, what would ask you, who answered
 helper daemon run --once                            # discovery → playbooks → listener, one pass (cron-friendly)
 helper daemon run                                   # the same on cadences, until Ctrl-C
@@ -392,6 +394,21 @@ helper maintenance plan bmax2            # the steps, as proposals
 helper maintenance run 01a1…  --yes      # drain → update → reboot → return
 helper maintenance list                  # every run and how far it got
 ```
+
+### Talos upgrades (Phase 11.1)
+
+The Kubernetes nodes join the gradient through the `talosctl` the harness
+already probes them with. A `talos-upgrade` proposal names a node and a release
+tag — never an image: at run time the executor reads the node's own
+`machine.install.image` (the one field it takes from the machine config), swaps
+the tag, checks the node is ready and not already there, issues `talosctl
+upgrade`, and waits for the node to leave and come back on the new tag and
+ready (a node that never returns is a failed receipt, after 15 minutes). The
+undo is Talos's own: the previous install stays in the other boot partition, so
+the `prior-image` rollback verifier reads the node's current release before
+each run and `helper exec rollback` boots it again with `talosctl rollback`.
+That verified inverse is why `talos-upgrade` is the first node action that can
+earn AUTONOMOUS. Draft one over MCP with `propose_talos_upgrade`.
 
 ### Storage efficiency, service suggestions, the weekly digest (Phase 8.5–8.7)
 

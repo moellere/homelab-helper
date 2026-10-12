@@ -56,12 +56,17 @@ ARGOCD_ACTION_KINDS: tuple[str, ...] = ("argocd-sync",)
 DNS_ACTION_KINDS: tuple[str, ...] = ("dns-record",)
 NODE_ACTION_KINDS: tuple[str, ...] = ("node-update", "node-reboot")
 NODE_DOMAIN = TrustDomain.HOST_OS
+TALOS_ACTION_KINDS: tuple[str, ...] = ("talos-upgrade",)
+TALOS_DOMAIN = TrustDomain.HOST_OS
+TALOS_VERSION_PATTERN = r"^v\d+\.\d+\.\d+$"
+"""A release tag and nothing else: the installer image is derived from the node's own, never carried."""
 ACTION_KINDS: tuple[str, ...] = (
     *GUEST_ACTION_KINDS,
     *WORKLOAD_ACTION_KINDS,
     *ARGOCD_ACTION_KINDS,
     *DNS_ACTION_KINDS,
     *NODE_ACTION_KINDS,
+    *TALOS_ACTION_KINDS,
 )
 DNS_RECORD_TYPES: tuple[str, ...] = ("A", "AAAA", "CNAME", "TXT")
 MAX_CORES = 512
@@ -91,6 +96,7 @@ ActionKind = Literal[
     "dns-record",
     "node-update",
     "node-reboot",
+    "talos-upgrade",
 ]
 VMKind = Literal["qemu", "lxc"]
 WorkloadKind = Literal["deployment", "statefulset", "daemonset"]
@@ -162,6 +168,22 @@ class NodeTarget(BaseModel):
     node: str = Field(min_length=1)
 
 
+class TalosTarget(BaseModel):
+    """A Talos node and the release tag to move it to.
+
+    The manifest names a version, not an image: the executor derives the
+    installer image from the node's own ``machine.install.image`` (same
+    registry, same schematic) and swaps only the tag, so a proposal cannot
+    point a node at a stranger's image.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node: str = Field(min_length=1)
+    """The node as ``talosctl -n`` knows it (address or name)."""
+    version: str = Field(pattern=TALOS_VERSION_PATTERN)
+
+
 class RollbackSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -174,7 +196,9 @@ class ActionSpec(BaseModel):
 
     domain: TrustDomain
     action_kind: ActionKind
-    target: ActionTarget | WorkloadTarget | ArgoAppTarget | DnsRecordTarget | NodeTarget
+    target: (
+        ActionTarget | WorkloadTarget | ArgoAppTarget | DnsRecordTarget | NodeTarget | TalosTarget
+    )
     hostnames: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -218,9 +242,14 @@ def _node_rule(t: NodeTarget) -> tuple[TrustDomain, tuple[str, ...], str]:
     return NODE_DOMAIN, NODE_ACTION_KINDS, "a hypervisor node"
 
 
+def _talos_rule(t: TalosTarget) -> tuple[TrustDomain, tuple[str, ...], str]:
+    return TALOS_DOMAIN, TALOS_ACTION_KINDS, "a Talos node"
+
+
 _TARGET_RULES: dict[type, Any] = {
     ActionTarget: _guest_rule,
     NodeTarget: _node_rule,
+    TalosTarget: _talos_rule,
     WorkloadTarget: _workload_rule,
     ArgoAppTarget: _argocd_rule,
     DnsRecordTarget: _dns_rule,
@@ -273,19 +302,23 @@ _TARGET_VARIANTS = {
     "ArgoAppTarget",
     "DnsRecordTarget",
     "NodeTarget",
+    "TalosTarget",
 }
 
 
 def _guess_variant(raw: Any) -> str | None:
     """Which union member the target's own keys point at.
 
-    Mirrors the executor's own rule so the two agree: ``node`` without
-    ``vmid`` is a node, which also means a node target carrying junk reports
-    the junk rather than complaining about a missing ``vmid``.
+    Mirrors the executor's own rule so the two agree: ``node`` with a
+    ``version`` is a Talos node, ``node`` without ``vmid`` is a hypervisor
+    node, which also means a node target carrying junk reports the junk rather
+    than complaining about a missing ``vmid``.
     """
     target = (raw.get("action") or {}).get("target") if isinstance(raw, dict) else None
     if not isinstance(target, dict):
         return None
+    if "node" in target and "version" in target:
+        return "TalosTarget"
     if "node" in target and "vmid" not in target:
         return "NodeTarget"
     return next((variant for key, variant in _VARIANT_BY_KEY if key in target), None)
@@ -412,6 +445,30 @@ def build_node_artifact(
     return artifact.as_artifact()
 
 
+def build_talos_artifact(
+    *,
+    node: str,
+    version: str,
+    hostnames: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, Any]:
+    """An executor-ready ``talos-upgrade`` artifact. Requests the prior-image
+    strategy (``talosctl rollback``); whether it is verified is the executor's
+    finding against the live node, never this builder's claim."""
+    artifact = validate_artifact(
+        {
+            "kind": "action",
+            "action": {
+                "domain": TALOS_DOMAIN.value,
+                "action_kind": "talos-upgrade",
+                "target": {"node": node, "version": version},
+                "hostnames": list(hostnames) if hostnames else [node],
+            },
+            "rollback": {"verified": False, "strategy": "prior-image"},
+        }
+    )
+    return artifact.as_artifact()
+
+
 def build_argocd_artifact(
     *,
     application: str,
@@ -485,6 +542,9 @@ __all__ = [
     "NODE_ACTION_KINDS",
     "NODE_DOMAIN",
     "POWER_ACTION_KINDS",
+    "TALOS_ACTION_KINDS",
+    "TALOS_DOMAIN",
+    "TALOS_VERSION_PATTERN",
     "VM_KIND_DOMAIN",
     "WORKLOAD_ACTION_KINDS",
     "WORKLOAD_DOMAIN",
@@ -497,11 +557,13 @@ __all__ = [
     "ManifestError",
     "NodeTarget",
     "RollbackSpec",
+    "TalosTarget",
     "WorkloadTarget",
     "build_argocd_artifact",
     "build_artifact",
     "build_dns_artifact",
     "build_node_artifact",
+    "build_talos_artifact",
     "build_workload_artifact",
     "validate_artifact",
 ]

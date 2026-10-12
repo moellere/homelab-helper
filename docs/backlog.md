@@ -1231,6 +1231,10 @@ keeps; no model anywhere.
     later cannot roll back the record of what already moved; `httpx<1` pinned
     after an `uv tool upgrade` from an rc installed with `--prerelease allow`
     pulled httpx 1.0.dev6 (no `AsyncClient`).
+  - [x] `maintenance run` and `exec run` ignore SIGHUP (10/12/2026): the first
+    full run on bmax3 executed every step from an SSH session that dropped as
+    the last step returned; the process died before its commit and nothing was
+    recorded. Reconstructed from bmax3's journal and the pveproxy access logs.
   - [ ] Follow-ups: the Talos node variant landed as 11.3; pre-flight "newest
     installed kernel is the running one" after the reboot; Ceph "PGs clean" in
     the return wait when the cluster runs Ceph.

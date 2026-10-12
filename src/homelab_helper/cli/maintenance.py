@@ -11,6 +11,8 @@ autonomous.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import signal
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +60,20 @@ _STATE_STYLE = {
     "failed": "red",
     "skipped": "yellow",
 }
+
+
+def _outlive_the_terminal() -> None:
+    """A run keeps going when the terminal that started it goes away.
+
+    The first live run did everything it was asked — update, reboot, five
+    guests back — from an SSH session that dropped as the last step returned;
+    SIGHUP killed the process before its commit and the harness kept no record
+    of what it had just done to the fleet. Ignoring the hangup lets the run
+    finish and write its receipts; the operator reads them with ``show``.
+    """
+    # Not the main thread, or a platform without SIGHUP: nothing to arrange.
+    with contextlib.suppress(ValueError, OSError, AttributeError):
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
 
 async def _resolve(session: AsyncSession, prefix: str) -> MaintenanceRun | None:
@@ -199,6 +215,7 @@ def maintenance_run(
     yes: bool = typer.Option(False, "--yes", help="Consent to every step up front."),
 ) -> None:
     """Execute the run's steps in order; stops at the first failure."""
+    _outlive_the_terminal()
 
     async def _go() -> int:
         engine = make_engine(database_url())

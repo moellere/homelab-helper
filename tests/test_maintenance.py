@@ -543,3 +543,24 @@ async def test_plan_names_the_steps_the_gate_would_refuse_today(sessionmaker) ->
             "would be refused today: containers/migrate/single-host is at propose — grant it first",
         )
         assert "would be refused" in run_summary(run)["steps"][-2]["detail"]
+
+
+def test_run_and_exec_run_ignore_a_terminal_hangup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process must outlive the SSH session that started it, or the receipts are lost."""
+    import signal
+
+    from typer.testing import CliRunner
+
+    from homelab_helper.cli.main import app
+
+    previous = signal.getsignal(signal.SIGHUP)
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+        CliRunner().invoke(app, ["maintenance", "run", "00000000", "--yes"])
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        CliRunner().invoke(app, ["exec", "run", "00000000", "--yes"])
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, previous)

@@ -421,6 +421,14 @@ the kubelet reports the new version and the cluster is healthy again. There is
 no inverse, so like `node-update` it is pinned at CONFIRM. Draft one with
 `propose_k8s_upgrade`.
 
+The whole cluster moves as one maintenance run (Phase 11.3): `helper
+maintenance plan-talos <control-plane> --to v1.14.3 [--kubernetes 1.37.2]`
+reads the members and drafts a `talos-upgrade` per node — control planes
+first, then workers, nodes already on the target skipped — and Kubernetes
+last; `helper maintenance run <id>` walks them after one consent, asking
+`talosctl health` before every step so a node that came back wrong stops the
+rest. Over MCP: `plan_talos_maintenance_run`, then `execute_maintenance_run`.
+
 ### Storage efficiency, service suggestions, the weekly digest (Phase 8.5–8.7)
 
 `helper discover storage` reads every Proxmox storage and guest config and

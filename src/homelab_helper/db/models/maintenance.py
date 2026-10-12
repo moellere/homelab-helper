@@ -25,6 +25,9 @@ class MaintenanceRun(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
     node: Mapped[str] = mapped_column(String(255), index=True)
+    """The Proxmox node, or for a Talos run the control-plane node the plan was read from."""
+    plane: Mapped[str] = mapped_column(String(16), default="proxmox", server_default="proxmox")
+    """``proxmox`` (drain → update → reboot → return) or ``talos`` (upgrade node by node)."""
     status: Mapped[MaintenanceStatus] = mapped_column(
         SAEnum(MaintenanceStatus), default=MaintenanceStatus.PLANNED, index=True
     )

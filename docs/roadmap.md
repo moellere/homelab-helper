@@ -575,7 +575,7 @@ adapter.
 |---|---|---|
 | 11.1 | **`talos-upgrade`** | `TalosTarget {node, version}` manifest variant — a release tag, never an image; the executor derives the image from the node's own `machine.install.image`. `TalosAdapter.upgrade_node` / `rollback_node` writes (executor-only), `prior-image` rollback strategy whose verifier reads the node's current release and readiness, a dispatch that waits for the node to leave and come back ready on the new tag (fails the receipt after 15 minutes), `propose_talos_upgrade` over MCP. In `REVERSIBLE_ACTION_KINDS`. |
 | 11.2 | **`k8s-upgrade`** | `talosctl upgrade-k8s` against the cluster endpoint as a `cluster`-radius action with the `no-inverse` strategy: CONFIRM for good. Preflight: every node ready, control planes on one Talos release, the target a supported skew. |
-| 11.3 | **Talos maintenance run** | `MaintenanceRun` grows a Talos variant: `talos-upgrade` per control plane, then per worker, each gated on the previous node's return and on cluster health (`talosctl health`), then `k8s-upgrade`. A playbook drafts it from a `talos-eol` / `k8s-eol` finding; `helper maintenance plan --talos`. |
+| 11.3 | **Talos maintenance run** | `MaintenanceRun` grows a Talos plane: `talos-upgrade` per control plane, then per worker, each gated on the previous node's return and on cluster health (`talosctl health`), then `k8s-upgrade`. Drafted with `helper maintenance plan-talos` / `plan_talos_maintenance_run` from the version a `talos-eol` / `k8s-eol` finding names. |
 | 11.4 | **Workload usage** | metrics-server pod CPU/memory into `usage_sample` as `workload` subjects, so baselines, rightsizing and the digest cover the cluster's workloads. |
 
 **Non-goals.** No Talos machine-config edits through the gradient (a config

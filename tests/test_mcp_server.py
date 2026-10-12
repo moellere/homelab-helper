@@ -117,6 +117,7 @@ EXPECTED_TOOLS = {
     # Phase 7 slice 3: deterministic playbooks draft proposals (harness-DB write).
     "draft_remediations",
     "plan_maintenance_run",
+    "plan_talos_maintenance_run",
     "list_maintenance_runs",
     "execute_maintenance_run",
 }

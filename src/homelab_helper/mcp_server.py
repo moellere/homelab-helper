@@ -53,7 +53,7 @@ from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
-from homelab_helper.adapters.talos import TalosAdapter
+from homelab_helper.adapters.talos import TalosAdapter, TalosError
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig, UniFiConfigError
 from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
@@ -124,7 +124,9 @@ from homelab_helper.engine.maintenance import (
     MaintenanceError,
     execute_maintenance,
     plan_maintenance,
+    plan_talos_maintenance,
     run_summary,
+    talos_health_gate,
 )
 from homelab_helper.engine.manifest import (
     BLAST_RADII,
@@ -2361,6 +2363,35 @@ async def plan_maintenance_run(node: str, target_node: str | None = None) -> dic
 
 
 @server.tool()
+async def plan_talos_maintenance_run(
+    control_plane: str,
+    version: str,
+    kubernetes: str | None = None,
+    talosconfig: str | None = None,
+) -> dict[str, Any]:
+    """Draft a Talos cluster upgrade as a maintenance run (Phase 11.3): one
+    `talos-upgrade` per member read through `control_plane` — control planes
+    first, then workers, members already on `version` (a tag like "v1.14.2")
+    skipped — and, with `kubernetes` (like "1.37.2"), a closing `k8s-upgrade`.
+    Between steps the run requires `talosctl health` to pass. Harness-DB write
+    only; nothing executes."""
+    engine = make_engine(database_url())
+    talos = TalosAdapter(talosconfig=talosconfig)
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            try:
+                run = await plan_talos_maintenance(
+                    session, talos, control_plane, version, actor="agent:mcp", kubernetes=kubernetes
+                )
+            except (MaintenanceError, TalosError) as exc:
+                return {"error": str(exc)}
+            return run_summary(run)
+    finally:
+        await engine.dispose()
+
+
+@server.tool()
 async def list_maintenance_runs(limit: int = 20) -> list[dict[str, Any]]:
     """Maintenance runs, newest first, each with its steps and their states."""
     engine = make_engine(database_url())
@@ -2429,6 +2460,7 @@ async def execute_maintenance_run(run_id: str) -> dict[str, Any]:
             except ProxmoxConfigError as exc:
                 return {"error": f"Proxmox adapter: {exc}"}
             k8s = _load_k8s_adapter() if shutil.which("kubectl") else None
+            talos = TalosAdapter() if run.plane == "talos" else None
             try:
                 run = await execute_maintenance(
                     session,
@@ -2438,6 +2470,8 @@ async def execute_maintenance_run(run_id: str) -> dict[str, Any]:
                     confirm_cb=_confirm,
                     ssh_adapter=KernelSSHAdapter(),
                     k8s_adapter=k8s,
+                    talos_adapter=talos,
+                    health_cb=talos_health_gate(talos, run.node) if talos else None,
                     notifier=notifier_from_env(),
                 )
             except MaintenanceError as exc:

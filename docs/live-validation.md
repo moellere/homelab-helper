@@ -535,16 +535,24 @@ shape — see the asymmetric fixture under P4-AC2.
 | P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 and step 6 ran live 10/11/2026 against a `migrate` of a vmid that does not exist: step 6 first — window open, `exec run` stopped at the confirm prompt, `window kill --yes` from the side, answer `y` → `refused: elevation window … closed before dispatch — halting`, nothing dispatched; then step 5 without a window — Proxmox answered 500 on the migrate POST, a `failed` receipt was written, the proposal stayed pending, and `hypervisor/migrate/single-host` dropped to `propose (probation)` with a `demote` row on the audit spine and a phone notice. Re-grant pending. |
 | P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 | P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
-| P8 node-update (rolling, per node) | ⏳ | Not yet run. No inverse: see Part 4 before the first one — as a maintenance run (10.4) once a node has updates pending. |
+| P8 / P10.4 maintenance run (one node) | ⏳ first attempt 10/12/2026 | Run `01a12d91` on bmax3: five drain migrations succeeded (proxmox-dc, esphome-builder, esphome-lxc, traefik-lxc → bmax1; guacamole-lxc → bmax2), then step 6 refused — no Proxmox host row carried an SSH `credentials_ref`, because nothing had ever written one. Fixed in #95 (a successful host probe records the login; `plan` refuses a node without one before any guest moves) and #97 (`plan --resume` finishes a stopped run's return leg). bmax3 is drained and waiting; the resumed run (update, reboot, five returns) is the sign-off. |
+| P11.1 talos-upgrade (one node) | ⏳ waits on a release | Every node runs Talos v1.14.2, the newest release (10/12/2026); the first patch release is the live test — `propose_talos_upgrade` on one worker, `helper exec run`, then `helper exec rollback` to see `talosctl rollback` bring the prior release back. |
+| P11.2 k8s-upgrade | ⏳ waits on a release | Kubernetes 1.37.1 is stable-1.37; the next patch is the live test, as the closing step of a Talos maintenance run. |
+| P11.3 Talos maintenance run | ⏳ waits on a release | `helper maintenance plan-talos 10.250.6.13 --to <next>`: three control planes, then three workers, health-gated. |
+| P11.4 workload usage | ✅ 10/12/2026 | `helper discover usage` recorded 67 workloads from 118 pods on the first run (prometheus 1.3 GiB, authentik-server 0.15 cores …); an hourly cron now feeds the history, so a workload baseline forms after two weeks. |
 | P7 step 8 (unattended run notice) | ✅ 10/05/2026 | `containers/workload-restart/single-service` granted AUTONOMOUS; an agent-drafted restart of `homepage/deployment/homepage` ran from `helper daemon run --once` with no tap (rev 20 → 21, receipt actor `listener`, rollback `rollout-undo` verified); the phone showed the ✓ notice with `unattended` and the `helper exec rollback` line, after the receipt. Failure/demotion path not forced live — it needs a write that fails after a read that succeeds; pinned by tests. Cell left at AUTONOMOUS by the operator's choice. Found: the 15-min cron listener asked about the proposal while the cell was still CONFIRM, the ask timed out, and the listener then (correctly) refused to run it unattended after the grant — draft *after* granting. |
 
-Open as of 10/11/2026, one row, and it waits on the fleet rather than on code:
+Open as of 10/12/2026:
 
-- **P8 node-update** — the first rolling update. Every node is current today,
-  so there is no `pve-updates` finding to draft from; grant
-  `host-os node-update single-host confirm` now and the daemon drafts the next
-  one and asks the phone. Read Part 4 first: there is no inverse, so the cell
-  cannot reach AUTONOMOUS and never should.
+- **The bmax3 maintenance run** — drained, then stopped for want of a recorded
+  SSH login (fixed since). Finish it with
+  `helper maintenance plan bmax3 --resume 01a12d91` → `helper maintenance run`:
+  update (a no-op today), reboot, five returns. That is the P8 / P10.4 row.
+- **Phase 11 live rows** wait on upstream: the cluster already runs the newest
+  Talos and Kubernetes patch releases. When one ships, the Talos maintenance
+  run is the test for 11.1–11.3 at once.
+- **Workload usage** — recorded; the baseline forms once two weeks of hourly
+  samples exist.
 
 Phase 7 is signed off end to end; the first unattended execution ran 10/05/2026
 and `containers/workload-restart/single-service` is live at AUTONOMOUS.

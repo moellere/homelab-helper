@@ -129,10 +129,12 @@ from homelab_helper.engine.maintenance import (
 from homelab_helper.engine.manifest import (
     BLAST_RADII,
     DNS_RECORD_TYPES,
+    K8S_BLAST_RADIUS,
     WORKLOAD_KINDS,
     build_argocd_artifact,
     build_artifact,
     build_dns_artifact,
+    build_k8s_upgrade_artifact,
     build_talos_artifact,
     build_workload_artifact,
 )
@@ -2248,6 +2250,33 @@ async def propose_talos_upgrade(
     )
 
 
+@server.tool()
+async def propose_k8s_upgrade(
+    control_plane: str,
+    version: str,
+    title: str,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Draft a Kubernetes upgrade (`talosctl upgrade-k8s --to <version>` run
+    from `control_plane`, a control-plane node as `talosctl -n` knows it;
+    `version` like "1.37.2") as a PENDING proposal in the `containers` domain
+    at blast radius `cluster`. Preflight at run time: cluster healthy, every
+    member on one Talos release, target newer and at most one minor ahead. A
+    Kubernetes upgrade has no inverse, so the cell can never reach AUTONOMOUS.
+    Never executes on its own."""
+    try:
+        artifact = build_k8s_upgrade_artifact(control_plane=control_plane, version=version)
+    except ManifestError as exc:
+        return {"error": str(exc)}
+    return await _persist_proposal(
+        artifact,
+        title=title,
+        description=description,
+        blast_radius=K8S_BLAST_RADIUS,
+        affected=[{"target_type": "cluster", "target_id": control_plane}],
+    )
+
+
 def _unifi_adapter_for(controller: str | None) -> UniFiAdapter | None:
     """The UniFi adapter a DNS manifest names (or the only one), ``None`` if unconfigured."""
     try:
@@ -2297,7 +2326,7 @@ def _execution_adapters(manifest: Any) -> tuple[_Adapters | None, str | None]:
                 "(set HOMELAB_HELPER_UNIFI_CONTROLLERS)"
             )
     ssh = KernelSSHAdapter() if manifest.is_node else None
-    talos = TalosAdapter() if manifest.is_talos else None
+    talos = TalosAdapter() if manifest.uses_talosctl else None
     return _Adapters(proxmox, k8s, argocd, unifi, ssh, talos), None
 
 

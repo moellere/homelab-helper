@@ -267,6 +267,7 @@ Write surfaces today, each with a verified rollback path:
 | dns (UniFi static DNS) | `dns-record` (create or update one name + type) | the prior record, or deleting the created one |
 | host-os (Proxmox nodes over SSH) | `node-update` (`apt dist-upgrade` on one named node; what runs is fixed in code), `node-reboot` (reboots a drained node and only succeeds once it is online, quorate and reachable again) | **none** — reported as unverified, so these cells can never reach AUTONOMOUS |
 | host-os (Talos nodes over `talosctl`) | `talos-upgrade` (one node to a release tag; the installer image is the node's own with the tag swapped, and the receipt only says succeeded once the node is back on the new tag and ready) | `talosctl rollback` — the previous install stays in the other boot partition |
+| containers (Kubernetes control plane over `talosctl`) | `k8s-upgrade` (`talosctl upgrade-k8s --to <version>` from one control-plane node; always blast radius `cluster`; refused unless the cluster is healthy, every member runs one Talos release, and the target is newer by at most one minor) | **none** — reported as unverified, so the cell can never reach AUTONOMOUS |
 
 ```bash
 helper trust show                                   # every cell sits at PROPOSE by default
@@ -279,6 +280,7 @@ helper trust grant hypervisor resize single-host confirm
 helper trust grant host-os node-update single-host confirm   # stays at CONFIRM for good: no inverse
 helper trust grant host-os node-reboot single-host confirm
 helper trust grant host-os talos-upgrade single-host confirm # has a verified inverse, so it can be promoted
+helper trust grant containers k8s-upgrade cluster confirm    # stays at CONFIRM for good: no inverse
 helper approvals show                               # channel status, what would ask you, who answered
 helper daemon run --once                            # discovery → playbooks → listener, one pass (cron-friendly)
 helper daemon run                                   # the same on cadences, until Ctrl-C
@@ -409,6 +411,15 @@ the `prior-image` rollback verifier reads the node's current release before
 each run and `helper exec rollback` boots it again with `talosctl rollback`.
 That verified inverse is why `talos-upgrade` is the first node action that can
 earn AUTONOMOUS. Draft one over MCP with `propose_talos_upgrade`.
+
+Kubernetes itself moves with `k8s-upgrade` (Phase 11.2): `talosctl upgrade-k8s
+--to <version>` from one control-plane node, always at blast radius `cluster`
+(a proposal claiming a narrower one is refused). Preflight is read-only — the
+cluster is healthy, every member runs the same Talos release, the target is
+newer and at most one minor ahead — and the receipt only says succeeded once
+the kubelet reports the new version and the cluster is healthy again. There is
+no inverse, so like `node-update` it is pinned at CONFIRM. Draft one with
+`propose_k8s_upgrade`.
 
 ### Storage efficiency, service suggestions, the weekly digest (Phase 8.5–8.7)
 

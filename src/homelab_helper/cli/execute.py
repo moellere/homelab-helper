@@ -299,7 +299,7 @@ def exec_run(
                         argocd_adapter=_build_argocd_adapter(),
                         unifi_adapter=_build_unifi_adapter(manifest.controller),
                         ssh_adapter=KernelSSHAdapter() if manifest.is_node else None,
-                        talos_adapter=TalosAdapter() if manifest.is_talos else None,
+                        talos_adapter=TalosAdapter() if manifest.uses_talosctl else None,
                         notifier=notifier_from_env(),
                     )
                 except ManifestError as exc:

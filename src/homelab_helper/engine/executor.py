@@ -73,6 +73,10 @@ from homelab_helper.engine.manifest import (
     DNS_DOMAIN,
     DNS_RECORD_TYPES,
     GUEST_ACTION_KINDS,
+    K8S_ACTION_KINDS,
+    K8S_BLAST_RADIUS,
+    K8S_DOMAIN,
+    K8S_VERSION_PATTERN,
     MAX_CORES,
     MAX_MEMORY_MIB,
     MIN_MEMORY_MIB,
@@ -117,6 +121,9 @@ if TYPE_CHECKING:
     from homelab_helper.adapters.unifi import UniFiAdapter
 
     ConfirmCallback = Callable[["ActionManifest", Decision], Awaitable["bool | ApprovalResult"]]
+    _TargetParser = Callable[
+        [dict[str, Any], dict[str, Any], TrustDomain, dict[str, Any]], "ActionManifest"
+    ]
 
 # Trust-vocabulary verbs → Proxmox API verbs.
 _POWER_DISPATCH = {"start": "start", "stop": "stop", "shutdown": "shutdown", "restart": "reboot"}
@@ -166,6 +173,8 @@ class ActionManifest:
     ttl: int = 0
     controller: str | None = None
     talos_version: str | None = None
+    control_plane: str | None = None
+    k8s_version: str | None = None
 
     @property
     def cell_key(self) -> str:
@@ -185,6 +194,15 @@ class ActionManifest:
         return self.talos_version is not None
 
     @property
+    def is_k8s_upgrade(self) -> bool:
+        return self.k8s_version is not None
+
+    @property
+    def uses_talosctl(self) -> bool:
+        """Whether running this manifest needs a Talos adapter."""
+        return self.is_talos or self.is_k8s_upgrade
+
+    @property
     def is_argocd(self) -> bool:
         return self.application is not None
 
@@ -193,6 +211,10 @@ class ActionManifest:
         return self.dns_hostname is not None
 
     def _non_guest_label(self) -> str | None:
+        if self.is_talos:
+            return f"talos node {self.node} -> {self.talos_version}"
+        if self.is_k8s_upgrade:
+            return f"kubernetes via {self.control_plane} -> {self.k8s_version}"
         if self.is_argocd:
             rev = f" @ {self.revision}" if self.revision else ""
             return f"argocd app {self.application}{rev}"
@@ -205,8 +227,6 @@ class ActionManifest:
 
     @property
     def target_label(self) -> str:
-        if self.is_talos:
-            return f"talos node {self.node} -> {self.talos_version}"
         if self.is_node:
             return f"node {self.node}"
         if special := self._non_guest_label():
@@ -294,17 +314,22 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
         "action_raw": action,
     }
 
+    return _target_parser(target)(action, target, domain, common)
+
+
+def _target_parser(target: dict[str, Any]) -> _TargetParser:
+    """Which parser the target's own keys point at; mirrors ``manifest._guess_variant``."""
+    if "control_plane" in target:
+        return _parse_k8s_upgrade_target
     if "node" in target and "version" in target:
-        return _parse_talos_target(action, target, domain, common)
-    if "node" in target and "vmid" not in target:
-        return _parse_node_target(action, target, domain, common)
+        return _parse_talos_target
     if "vmid" in target or "node" in target:
-        return _parse_guest_target(action, target, domain, common)
+        return _parse_guest_target if "vmid" in target else _parse_node_target
     if "application" in target:
-        return _parse_argocd_target(action, target, domain, common)
+        return _parse_argocd_target
     if "hostname" in target and "value" in target:
-        return _parse_dns_target(action, target, domain, common)
-    return _parse_workload_target(action, target, domain, common)
+        return _parse_dns_target
+    return _parse_workload_target
 
 
 def _parse_node_target(
@@ -360,6 +385,44 @@ def _parse_talos_target(
         hostnames=tuple(action.get("hostnames") or (node,)),
         node=node,
         talos_version=version,
+    )
+
+
+def _parse_k8s_upgrade_target(
+    action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
+) -> ActionManifest:
+    """The Kubernetes control plane and a version. Cluster-wide by nature, so a
+    proposal claiming a narrower blast radius is refused rather than gated on
+    a smaller cell than the change."""
+    if common["action_kind"] not in K8S_ACTION_KINDS:
+        raise ManifestError(f"{common['action_kind']!r} is not a Kubernetes upgrade action")
+    control_plane = target.get("control_plane")
+    version = target.get("version")
+    if not control_plane or not isinstance(control_plane, str):
+        raise ManifestError("target.control_plane is required")
+    if not isinstance(version, str) or not re.fullmatch(K8S_VERSION_PATTERN, version):
+        raise ManifestError("target.version must be a Kubernetes version like 1.37.2")
+    unexpected = sorted(set(target) - {"control_plane", "version"})
+    if unexpected:
+        raise ManifestError(
+            "a Kubernetes upgrade target takes only 'control_plane' and 'version'; "
+            f"refusing extra field(s): {', '.join(unexpected)}"
+        )
+    if domain is not K8S_DOMAIN:
+        raise ManifestError(
+            f"declared domain {domain.value!r} does not match a Kubernetes control plane "
+            f"(which is {K8S_DOMAIN.value!r}) — refusing"
+        )
+    if common["blast_radius"] != K8S_BLAST_RADIUS:
+        raise ManifestError(
+            f"a Kubernetes upgrade is blast radius {K8S_BLAST_RADIUS!r}, "
+            f"not {common['blast_radius']!r} — refusing"
+        )
+    return ActionManifest(
+        **common,
+        hostnames=tuple(action.get("hostnames") or (control_plane,)),
+        control_plane=control_plane,
+        k8s_version=version,
     )
 
 
@@ -693,6 +756,63 @@ async def _dispatch_talos_upgrade(
     return "upgrade", {"image": image, "from": current.get("tag"), "came_back_s": came_back_s}
 
 
+def _semver(version: str) -> tuple[int, int, int]:
+    major, minor, patch, *_ = (*version.removeprefix("v").split("."), "0", "0")
+    return int(major), int(minor), int(patch)
+
+
+async def _dispatch_k8s_upgrade(
+    manifest: ActionManifest, talos: TalosAdapter | None
+) -> tuple[str, Any]:
+    """Upgrade the Kubernetes control plane and kubelets through ``talosctl upgrade-k8s``.
+
+    Preflight, all read-only: the cluster is healthy from the named control
+    plane's point of view, every member runs the same Talos release, the
+    target is newer than the running version and at most one minor ahead
+    (Kubernetes' supported skew). ``upgrade-k8s`` is synchronous, so the
+    dispatch returns when it does; the receipt then confirms the kubelet
+    reports the target version and the cluster is healthy again.
+    """
+    control_plane, version = manifest.control_plane, manifest.k8s_version
+    if control_plane is None or version is None:
+        raise ManifestError("kubernetes upgrade target is incomplete")
+    if talos is None:
+        raise ValueError("no Talos adapter is configured; a k8s-upgrade needs talosctl")
+    current = await talos.kubernetes_version(control_plane)
+    have, want = _semver(current), _semver(version)
+    if want <= have:
+        raise ValueError(f"cluster already runs Kubernetes {current}; {version} is not newer")
+    if want[0] != have[0] or want[1] - have[1] > 1:
+        raise ValueError(
+            f"Kubernetes {current} -> {version} skips a minor; upgrade one minor at a time"
+        )
+    releases = {m["talos"] for m in await talos.members(control_plane) if m["talos"]}
+    if len(releases) > 1:
+        raise ValueError(
+            f"members run mixed Talos releases ({', '.join(sorted(releases))}) — "
+            "finish the Talos upgrade first"
+        )
+    ok, detail = await talos.cluster_health(control_plane)
+    if not ok:
+        raise ValueError(f"cluster is not healthy before the upgrade: {detail}")
+    await talos.upgrade_k8s(control_plane, version)
+    after = await talos.kubernetes_version(control_plane)
+    if after != version:
+        raise ValueError(f"upgrade-k8s returned but the kubelet reports {after}, not {version}")
+    ok, detail = await talos.cluster_health(control_plane)
+    if not ok:
+        raise ValueError(f"cluster is not healthy after the upgrade: {detail}")
+    return "upgrade-k8s", {"from": current, "to": after}
+
+
+async def _dispatch_talosctl(
+    manifest: ActionManifest, talos: TalosAdapter | None
+) -> tuple[str, Any]:
+    if manifest.is_k8s_upgrade:
+        return await _dispatch_k8s_upgrade(manifest, talos)
+    return await _dispatch_talos_upgrade(manifest, talos)
+
+
 async def _dispatch_argocd(
     manifest: ActionManifest, argocd: ArgoCDAdapter | None
 ) -> tuple[str, Any]:
@@ -816,8 +936,8 @@ async def _dispatch(
     talos: TalosAdapter | None = None,
 ) -> tuple[str, Any]:
     """Run the one adapter write the manifest names; returns ``(verb, task-ish detail)``."""
-    if manifest.is_talos:
-        return await _dispatch_talos_upgrade(manifest, talos)
+    if manifest.uses_talosctl:
+        return await _dispatch_talosctl(manifest, talos)
     if manifest.is_argocd:
         return await _dispatch_argocd(manifest, argocd)
     if manifest.is_dns:

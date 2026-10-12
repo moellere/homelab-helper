@@ -88,6 +88,7 @@ _DEFAULT_STRATEGY = {
     "node-update": NO_INVERSE,
     "node-reboot": NO_INVERSE,
     "talos-upgrade": PRIOR_IMAGE,
+    "k8s-upgrade": NO_INVERSE,
 }
 _SNAPSHOT_PREFIX = "helper"
 _TARGET_KEYS = (

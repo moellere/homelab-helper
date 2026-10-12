@@ -1243,9 +1243,17 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   - [ ] Follow-ups: a CLI draft path (lands with 11.3's `helper maintenance
     plan --talos`); `talosctl health` in the return wait; honour a per-node
     `talosconfig` from `schedule.yaml` when building the executor's adapter.
-- [ ] **11.2 `k8s-upgrade`** — `talosctl upgrade-k8s --to <ver>` as a
-  `cluster`-radius `no-inverse` action; preflight on node readiness, uniform
-  Talos release, supported skew.
+- [x] **11.2 `k8s-upgrade`** (10/12/2026) — `K8sUpgradeTarget {control_plane,
+  version}` (`build_k8s_upgrade_artifact`; the executor refuses any blast
+  radius but `cluster`, so the change is always gated on the cell its size
+  names); `TalosAdapter.kubernetes_version` (kubelet image tag), `members`
+  (hostname, type, address, Talos release) and `cluster_health` (`talosctl
+  health`, read-only) plus the executor-only `upgrade_k8s` write;
+  `_dispatch_k8s_upgrade` preflights — target newer and at most one minor
+  ahead, one Talos release across members, cluster healthy — runs the
+  synchronous `upgrade-k8s`, then requires the kubelet to report the target
+  and health to pass again. `no-inverse`, so CONFIRM for good.
+  `propose_k8s_upgrade` over MCP.
 - [ ] **11.3 Talos maintenance run** — control planes then workers, each step
   gated on the previous node's return and `talosctl health`; a playbook from
   `talos-eol` / `k8s-eol`; `helper maintenance plan --talos`.

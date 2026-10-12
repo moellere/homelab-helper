@@ -46,7 +46,8 @@ src/homelab_helper/
 │                   versions (Phase 8.1 version currency; EOL table in data/),
 │                   backups (8.2 posture), category_findings (shared Phase 8 reconcile),
 │                   storage (8.5 headroom trends, stale snapshots, clutter),
-│                   usage (8.3 history: RRD rollups, retention, p95 summary),
+│                   usage (8.3 history: RRD rollups, retention, p95 summary;
+│                   11.4: metrics-server readings as hourly workload samples),
 │                   rightsizing (8.4: cores/memory from history),
 │                   raid_health (9.5: host.raid → storage-health findings),
 │                   disk_health (10.1: host.smart + history → storage-health),

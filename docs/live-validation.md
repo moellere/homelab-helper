@@ -539,7 +539,7 @@ shape — see the asymmetric fixture under P4-AC2.
 | P11.1 talos-upgrade (one node) | ⏳ waits on a release | Every node runs Talos v1.14.2, the newest release (10/12/2026); the first patch release is the live test — `propose_talos_upgrade` on one worker, `helper exec run`, then `helper exec rollback` to see `talosctl rollback` bring the prior release back. |
 | P11.2 k8s-upgrade | ⏳ waits on a release | Kubernetes 1.37.1 is stable-1.37; the next patch is the live test, as the closing step of a Talos maintenance run. |
 | P11.3 Talos maintenance run | ⏳ waits on a release | `helper maintenance plan-talos 10.250.6.13 --to <next>`: three control planes, then three workers, health-gated. |
-| P11.4 workload usage | ⏳ | `helper discover usage` against the lab (118 pods, metrics-server answering) after #96 merges; a workload baseline needs the `usage` source hourly in `schedule.yaml` for two weeks. |
+| P11.4 workload usage | ✅ 10/12/2026 | `helper discover usage` recorded 67 workloads from 118 pods on the first run (prometheus 1.3 GiB, authentik-server 0.15 cores …); an hourly cron now feeds the history, so a workload baseline forms after two weeks. |
 | P7 step 8 (unattended run notice) | ✅ 10/05/2026 | `containers/workload-restart/single-service` granted AUTONOMOUS; an agent-drafted restart of `homepage/deployment/homepage` ran from `helper daemon run --once` with no tap (rev 20 → 21, receipt actor `listener`, rollback `rollout-undo` verified); the phone showed the ✓ notice with `unattended` and the `helper exec rollback` line, after the receipt. Failure/demotion path not forced live — it needs a write that fails after a read that succeeds; pinned by tests. Cell left at AUTONOMOUS by the operator's choice. Found: the 15-min cron listener asked about the proposal while the cell was still CONFIRM, the ask timed out, and the listener then (correctly) refused to run it unattended after the grant — draft *after* granting. |
 
 Open as of 10/12/2026:
@@ -551,8 +551,8 @@ Open as of 10/12/2026:
 - **Phase 11 live rows** wait on upstream: the cluster already runs the newest
   Talos and Kubernetes patch releases. When one ships, the Talos maintenance
   run is the test for 11.1–11.3 at once.
-- **Workload usage** — one `helper discover usage` after #96, then an hourly
-  cadence for the baseline to form.
+- **Workload usage** — recorded; the baseline forms once two weeks of hourly
+  samples exist.
 
 Phase 7 is signed off end to end; the first unattended execution ran 10/05/2026
 and `containers/workload-restart/single-service` is live at AUTONOMOUS.

@@ -1283,10 +1283,13 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   else one core — `cpus` says which; the latest reading in an hour wins), and
   `engine/baselines.py` judges `workload` subjects like guests. Skipped without
   kubectl; a cluster without metrics-server reports the error in the result.
-  - [ ] Follow-ups: a usage source cadence of 1 h in `schedule.yaml` is what
-    gives workloads a baseline (the 4-hourly default leaves gaps); workload
+  - [ ] Follow-ups: an hourly `helper discover usage` (cron; `schedule.yaml`
+    has no source cadences yet — adding `sources:` there is the clean fix) is
+    what gives workloads a baseline, the 4-hourly sweep leaves gaps; workload
     rightsizing (requests/limits from history) and the digest's workload rows;
-    a mean within the hour rather than last-reading-wins.
+    a mean within the hour rather than last-reading-wins. Live 10/12/2026: 67
+    workloads recorded on the first run; none declares CPU limits or requests,
+    so `cpu` is cores used against `cpus = 1.0`.
 
 ## Not tracked here
 

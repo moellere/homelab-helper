@@ -257,6 +257,18 @@ async def test_plan_honours_no_new_guests_and_capacity(sessionmaker) -> None:
     await pve.aclose()
 
 
+async def test_plan_refuses_a_host_without_ssh_credentials_before_any_drain(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    pve = make_proxmox(requests, guests=GUESTS, nodes=NODES)
+    async with session_scope(sessionmaker) as s:
+        host = await seed(s)
+        host.credentials_ref = None
+        await s.flush()
+        with pytest.raises(MaintenanceError, match="no ssh credentials_ref"):
+            await plan_maintenance(s, pve, NODE, actor="enoch")
+        assert (await s.execute(select(ProposalLog))).scalars().all() == []
+
+
 async def test_plan_refuses_a_second_open_run_an_unknown_host_and_a_bad_target(
     sessionmaker,
 ) -> None:

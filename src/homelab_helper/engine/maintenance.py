@@ -49,7 +49,12 @@ from homelab_helper.db.models import (
     ProposalLog,
     VirtualMachine,
 )
-from homelab_helper.engine.executor import ExecutionRefused, ManifestError, execute_proposal
+from homelab_helper.engine.executor import (
+    ExecutionRefused,
+    ManifestError,
+    _ssh_credentials,
+    execute_proposal,
+)
 from homelab_helper.engine.manifest import (
     ManifestError as _ManifestError,
 )
@@ -248,6 +253,14 @@ async def plan_maintenance(
             f"{node} is not a known host — the update and reboot steps need its SSH credentials; "
             "add it with `helper discover host` first"
         )
+    try:
+        _ssh_credentials(host)
+    except ValueError as exc:
+        # Checked here, before a single guest moves: a drain that then stops at
+        # the update step leaves the node empty and the guests displaced.
+        raise MaintenanceError(
+            f"{exc} — the update and reboot steps would refuse after the drain"
+        ) from exc
     cluster_name: str | None = (await adapter.cluster_status()).get("name")
     nodes = await adapter.cluster_resources("node")
     if not any(str(n.get("node")) == node for n in nodes):

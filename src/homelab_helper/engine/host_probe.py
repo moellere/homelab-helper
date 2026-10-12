@@ -217,6 +217,11 @@ async def probe_host(
     except Exception as exc:
         result.session_error = str(exc)
         result.failures += 1
+    else:
+        if request.ssh_password is None:
+            # The login that just worked is the one node actions will use;
+            # ``helper exec`` and maintenance runs read it back from here.
+            host.credentials_ref = f"ssh:{request.ssh_user}:{request.ssh_key_path or ''}"
 
     mark_kernel_probed(host, result.observations)
     result.reconcile = await Reconciler().reconcile_host(session, host.id)

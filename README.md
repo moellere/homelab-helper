@@ -397,7 +397,9 @@ executes them in order after one consent, relaying it to each step's CONFIRM.
 Every step is gated by `decide()` on its own cell and leaves its own receipt;
 the first failed or refused step ends the run and the remaining proposals are
 rejected. Over MCP the same run asks your phone once. Because `node-reboot`
-has no inverse, a run can never execute unattended. A run that stopped after
+has no inverse, a run can never execute unattended. The command ignores a
+terminal hangup, so a dropped SSH session does not kill a run mid-step (tmux is
+still the better habit for a 20-minute procedure). A run that stopped after
 its drain is finished by a second one: `helper maintenance plan <node>
 --resume <stopped-run>` adds the guests it moved and never returned to the new
 run's return leg (a guest that has moved since is left alone).

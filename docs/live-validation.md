@@ -535,7 +535,7 @@ shape — see the asymmetric fixture under P4-AC2.
 | P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 and step 6 ran live 10/11/2026 against a `migrate` of a vmid that does not exist: step 6 first — window open, `exec run` stopped at the confirm prompt, `window kill --yes` from the side, answer `y` → `refused: elevation window … closed before dispatch — halting`, nothing dispatched; then step 5 without a window — Proxmox answered 500 on the migrate POST, a `failed` receipt was written, the proposal stayed pending, and `hypervisor/migrate/single-host` dropped to `propose (probation)` with a `demote` row on the audit spine and a phone notice. Re-grant pending. |
 | P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 | P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
-| P8 / P10.4 maintenance run (one node) | ⏳ first attempt 10/12/2026 | Run `01a12d91` on bmax3: five drain migrations succeeded (proxmox-dc, esphome-builder, esphome-lxc, traefik-lxc → bmax1; guacamole-lxc → bmax2), then step 6 refused — no Proxmox host row carried an SSH `credentials_ref`, because nothing had ever written one. Fixed in #95 (a successful host probe records the login; `plan` refuses a node without one before any guest moves) and #97 (`plan --resume` finishes a stopped run's return leg). bmax3 is drained and waiting; the resumed run (update, reboot, five returns) is the sign-off. |
+| P8 / P10.4 maintenance run (one node) | ✅ 10/12/2026 (record reconstructed) | Two runs on bmax3. `01a12d91` drained five guests (proxmox-dc, esphome-builder, esphome-lxc, traefik-lxc → bmax1; guacamole-lxc → bmax2) and refused at the update step — no host row carried an SSH `credentials_ref` (fixed: #95). `01a12e11` (`plan --resume`, #97) then ran end to end at 03:04:44–03:05:57 UTC: `apt dist-upgrade` (nothing pending), `systemctl reboot` (bmax3 down 03:04:45, back 03:05:28), then the five returns — but the SSH session it was started from dropped as the last migrate returned, SIGHUP killed the CLI before its commit, and the harness kept **no record**: the proof is bmax3's journal and the pveproxy access logs, not a receipt. Fixed: `maintenance run` / `exec run` ignore SIGHUP (#101), runs commit per step (#100). The refusal's demotion of `host-os/node-update` is also fixed (#100). |
 | P11.1 talos-upgrade (one node) | ⏳ waits on a release | Every node runs Talos v1.14.2, the newest release (10/12/2026); the first patch release is the live test — `propose_talos_upgrade` on one worker, `helper exec run`, then `helper exec rollback` to see `talosctl rollback` bring the prior release back. |
 | P11.2 k8s-upgrade | ⏳ waits on a release | Kubernetes 1.37.1 is stable-1.37; the next patch is the live test, as the closing step of a Talos maintenance run. |
 | P11.3 Talos maintenance run | ⏳ waits on a release | `helper maintenance plan-talos 10.250.6.13 --to <next>`: three control planes, then three workers, health-gated. |
@@ -544,10 +544,10 @@ shape — see the asymmetric fixture under P4-AC2.
 
 Open as of 10/12/2026:
 
-- **The bmax3 maintenance run** — drained, then stopped for want of a recorded
-  SSH login (fixed since). Finish it with
-  `helper maintenance plan bmax3 --resume 01a12d91` → `helper maintenance run`:
-  update (a no-op today), reboot, five returns. That is the P8 / P10.4 row.
+- **The bmax3 maintenance run** — done (see the row): the fleet is in the
+  intended end state and the procedure ran, but the receipts were lost to a
+  terminal hangup. The next node with real updates pending is the first run
+  that will leave a complete record.
 - **Phase 11 live rows** wait on upstream: the cluster already runs the newest
   Talos and Kubernetes patch releases. When one ships, the Talos maintenance
   run is the test for 11.1–11.3 at once.

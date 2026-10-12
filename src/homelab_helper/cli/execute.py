@@ -10,7 +10,9 @@ is ever dispatched past the gate.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
+import signal
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -201,6 +203,13 @@ def _report_run(result: ExecutionResult, *, used_override: bool) -> int:
     return 0 if result.outcome == "succeeded" else 4
 
 
+def _outlive_the_terminal() -> None:
+    """A dispatch (a reboot wait can be 15 minutes) survives the terminal that started it,
+    so its receipt is written even when the SSH session drops."""
+    with contextlib.suppress(ValueError, OSError, AttributeError):
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+
 @exec_app.command(name="run")
 def exec_run(
     proposal_id: str = typer.Argument(..., help="Proposal id (or unique prefix)."),
@@ -225,6 +234,7 @@ def exec_run(
     crosses an absolute floor, and it never makes a propose-only cell execute.
     The gesture is deliberately high-friction: you retype the cell key.
     """
+    _outlive_the_terminal()
 
     async def _confirm(manifest: ActionManifest, decision: Decision) -> bool:
         console.print(

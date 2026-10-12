@@ -49,7 +49,7 @@ from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfigError
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
-from homelab_helper.adapters.kubernetes import K8sAdapter
+from homelab_helper.adapters.kubernetes import K8sAdapter, KubeError, workload_usage
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
@@ -177,6 +177,7 @@ from homelab_helper.engine.usage import (
     pool_history,
     prune_usage,
     record_usage,
+    record_workload_usage,
     summarize,
 )
 from homelab_helper.engine.usage import rollup as usage_rollup
@@ -1144,13 +1145,29 @@ async def _discover_usage(session: AsyncSession) -> dict[str, Any]:
             inserted += w.inserted
             updated += w.updated
         with_data += any_data
+    workloads = await _discover_workload_usage(session)
     pruned = await prune_usage(session)
     return {
-        "subjects": len(subjects),
-        "with_data": with_data,
+        "subjects": len(subjects) + workloads.get("subjects", 0),
+        "with_data": with_data + workloads.get("subjects", 0),
         "samples": {"inserted": inserted, "updated": updated},
+        "workloads": workloads,
         "pruned": pruned,
     }
+
+
+async def _discover_workload_usage(session: AsyncSession) -> dict[str, Any]:
+    """Phase 11.4: one hourly sample per Kubernetes workload from metrics-server.
+    Skipped without kubectl; a cluster without metrics-server reports why."""
+    if not shutil.which("kubectl"):
+        return {"skipped": "kubectl not on PATH"}
+    k8s = _load_k8s_adapter()
+    try:
+        rows = workload_usage(await k8s.list_pods(), await k8s.pod_metrics())
+    except KubeError as exc:
+        return {"error": str(exc)[:300]}
+    w = await record_workload_usage(session, rows)
+    return {"subjects": len(rows), "samples": {"inserted": w.inserted, "updated": w.updated}}
 
 
 async def _discover_capacity(session: AsyncSession) -> dict[str, Any]:

@@ -1257,8 +1257,20 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
 - [ ] **11.3 Talos maintenance run** — control planes then workers, each step
   gated on the previous node's return and `talosctl health`; a playbook from
   `talos-eol` / `k8s-eol`; `helper maintenance plan --talos`.
-- [ ] **11.4 Workload usage** — metrics-server pod CPU/memory as `workload`
-  usage subjects for baselines, rightsizing and the digest.
+- [x] **11.4 Workload usage** (10/12/2026) — `run_discovery("usage")` now also
+  reads metrics-server (`K8sAdapter.pod_metrics`, `list_pods`) and sums pod
+  usage and declared resources per Deployment / StatefulSet / DaemonSet
+  (`adapters/kubernetes.py::workload_usage`; a ReplicaSet's pod is attributed
+  to its Deployment by the `pod-template-hash`, Jobs and bare pods are left
+  out); `engine/usage.py::record_workload_usage` writes one hourly `workload`
+  sample per reading (`cpu` = fraction of summed CPU limits, else requests,
+  else one core — `cpus` says which; the latest reading in an hour wins), and
+  `engine/baselines.py` judges `workload` subjects like guests. Skipped without
+  kubectl; a cluster without metrics-server reports the error in the result.
+  - [ ] Follow-ups: a usage source cadence of 1 h in `schedule.yaml` is what
+    gives workloads a baseline (the 4-hourly default leaves gaps); workload
+    rightsizing (requests/limits from history) and the digest's workload rows;
+    a mean within the hour rather than last-reading-wins.
 
 ## Not tracked here
 

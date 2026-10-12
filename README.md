@@ -326,6 +326,15 @@ history on the very first run — and prunes past a horizon so the table stays
 bounded. `helper usage [name]` shows CPU and memory p95 and peak against what
 each host or guest is allocated; agents read the same through `usage_summary`.
 
+
+Workload usage (Phase 11.4): when `kubectl` is on the path and the cluster
+runs metrics-server, `helper discover usage` also records one hourly sample
+per Deployment / StatefulSet / DaemonSet — pod CPU and memory summed per
+workload, CPU as a fraction of the workload's declared limits (or requests) —
+so `usage_summary` and the Phase 10.3 baselines cover the cluster's workloads
+as well as the hypervisor's guests. Give the `usage` source an hourly cadence
+in `schedule.yaml` for a workload baseline to form.
+
 ### Rightsizing (Phase 8.4)
 
 `helper plan rightsize` reads that history and recommends cores and memory per

@@ -14,15 +14,13 @@ specific kind of change on yourself.
 ### 1. Install
 
 ```bash
-uv tool install --prerelease allow homelab-helper   # from PyPI
-# or: pipx install homelab-helper==1.0.0rc1
+uv tool install homelab-helper                      # from PyPI
+# or: pipx install homelab-helper
 helper --install-completion                          # bash / zsh / fish, optional
 ```
 
-The project is in beta, so installers skip it unless told to allow
-pre-releases; drop the flag once a non-beta release is on PyPI. To work from a
-checkout instead, `uv sync --all-extras --group dev` and prefix every command
-below with `uv run`.
+To work from a checkout instead, `uv sync --all-extras --group dev` and prefix
+every command below with `uv run`.
 
 ### 2. Initialize
 

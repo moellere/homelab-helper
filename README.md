@@ -3,15 +3,16 @@
 > An open-source framework for homelab inventory, audit, recommendations, and
 > operator-gated execution.
 
-**Status: release candidate (1.0.0rc1).** Every planned phase is built and
+**Status: 1.0.0.** Every planned phase is built and
 validated against a real two-site lab: discovery and inventory, audit, chat and
 MCP tools, placement / rebalancing / rightsizing recommendations, version
 currency and backup posture, per-probe cadences, a weekly digest, and a status
 endpoint for your dashboard. Execution (Phases 6–8: guest power, migration and
 resize, Kubernetes workloads, Argo CD syncs, DNS records, a rolling node update,
 agent-triggered runs behind a phone-tap approval) is **opt-in and off by
-default**: nothing runs until you raise a trust cell. What separates rc1 from
-1.0.0 is operator time on the last runbook rows, not code. The CLI verbs, MCP
+default**: nothing runs until you raise a trust cell. Phases 10 and 11 added
+predictive operations (disk health, capacity trends, baselines, maintenance
+runs) and Talos as a managed plane on top of the 1.0 surface. The CLI verbs, MCP
 tool names, configuration variables and the probe contract are declared stable
 in [stability and deprecation](https://moellere.github.io/homelab-helper/stability/);
 schema changes ship as Alembic migrations that `helper db init` applies, on
@@ -70,14 +71,11 @@ and a kubeconfig. Chat works out of the box against a local
 **1. Install.** As a tool on your PATH (no checkout needed):
 
 ```bash
-uv tool install --prerelease allow homelab-helper   # from PyPI (beta: installers skip pre-releases unless told)
-# or: pipx install homelab-helper==1.0.0rc1
+uv tool install homelab-helper                      # from PyPI
+# or: pipx install homelab-helper
 helper --install-completion                          # bash / zsh / fish
 # bleeding edge: uv tool install git+https://github.com/moellere/homelab-helper
 ```
-
-Drop `--prerelease allow` / the version pin once `1.0.0` is on PyPI; until
-then a plain `uv tool install homelab-helper` reports no matching version.
 
 Or from a checkout for development (see [Development](#development)), where
 every command below is prefixed with `uv run`:

@@ -705,3 +705,34 @@ def test_executor_path_never_imports_llm() -> None:
         "assert not bad, f'LLM modules in the execution path: {bad}'"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+async def test_an_unexpected_exception_is_a_failed_receipt_not_a_crash(sessionmaker) -> None:
+    """A bug or a broken dependency mid-dispatch must still leave a receipt behind."""
+
+    class _Exploding:
+        async def vm_current_status(self, *a: object, **k: object) -> dict[str, str]:
+            return {"status": "running"}
+
+        async def vm_power(self, *a: object, **k: object) -> str:
+            raise AttributeError("module 'httpx' has no attribute 'AsyncClient'")
+
+    async def _ok(manifest: object, decision: object) -> bool:
+        return True
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s, TrustDomain.CONTAINERS, "restart", "single-host", AutonomyLevel.CONFIRM, actor="e"
+        )
+        proposal = await make_proposal(s, make_artifact())
+        result = await execute_proposal(
+            s,
+            proposal,
+            _Exploding(),  # type: ignore[arg-type]
+            actor="enoch",
+            confirm_cb=_ok,
+        )
+        assert result.outcome == "failed"
+        assert "AttributeError" in (result.error or "")
+        assert result.escalation is not None, "a real failure still costs the cell"

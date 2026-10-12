@@ -518,3 +518,28 @@ async def test_plan_resume_brings_back_what_a_stopped_run_left_displaced(session
             art = (await s.get(ProposalLog, uuid.UUID(st["proposal_id"]))).artifact["action"]
             assert art["target"]["target_node"] == NODE
             assert art["target"]["node"] == parked[int(art["target"]["vmid"])]
+
+
+async def test_plan_names_the_steps_the_gate_would_refuse_today(sessionmaker) -> None:
+    """Planned without the host-os grants: the plan says so instead of the run finding out."""
+    requests: list[httpx.Request] = []
+    async with session_scope(sessionmaker) as s:
+        await seed(s)
+        await grant_cell(
+            s, TrustDomain.HYPERVISOR, "migrate", "single-host", AutonomyLevel.CONFIRM, actor="e"
+        )
+        run = await plan_maintenance(
+            s, make_proxmox(requests, guests=GUESTS, nodes=NODES), NODE, actor="e"
+        )
+        by_kind = {st["kind"]: st for st in run.steps}
+        assert by_kind["node-update"]["detail"].startswith(
+            "would be refused today: host-os/node-update"
+        )
+        assert by_kind["node-reboot"]["detail"].startswith(
+            "would be refused today: host-os/node-reboot"
+        )
+        assert by_kind["drain-migrate"]["detail"] in (
+            None,
+            "would be refused today: containers/migrate/single-host is at propose — grant it first",
+        )
+        assert "would be refused" in run_summary(run)["steps"][-2]["detail"]

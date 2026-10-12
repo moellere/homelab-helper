@@ -171,6 +171,7 @@ async def test_failed_receipt_is_critical(tmp_path: Path) -> None:
     assert snap["receipts_24h"] == {
         "succeeded": 0,
         "failed": 1,
+        "refused": 0,
         "last_at": (T0 - timedelta(minutes=30)).isoformat(),
     }
     assert snap["health"] == "critical"

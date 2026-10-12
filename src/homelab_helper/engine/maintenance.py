@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from homelab_helper.db.enums import (
+    AutonomyLevel,
     IntentState,
     IntentTargetType,
     MaintenanceStatus,
@@ -55,6 +56,7 @@ from homelab_helper.engine.executor import (
     ManifestError,
     _ssh_credentials,
     execute_proposal,
+    parse_manifest,
 )
 from homelab_helper.engine.manifest import (
     ManifestError as _ManifestError,
@@ -65,6 +67,7 @@ from homelab_helper.engine.manifest import (
     build_node_artifact,
     build_talos_artifact,
 )
+from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -208,6 +211,25 @@ async def _refuse_open_run(session: AsyncSession, node: str) -> None:
         )
 
 
+async def _would_refuse(session: AsyncSession, proposal: ProposalLog) -> str | None:
+    """The gate's answer today, read-only and pessimistic, so a run is not started
+    only to stop at a cell nobody granted. Informational: the run re-decides each
+    step when it executes."""
+    manifest = parse_manifest(proposal)
+    request = ActionRequest(
+        domain=manifest.domain,
+        action_kind=manifest.action_kind,
+        blast_radius=manifest.blast_radius,
+        hostnames=manifest.hostnames,
+        rollback_verified=False,
+        provenance=proposal.proposed_by,
+    )
+    level = decide(request, await load_trust_context(session, request)).level
+    if level in (AutonomyLevel.BLOCK, AutonomyLevel.PROPOSE):
+        return f"would be refused today: {manifest.cell_key} is at {level.value} — grant it first"
+    return None
+
+
 async def _record_steps(
     session: AsyncSession,
     run: MaintenanceRun,
@@ -230,7 +252,7 @@ async def _record_steps(
                 "proposal_id": str(proposal.id),
                 "receipt_id": None,
                 "state": "planned",
-                "detail": None,
+                "detail": await _would_refuse(session, proposal),
             }
         )
     run.steps = steps
@@ -581,8 +603,11 @@ async def execute_maintenance(
         current["receipt_id"] = receipt_id
         if failure is None:
             current["state"] = "succeeded"
+            current["detail"] = None
             run.steps = steps
-            await session.flush()
+            # Durable per step: a crash later in the run must not roll back the
+            # record of what already changed on the fleet.
+            await session.commit()
             continue
         current["state"] = "failed"
         current["detail"] = failure

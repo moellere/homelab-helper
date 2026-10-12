@@ -236,7 +236,7 @@ async def test_an_undrained_node_is_refused_before_any_write(sessionmaker_) -> N
             s, p, _proxmox(running), actor="enoch", confirm_cb=_yes, ssh_adapter=ssh
         )
 
-        assert result.outcome == "failed"
+        assert result.outcome == "refused"
         assert "drain it first" in (result.error or "")
         assert ssh.calls == [], "nothing ran on the node"
         assert p.outcome is ProposalOutcome.PENDING, "still retryable once drained"
@@ -305,7 +305,7 @@ async def test_an_unknown_host_is_refused(sessionmaker_) -> None:
         result = await execute_proposal(
             s, p, _proxmox([]), actor="enoch", confirm_cb=_yes, ssh_adapter=ssh
         )
-    assert result.outcome == "failed"
+    assert result.outcome == "refused"
     assert "not a known host" in (result.error or "")
     assert ssh.calls == []
 
@@ -320,7 +320,7 @@ async def test_a_host_without_credentials_is_refused(sessionmaker_) -> None:
         result = await execute_proposal(
             s, p, _proxmox([]), actor="enoch", confirm_cb=_yes, ssh_adapter=ssh
         )
-    assert result.outcome == "failed"
+    assert result.outcome == "refused"
     assert "credentials_ref" in (result.error or "")
     assert ssh.calls == []
 
@@ -332,7 +332,7 @@ async def test_without_an_ssh_adapter_nothing_runs(sessionmaker_) -> None:
         s.add(p)
         await s.flush()
         result = await execute_proposal(s, p, _proxmox([]), actor="enoch", confirm_cb=_yes)
-    assert result.outcome == "failed"
+    assert result.outcome == "refused"
     assert "needs one" in (result.error or "")
 
 
@@ -406,3 +406,30 @@ def test_the_playbook_ignores_a_mixed_versions_finding() -> None:
     playbook = playbook_for(finding)
     assert playbook is not None, "the kind and target match"
     assert playbook.build(finding) is None, "but this category drafts nothing"
+
+
+async def test_a_preflight_refusal_costs_the_cell_nothing(sessionmaker_) -> None:
+    """Refused before the target was touched: the cell keeps its level and streak."""
+    from sqlalchemy import select
+
+    from homelab_helper.db.models import CellTrust, TrustHistory
+
+    running = [{"node": NODE, "vmid": 105, "name": "ha", "status": "running", "template": False}]
+    async with session_scope(sessionmaker_) as s:
+        await seeded(s)
+        p = proposal_for()
+        s.add(p)
+        await s.flush()
+        result = await execute_proposal(
+            s, p, _proxmox(running), actor="enoch", confirm_cb=_yes, ssh_adapter=_FakeSSH()
+        )
+        assert result.outcome == "refused"
+        assert result.escalation is None
+        assert p.outcome is ProposalOutcome.PENDING
+        cell = (
+            await s.execute(select(CellTrust).where(CellTrust.action_kind == "node-update"))
+        ).scalar_one()
+        assert cell.level is AutonomyLevel.CONFIRM
+        assert not cell.on_probation
+        events = [h.event for h in (await s.execute(select(TrustHistory))).scalars()]
+        assert "demote" not in events

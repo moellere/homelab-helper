@@ -133,6 +133,13 @@ _POWER_DISPATCH = {"start": "start", "stop": "stop", "shutdown": "shutdown", "re
 _VM_KIND_DOMAIN = VM_KIND_DOMAIN
 
 
+class PreflightRefused(ValueError):
+    """A dispatch that stopped before touching the target — an undrained node, a
+    missing login, a node already on the requested release. Recorded as a
+    ``refused`` receipt and the proposal stays pending; it costs the cell
+    nothing, because nothing happened that trust could have been wrong about."""
+
+
 class ExecutionRefused(RuntimeError):
     """The gate (or the operator) said no — nothing was dispatched."""
 
@@ -632,13 +639,16 @@ async def _node_preflight(
     if node is None:
         raise ManifestError("node target is incomplete")
     if ssh is None:
-        raise ValueError(f"no SSH adapter is configured; a node {verb} needs one")
+        raise PreflightRefused(f"no SSH adapter is configured; a node {verb} needs one")
     if host is None:
-        raise ValueError(
+        raise PreflightRefused(
             f"{node} is not a known host, so the harness has no credentials for it — "
             "add it with `helper discover host` first"
         )
-    user, key_path = _ssh_credentials(host)
+    try:
+        user, key_path = _ssh_credentials(host)
+    except ValueError as exc:
+        raise PreflightRefused(str(exc)) from exc
     running = [
         v
         for v in await adapter.cluster_resources("vm")
@@ -646,7 +656,7 @@ async def _node_preflight(
     ]
     if running:
         names = ", ".join(str(v.get("name") or v.get("vmid")) for v in running[:6])
-        raise ValueError(
+        raise PreflightRefused(
             f"{node} still runs {len(running)} guest(s) ({names}) — drain it first "
             f"(migrate them off), then {verb}"
         )
@@ -743,13 +753,15 @@ async def _dispatch_talos_upgrade(
     if node is None or version is None:
         raise ManifestError("talos target is incomplete")
     if talos is None:
-        raise ValueError("no Talos adapter is configured; a talos-upgrade needs talosctl")
+        raise PreflightRefused("no Talos adapter is configured; a talos-upgrade needs talosctl")
     current = await talos.version(node)
     if current.get("tag") == version:
-        raise ValueError(f"{node} already runs Talos {version}; nothing to upgrade")
+        raise PreflightRefused(f"{node} already runs Talos {version}; nothing to upgrade")
     ready, stage = await talos.machine_ready(node)
     if not ready:
-        raise ValueError(f"{node} is not ready (stage {stage}) — not upgrading a node mid-change")
+        raise PreflightRefused(
+            f"{node} is not ready (stage {stage}) — not upgrading a node mid-change"
+        )
     image = image_with_tag(await talos.install_image(node), version)
     await talos.upgrade_node(node, image)
     came_back_s = await wait_for_tag(talos, node, version)
@@ -777,24 +789,24 @@ async def _dispatch_k8s_upgrade(
     if control_plane is None or version is None:
         raise ManifestError("kubernetes upgrade target is incomplete")
     if talos is None:
-        raise ValueError("no Talos adapter is configured; a k8s-upgrade needs talosctl")
+        raise PreflightRefused("no Talos adapter is configured; a k8s-upgrade needs talosctl")
     current = await talos.kubernetes_version(control_plane)
     have, want = _semver(current), _semver(version)
     if want <= have:
-        raise ValueError(f"cluster already runs Kubernetes {current}; {version} is not newer")
+        raise PreflightRefused(f"cluster already runs Kubernetes {current}; {version} is not newer")
     if want[0] != have[0] or want[1] - have[1] > 1:
-        raise ValueError(
+        raise PreflightRefused(
             f"Kubernetes {current} -> {version} skips a minor; upgrade one minor at a time"
         )
     releases = {m["talos"] for m in await talos.members(control_plane) if m["talos"]}
     if len(releases) > 1:
-        raise ValueError(
+        raise PreflightRefused(
             f"members run mixed Talos releases ({', '.join(sorted(releases))}) — "
             "finish the Talos upgrade first"
         )
     ok, detail = await talos.cluster_health(control_plane)
     if not ok:
-        raise ValueError(f"cluster is not healthy before the upgrade: {detail}")
+        raise PreflightRefused(f"cluster is not healthy before the upgrade: {detail}")
     await talos.upgrade_k8s(control_plane, version)
     after = await talos.kubernetes_version(control_plane)
     if after != version:
@@ -1042,6 +1054,39 @@ async def _node_host(session: AsyncSession, manifest: ActionManifest) -> Host | 
     ).scalar_one_or_none()
 
 
+async def _dispatch_and_classify(
+    session: AsyncSession,
+    manifest: ActionManifest,
+    adapter: ProxmoxAdapter,
+    k8s: K8sAdapter | None,
+    argocd: ArgoCDAdapter | None,
+    unifi: UniFiAdapter | None,
+    ssh: KernelSSHAdapter | None,
+    talos: TalosAdapter | None,
+) -> tuple[str, Any, str, str | None]:
+    """``(verb, upid, outcome, error)``: succeeded, refused (nothing touched) or failed."""
+    verb, upid = manifest.action_kind, None
+    try:
+        verb, upid = await _dispatch(
+            manifest, adapter, k8s, argocd, unifi, ssh, await _node_host(session, manifest), talos
+        )
+    except PreflightRefused as exc:
+        return verb, upid, "refused", str(exc)
+    except (
+        ProxmoxAPIError,
+        KubeError,
+        ArgoCDAPIError,
+        UniFiAPIError,
+        TalosError,
+        OSError,
+        ValueError,
+    ) as exc:
+        return verb, upid, "failed", str(exc)
+    except Exception as exc:  # a surprise is still a failed receipt, never a lost one
+        return verb, upid, "failed", f"{type(exc).__name__}: {exc}"
+    return verb, upid, "succeeded", None
+
+
 async def execute_proposal(
     session: AsyncSession,
     proposal: ProposalLog,
@@ -1063,7 +1108,9 @@ async def execute_proposal(
     :class:`ExecutionRefused` whenever nothing may run (BLOCK/PROPOSE decision,
     missing or declined confirmation, non-pending proposal). A dispatch
     failure does *not* raise — it returns a ``failed`` result whose receipt
-    carries the error.
+    carries the error, and a preflight that stopped before the target was
+    touched returns ``refused`` (the proposal stays pending, the cell is not
+    demoted).
     """
     if proposal.outcome is not ProposalOutcome.PENDING:
         raise ExecutionRefused(f"proposal is {proposal.outcome.value}, not pending — refusing")
@@ -1151,29 +1198,16 @@ async def execute_proposal(
     rollback_state = plan.as_receipt_state()
 
     started = time.monotonic()
-    outcome, error, upid = "succeeded", None, None
-    verb = manifest.action_kind
-    try:
-        verb, upid = await _dispatch(
-            manifest,
-            adapter,
-            k8s_adapter,
-            argocd_adapter,
-            unifi_adapter,
-            ssh_adapter,
-            await _node_host(session, manifest),
-            talos_adapter,
-        )
-    except (
-        ProxmoxAPIError,
-        KubeError,
-        ArgoCDAPIError,
-        UniFiAPIError,
-        TalosError,
-        OSError,
-        ValueError,
-    ) as exc:
-        outcome, error = "failed", str(exc)
+    verb, upid, outcome, error = await _dispatch_and_classify(
+        session,
+        manifest,
+        adapter,
+        k8s_adapter,
+        argocd_adapter,
+        unifi_adapter,
+        ssh_adapter,
+        talos_adapter,
+    )
     duration_ms = int((time.monotonic() - started) * 1000)
 
     receipt = ExecutionReceipt(
@@ -1216,7 +1250,7 @@ async def execute_proposal(
             actor=actor,
             proposal_id=proposal.id,
         )
-    else:
+    elif outcome == "failed":
         escalation = await record_bad_outcome(
             session,
             domain=manifest.domain,
@@ -1226,6 +1260,10 @@ async def execute_proposal(
             reason=error or "dispatch failed",
             proposal_id=proposal.id,
         )
+    else:
+        # Refused before the target was touched: no outcome to learn from, so
+        # the cell keeps its level and its streak.
+        escalation = None
     await session.flush()
 
     # Only now, with the receipt and the escalation on disk, is the operator
@@ -1340,6 +1378,7 @@ __all__ = [
     "ExecutionResult",
     "ManifestError",
     "OverrideGrant",
+    "PreflightRefused",
     "RollbackResult",
     "execute_proposal",
     "parse_manifest",

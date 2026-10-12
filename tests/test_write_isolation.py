@@ -30,6 +30,8 @@ WRITE_METHODS = (
     "delete_dns_record",
     "apt_dist_upgrade",
     "reboot_node",
+    "upgrade_node",
+    "rollback_node",
 )
 ALLOWED = {
     SRC / "adapters" / "proxmox.py",  # the definitions
@@ -37,6 +39,7 @@ ALLOWED = {
     SRC / "adapters" / "argocd.py",  # Phase-7 slice 2: sync / rollback
     SRC / "adapters" / "unifi.py",  # Phase-7 slice 2: static DNS
     SRC / "adapters" / "kernel_ssh.py",  # Phase-8: the node dist-upgrade
+    SRC / "adapters" / "talos.py",  # Phase-11: talosctl upgrade / rollback
     SRC / "engine" / "executor.py",  # the gate's enforcement point
     SRC / "engine" / "rollback.py",  # driven by the executor
 }

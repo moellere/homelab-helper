@@ -43,6 +43,7 @@ written to ``TrustHistory`` as an ``approval`` event.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -54,6 +55,7 @@ from sqlalchemy import select
 from homelab_helper.adapters.argocd import ArgoCDAPIError
 from homelab_helper.adapters.kubernetes import KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAPIError
+from homelab_helper.adapters.talos import TalosError, image_with_tag, wait_for_tag
 from homelab_helper.adapters.unifi import UniFiAPIError
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
 from homelab_helper.db.models import ExecutionReceipt, Host, ProposalLog, TrustHistory
@@ -76,6 +78,9 @@ from homelab_helper.engine.manifest import (
     MIN_MEMORY_MIB,
     NODE_ACTION_KINDS,
     NODE_DOMAIN,
+    TALOS_ACTION_KINDS,
+    TALOS_DOMAIN,
+    TALOS_VERSION_PATTERN,
     VM_KIND_DOMAIN,
     WORKLOAD_ACTION_KINDS,
     WORKLOAD_DOMAIN,
@@ -108,6 +113,7 @@ if TYPE_CHECKING:
     from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
     from homelab_helper.adapters.kubernetes import K8sAdapter
     from homelab_helper.adapters.proxmox import ProxmoxAdapter
+    from homelab_helper.adapters.talos import TalosAdapter
     from homelab_helper.adapters.unifi import UniFiAdapter
 
     ConfirmCallback = Callable[["ActionManifest", Decision], Awaitable["bool | ApprovalResult"]]
@@ -159,6 +165,7 @@ class ActionManifest:
     record_type: str | None = None
     ttl: int = 0
     controller: str | None = None
+    talos_version: str | None = None
 
     @property
     def cell_key(self) -> str:
@@ -170,8 +177,12 @@ class ActionManifest:
 
     @property
     def is_node(self) -> bool:
-        """A node target: named node, no guest on it."""
-        return self.node is not None and self.vmid is None
+        """A hypervisor node target: named node, no guest on it, no Talos version."""
+        return self.node is not None and self.vmid is None and self.talos_version is None
+
+    @property
+    def is_talos(self) -> bool:
+        return self.talos_version is not None
 
     @property
     def is_argocd(self) -> bool:
@@ -194,6 +205,8 @@ class ActionManifest:
 
     @property
     def target_label(self) -> str:
+        if self.is_talos:
+            return f"talos node {self.node} -> {self.talos_version}"
         if self.is_node:
             return f"node {self.node}"
         if special := self._non_guest_label():
@@ -281,6 +294,8 @@ def parse_manifest(proposal: ProposalLog) -> ActionManifest:
         "action_raw": action,
     }
 
+    if "node" in target and "version" in target:
+        return _parse_talos_target(action, target, domain, common)
     if "node" in target and "vmid" not in target:
         return _parse_node_target(action, target, domain, common)
     if "vmid" in target or "node" in target:
@@ -314,6 +329,38 @@ def _parse_node_target(
             f"(which is {NODE_DOMAIN.value!r}) — refusing"
         )
     return ActionManifest(**common, hostnames=tuple(action.get("hostnames") or (node,)), node=node)
+
+
+def _parse_talos_target(
+    action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
+) -> ActionManifest:
+    """A Talos node and a release tag. The image is never the manifest's to name:
+    the executor derives it from the node's own installer image."""
+    if common["action_kind"] not in TALOS_ACTION_KINDS:
+        raise ManifestError(f"{common['action_kind']!r} is not a Talos action")
+    node = target.get("node")
+    version = target.get("version")
+    if not node or not isinstance(node, str):
+        raise ManifestError("target.node is required")
+    if not isinstance(version, str) or not re.fullmatch(TALOS_VERSION_PATTERN, version):
+        raise ManifestError("target.version must be a release tag like v1.14.2")
+    unexpected = sorted(set(target) - {"node", "version"})
+    if unexpected:
+        raise ManifestError(
+            "a Talos target takes only 'node' and 'version'; refusing extra field(s): "
+            + ", ".join(unexpected)
+        )
+    if domain is not TALOS_DOMAIN:
+        raise ManifestError(
+            f"declared domain {domain.value!r} does not match a Talos node "
+            f"(which is {TALOS_DOMAIN.value!r}) — refusing"
+        )
+    return ActionManifest(
+        **common,
+        hostnames=tuple(action.get("hostnames") or (node,)),
+        node=node,
+        talos_version=version,
+    )
 
 
 def _parse_argocd_target(
@@ -616,6 +663,36 @@ async def _dispatch_node(
     return "dist-upgrade", {"exit_code": result.exit_code, "tail": tail}
 
 
+async def _dispatch_talos_upgrade(
+    manifest: ActionManifest, talos: TalosAdapter | None
+) -> tuple[str, Any]:
+    """Upgrade one Talos node and wait until it is back on the new release and ready.
+
+    Talos cordons and drains the Kubernetes node itself and, on a control
+    plane, leaves and rejoins etcd, so the preflight is only: the node answers,
+    is ready, and does not already run the requested tag. The image is the
+    node's own ``machine.install.image`` with the tag swapped — the manifest
+    names a version, never an image. As with ``node-reboot``, the receipt only
+    says "succeeded" once the node reports the new tag and ready, and fails
+    after the return timeout otherwise.
+    """
+    node, version = manifest.node, manifest.talos_version
+    if node is None or version is None:
+        raise ManifestError("talos target is incomplete")
+    if talos is None:
+        raise ValueError("no Talos adapter is configured; a talos-upgrade needs talosctl")
+    current = await talos.version(node)
+    if current.get("tag") == version:
+        raise ValueError(f"{node} already runs Talos {version}; nothing to upgrade")
+    ready, stage = await talos.machine_ready(node)
+    if not ready:
+        raise ValueError(f"{node} is not ready (stage {stage}) — not upgrading a node mid-change")
+    image = image_with_tag(await talos.install_image(node), version)
+    await talos.upgrade_node(node, image)
+    came_back_s = await wait_for_tag(talos, node, version)
+    return "upgrade", {"image": image, "from": current.get("tag"), "came_back_s": came_back_s}
+
+
 async def _dispatch_argocd(
     manifest: ActionManifest, argocd: ArgoCDAdapter | None
 ) -> tuple[str, Any]:
@@ -736,8 +813,11 @@ async def _dispatch(
     unifi: UniFiAdapter | None = None,
     ssh: KernelSSHAdapter | None = None,
     host: Host | None = None,
+    talos: TalosAdapter | None = None,
 ) -> tuple[str, Any]:
     """Run the one adapter write the manifest names; returns ``(verb, task-ish detail)``."""
+    if manifest.is_talos:
+        return await _dispatch_talos_upgrade(manifest, talos)
     if manifest.is_argocd:
         return await _dispatch_argocd(manifest, argocd)
     if manifest.is_dns:
@@ -854,6 +934,7 @@ async def execute_proposal(
     argocd_adapter: ArgoCDAdapter | None = None,
     unifi_adapter: UniFiAdapter | None = None,
     ssh_adapter: KernelSSHAdapter | None = None,
+    talos_adapter: TalosAdapter | None = None,
     notifier: Notifier | None = None,
 ) -> ExecutionResult:
     """Gate, (maybe) confirm, dispatch, and receipt one pending action proposal.
@@ -898,7 +979,12 @@ async def execute_proposal(
     # undoable. Read-only, and deliberately not the manifest's to assert: a
     # proposal may *request* a rollback strategy but may not certify one.
     verification = await verify_rollback(
-        adapter, manifest, k8s=k8s_adapter, argocd=argocd_adapter, unifi=unifi_adapter
+        adapter,
+        manifest,
+        k8s=k8s_adapter,
+        argocd=argocd_adapter,
+        unifi=unifi_adapter,
+        talos=talos_adapter,
     )
     action = _request(verification.verified)
     decision = decide(action, context)
@@ -956,8 +1042,17 @@ async def execute_proposal(
             unifi_adapter,
             ssh_adapter,
             await _node_host(session, manifest),
+            talos_adapter,
         )
-    except (ProxmoxAPIError, KubeError, ArgoCDAPIError, UniFiAPIError, OSError, ValueError) as exc:
+    except (
+        ProxmoxAPIError,
+        KubeError,
+        ArgoCDAPIError,
+        UniFiAPIError,
+        TalosError,
+        OSError,
+        ValueError,
+    ) as exc:
         outcome, error = "failed", str(exc)
     duration_ms = int((time.monotonic() - started) * 1000)
 
@@ -1063,6 +1158,7 @@ async def rollback_receipt(
     k8s_adapter: K8sAdapter | None = None,
     argocd_adapter: ArgoCDAdapter | None = None,
     unifi_adapter: UniFiAdapter | None = None,
+    talos_adapter: TalosAdapter | None = None,
 ) -> RollbackResult:
     """Undo one executed action, using the state captured before it ran.
 
@@ -1087,7 +1183,12 @@ async def rollback_receipt(
 
     started = time.monotonic()
     detail = await restore(
-        adapter, plan, k8s=k8s_adapter, argocd=argocd_adapter, unifi=unifi_adapter
+        adapter,
+        plan,
+        k8s=k8s_adapter,
+        argocd=argocd_adapter,
+        unifi=unifi_adapter,
+        talos=talos_adapter,
     )
     duration_ms = int((time.monotonic() - started) * 1000)
 

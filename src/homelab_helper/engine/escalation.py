@@ -69,12 +69,13 @@ REVERSIBLE_ACTION_KINDS = frozenset(
         "workload-scale",
         "argocd-sync",
         "dns-record",
+        "talos-upgrade",
     }
 )
 """Deliberately narrow: an action kind earns a place here only once its
 inverse is a real, tested write path (``engine/rollback.py``: prior power
-state, prior node, prior config, rollout undo, prior replicas). Everything else
-needs a grant."""
+state, prior node, prior config, rollout undo, prior replicas, prior image).
+Everything else needs a grant."""
 
 _LADDER: tuple[AutonomyLevel, ...] = (
     AutonomyLevel.PROPOSE,

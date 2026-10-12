@@ -24,6 +24,7 @@ from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDAPIError, ArgoCD
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter, KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxAPIError, ProxmoxConfigError
+from homelab_helper.adapters.talos import TalosAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiAPIError, UniFiConfig, UniFiConfigError
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
@@ -44,7 +45,7 @@ from homelab_helper.engine.executor import (
     rollback_receipt,
 )
 from homelab_helper.engine.notify import notifier_from_env
-from homelab_helper.engine.rollback import RollbackError
+from homelab_helper.engine.rollback import PRIOR_IMAGE, RollbackError
 from homelab_helper.engine.trust import operator_identity
 
 if TYPE_CHECKING:
@@ -298,6 +299,7 @@ def exec_run(
                         argocd_adapter=_build_argocd_adapter(),
                         unifi_adapter=_build_unifi_adapter(manifest.controller),
                         ssh_adapter=KernelSSHAdapter() if manifest.is_node else None,
+                        talos_adapter=TalosAdapter() if manifest.is_talos else None,
                         notifier=notifier_from_env(),
                     )
                 except ManifestError as exc:
@@ -465,6 +467,9 @@ def exec_rollback(
                         unifi_adapter=_build_unifi_adapter(
                             (receipt.rollback_state or {}).get("controller")
                         ),
+                        talos_adapter=TalosAdapter()
+                        if state.get("strategy") == PRIOR_IMAGE
+                        else None,
                     )
                 except RollbackError as exc:
                     console.print(f"[red]cannot roll back:[/red] {escape(str(exc))}")

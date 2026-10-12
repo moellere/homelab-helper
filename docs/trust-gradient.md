@@ -61,7 +61,8 @@ gesture can change that.
 | `containers` (Kubernetes) | `workload-restart` `workload-scale` | rollout undo, prior replicas |
 | `containers` (Argo CD) | `argocd-sync` | Argo CD's own history |
 | `dns` (UniFi static DNS) | `dns-record` | the prior record, or deleting the created one |
-| `host-os` | `node-update` (an apt dist-upgrade on one drained node) | **none** — see below |
+| `host-os` | `node-update` (an apt dist-upgrade on one drained node), `node-reboot` | **none** — see below |
+| `host-os` (Talos) | `talos-upgrade` (one node to a release tag; the image is the node's own with the tag swapped) | `talosctl rollback` — the previous install stays in the other boot partition |
 
 ## Granting your first cell
 
@@ -106,10 +107,13 @@ no credit at all. `helper exec reject` on a proposal breaks the clean streak
 without demoting.
 
 **Pinned below autonomy.** An action with no inverse — `node-update` is the
-first — can never reach `AUTONOMOUS`: its rollback verifier always reports
+first, `node-reboot` the second — can never reach `AUTONOMOUS`: its rollback verifier always reports
 *unverified, and why*, and the escalation rules do not count it as reversible.
 The most it can be is `CONFIRM`, forever, which is the correct amount of trust
-for an apt dist-upgrade.
+for an apt dist-upgrade. A Talos upgrade is the contrast: Talos keeps the
+previous install in its other boot partition, so `talos-upgrade` has a real
+inverse (`talosctl rollback`) and can earn autonomy like any other reversible
+kind — once the verifier has read the node's current release and seen it ready.
 
 ## Raising a floor without regretting it
 

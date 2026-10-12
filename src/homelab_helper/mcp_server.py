@@ -53,6 +53,7 @@ from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
+from homelab_helper.adapters.talos import TalosAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig, UniFiConfigError
 from homelab_helper.config import PROBE_ALLOW_VAR, database_url, load_env, probe_allow_patterns
 from homelab_helper.config import config_status as _config_status
@@ -132,6 +133,7 @@ from homelab_helper.engine.manifest import (
     build_argocd_artifact,
     build_artifact,
     build_dns_artifact,
+    build_talos_artifact,
     build_workload_artifact,
 )
 from homelab_helper.engine.network_path import TOPOLOGY_ENV_VAR, TopologyError, load_topology
@@ -2215,6 +2217,37 @@ async def propose_dns_record(
     )
 
 
+@server.tool()
+async def propose_talos_upgrade(
+    node: str,
+    version: str,
+    title: str,
+    hostname: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Draft a Talos upgrade of one node (`node` as `talosctl -n` knows it,
+    `version` a release tag like "v1.14.2"; `hostname` names the inventory host
+    when it differs) as a PENDING proposal in the `host-os` domain, blast
+    radius single-host. The installer image is derived from the node's own
+    `machine.install.image` at execution time — a proposal names a version,
+    never an image. Rollback is `talosctl rollback` (the previous install stays
+    in the other boot partition), verified against the live node before each
+    run. Never executes on its own."""
+    try:
+        artifact = build_talos_artifact(
+            node=node, version=version, hostnames=(hostname,) if hostname else None
+        )
+    except ManifestError as exc:
+        return {"error": str(exc)}
+    return await _persist_proposal(
+        artifact,
+        title=title,
+        description=description,
+        blast_radius="single-host",
+        affected=[{"target_type": "host", "target_id": hostname or node}],
+    )
+
+
 def _unifi_adapter_for(controller: str | None) -> UniFiAdapter | None:
     """The UniFi adapter a DNS manifest names (or the only one), ``None`` if unconfigured."""
     try:
@@ -2236,9 +2269,10 @@ class _Adapters:
     argocd: ArgoCDAdapter | None
     unifi: UniFiAdapter | None
     ssh: KernelSSHAdapter | None = None
+    talos: TalosAdapter | None = None
 
     def __iter__(self) -> Iterator[Any]:
-        return iter((self.proxmox, self.k8s, self.argocd, self.unifi, self.ssh))
+        return iter((self.proxmox, self.k8s, self.argocd, self.unifi, self.ssh, self.talos))
 
 
 def _execution_adapters(manifest: Any) -> tuple[_Adapters | None, str | None]:
@@ -2263,7 +2297,8 @@ def _execution_adapters(manifest: Any) -> tuple[_Adapters | None, str | None]:
                 "(set HOMELAB_HELPER_UNIFI_CONTROLLERS)"
             )
     ssh = KernelSSHAdapter() if manifest.is_node else None
-    return _Adapters(proxmox, k8s, argocd, unifi, ssh), None
+    talos = TalosAdapter() if manifest.is_talos else None
+    return _Adapters(proxmox, k8s, argocd, unifi, ssh, talos), None
 
 
 _RUN_ASK_STEPS = 4
@@ -2446,7 +2481,7 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
             if problem is not None:
                 return {"error": problem}
             assert adapters is not None
-            adapter, k8s, argocd, unifi, ssh = adapters
+            adapter, k8s, argocd, unifi, ssh, talos = adapters
             try:
                 result = await _run_proposal(
                     session,
@@ -2459,6 +2494,7 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
                     argocd_adapter=argocd,
                     unifi_adapter=unifi,
                     ssh_adapter=ssh,
+                    talos_adapter=talos,
                     notifier=notifier_from_env(),
                 )
             except ExecutionRefused as exc:

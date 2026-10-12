@@ -32,7 +32,8 @@ src/homelab_helper/
 ├── adapters/       NetBox, KernelSSH, Proxmox, K8s, UniFi, Cloudflare,
 │                   Argo CD, OpenMediaVault — read-only at L1, except the
 │                   Proxmox guest, K8s workload, Argo CD sync, UniFi DNS and
-│                   KernelSSH node-update writes reserved for the executor
+│                   KernelSSH node-update and Talos upgrade/rollback writes
+│                   reserved for the executor
 ├── cli/            Typer apps; entry point in main.py (26 verbs incl.
 │                   approvals, daemon, usage, digest)
 ├── db/             Models, enums, async session
@@ -186,7 +187,7 @@ Every write path routes through `engine/executor.py`, which is the only caller
 of an adapter's mutate methods (Proxmox `vm_power`/snapshots/`migrate_guest`/
 `set_vm_config` (cpu-type, resize), K8s `rollout_restart`/`scale_workload`/`rollout_undo`, Argo CD
 `sync_application`/`rollback_application`, UniFi `create/update/delete_dns_record`,
-KernelSSH `apt_dist_upgrade`/`reboot_node`);
+KernelSSH `apt_dist_upgrade`/`reboot_node`, Talos `upgrade_node`/`rollback_node`);
 adapter writes carry a
 block comment saying so, and `tests/test_write_isolation.py` fails if any
 other module names one — add every new write method to its `WRITE_METHODS`.

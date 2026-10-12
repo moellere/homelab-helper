@@ -23,11 +23,11 @@ artifacts attached and notes generated from the merged PRs.
 
 ```bash
 # on main, green CI
-uv version 1.0.0rc1                # bumps pyproject.toml; pick the next version
-git commit -am "Release 1.0.0rc1"  # on a branch — main takes PRs only
+uv version 1.1.0                   # bumps pyproject.toml; pick the next version
+git commit -am "Release 1.1.0"     # on a branch — main takes PRs only
 git push origin main               # after the squash-merge, let CI pass on the release commit
-git tag v1.0.0rc1
-git push origin v1.0.0rc1          # triggers the release workflow
+git tag v1.1.0
+git push origin v1.1.0             # triggers the release workflow
 ```
 
 The workflow refuses a tag that doesn't match `pyproject.toml`'s version, so
@@ -46,7 +46,7 @@ pre-releases on GitHub; `pip`/`uv` won't install them unless asked
 ## What users get
 
 ```bash
-uv tool install --prerelease allow homelab-helper   # while only pre-releases exist
+uv tool install homelab-helper
 # or: pipx install homelab-helper==<version>
 helper --install-completion
 helper config init && helper db init

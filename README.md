@@ -3,7 +3,7 @@
 > An open-source framework for homelab inventory, audit, recommendations, and
 > operator-gated execution.
 
-**Status: 1.0.0.** Every planned phase is built and
+**Status: 1.0.1.** Every planned phase is built and
 validated against a real two-site lab: discovery and inventory, audit, chat and
 MCP tools, placement / rebalancing / rightsizing recommendations, version
 currency and backup posture, per-probe cadences, a weekly digest, and a status

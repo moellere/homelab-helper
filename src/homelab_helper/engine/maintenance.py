@@ -28,6 +28,7 @@ the cluster is not healthy, so a node that came back wrong halts the rest.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -237,6 +238,53 @@ async def _record_steps(
     return run
 
 
+_TITLE_RE = re.compile(r"^(?:migrate|shut down) (.+?) \((\d+)\)")
+
+
+async def _displaced(
+    session: AsyncSession, run: MaintenanceRun, node: str, resources: list[dict[str, Any]]
+) -> list[_Drain]:
+    """The guests a stopped run moved off ``node`` and never brought back.
+
+    Read from the run's succeeded drain steps and checked against where each
+    guest is now: one that has moved since is somebody else's decision and is
+    left alone. The result slots into the new run's return leg.
+    """
+    if run.node != node or run.plane != "proxmox":
+        raise MaintenanceError(f"run {run.id} was for {run.node}, not a Proxmox run on {node}")
+    if run.status in _OPEN:
+        raise MaintenanceError(f"run {run.id} is still {run.status.value} — finish or abort it")
+    where = {int(v["vmid"]): str(v.get("node")) for v in resources if v.get("vmid") is not None}
+    returned: set[int] = set()
+    for st in run.steps:
+        if st["kind"].startswith("return-") and st["state"] == "succeeded":
+            done = await session.get(ProposalLog, uuid.UUID(st["proposal_id"]))
+            if done is not None:
+                returned.add(int(done.artifact["action"]["target"]["vmid"]))
+    drain: list[_Drain] = []
+    for step in run.steps:
+        if not step["kind"].startswith("drain-") or step["state"] != "succeeded":
+            continue
+        proposal = await session.get(ProposalLog, uuid.UUID(step["proposal_id"]))
+        if proposal is None:
+            continue
+        target = proposal.artifact["action"]["target"]
+        vmid = int(target["vmid"])
+        parked = target.get("target_node") if step["kind"] == "drain-migrate" else None
+        if vmid in returned or where.get(vmid) != (parked or node):
+            continue
+        match = _TITLE_RE.match(step["name"])
+        guest = _Guest(
+            vmid=vmid,
+            name=match.group(1) if match else str(vmid),
+            kind=str(target["vm_kind"]),
+            maxmem=0,
+            local_storage=step["kind"] == "drain-shutdown",
+        )
+        drain.append((step["kind"], step["name"], proposal.artifact, guest, parked))
+    return drain
+
+
 async def plan_maintenance(
     session: AsyncSession,
     adapter: ProxmoxAdapter,
@@ -244,8 +292,14 @@ async def plan_maintenance(
     *,
     actor: str,
     target_node: str | None = None,
+    resume_from: MaintenanceRun | None = None,
 ) -> MaintenanceRun:
-    """Draft one run for ``node``: its proposals in order, nothing executed."""
+    """Draft one run for ``node``: its proposals in order, nothing executed.
+
+    ``resume_from`` is a stopped run on the same node: the guests it drained
+    and never returned join this run's return leg, so a run that failed after
+    the drain is finished by a second one rather than by hand.
+    """
     await _refuse_open_run(session, node)
     host = (await session.execute(select(Host).where(Host.hostname == node))).scalar_one_or_none()
     if host is None:
@@ -267,9 +321,12 @@ async def plan_maintenance(
         raise MaintenanceError(f"{node} is not a node of the Proxmox cluster")
     free, closed = _room_by_node(nodes, node, await _closed_hosts(session))
     local = await _local_storage_vmids(session, cluster_name)
-    guests = _running_guests(await adapter.cluster_resources("vm"), node, local)
+    resources = await adapter.cluster_resources("vm")
+    guests = _running_guests(resources, node, local)
     drain = _drain_steps(guests, node, free, closed, target_node)
     planned = [(k, t, a) for k, t, a, _, _ in drain]
+    if resume_from is not None:
+        drain += await _displaced(session, resume_from, node, resources)
     planned.append(("node-update", f"apt dist-upgrade {node}", build_node_artifact(node=node)))
     planned.append(
         (

@@ -2354,11 +2354,15 @@ _RUN_ASK_STEPS = 4
 
 
 @server.tool()
-async def plan_maintenance_run(node: str, target_node: str | None = None) -> dict[str, Any]:
+async def plan_maintenance_run(
+    node: str, target_node: str | None = None, resume_from: str | None = None
+) -> dict[str, Any]:
     """Draft a maintenance run for one Proxmox node (Phase 10.4): one proposal per
     step — migrate (or shut down, for node-local disks) every running guest off it,
     apt dist-upgrade, reboot and wait for its return, then bring the guests back.
-    Harness-DB write only; nothing executes. Returns the run with its steps."""
+    `resume_from` names a stopped run on the same node whose drained guests this
+    run brings back too. Harness-DB write only; nothing executes. Returns the run
+    with its steps."""
     engine = make_engine(database_url())
     try:
         adapter = _load_proxmox_adapter()
@@ -2367,9 +2371,19 @@ async def plan_maintenance_run(node: str, target_node: str | None = None) -> dic
     try:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as session:
+            earlier = None
+            if resume_from:
+                earlier = await session.get(MaintenanceRun, uuid.UUID(resume_from))
+                if earlier is None:
+                    return {"error": f"no maintenance run {resume_from}"}
             try:
                 run = await plan_maintenance(
-                    session, adapter, node, actor="agent:mcp", target_node=target_node
+                    session,
+                    adapter,
+                    node,
+                    actor="agent:mcp",
+                    target_node=target_node,
+                    resume_from=earlier,
                 )
             except MaintenanceError as exc:
                 return {"error": str(exc)}

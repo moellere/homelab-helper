@@ -1,6 +1,7 @@
 """Baselines and anomalies (Phase 10.3) — a subject departing from its own normal.
 
-Every guest and node with hourly usage history gets a baseline per metric —
+Every guest, node and (Phase 11.4) Kubernetes workload with hourly usage
+history gets a baseline per metric —
 CPU, network, disk I/O, memory — as percentile bands of its *own* last
 ``BASELINE_DAYS``: p10, p50, p95. A departure is the newest ``DEPARTURE_HOURS``
 consecutive hourly samples all sitting outside the band by a margin that
@@ -225,7 +226,7 @@ async def _hourly(
         await session.execute(
             select(UsageSample)
             .where(
-                UsageSample.subject_type.in_(["guest", "host"]),
+                UsageSample.subject_type.in_(["guest", "host", "workload"]),
                 UsageSample.resolution == HOUR,
                 UsageSample.ts >= since,
             )
@@ -250,11 +251,14 @@ async def evaluate(
     observed: set[str] = set()
     judged: set[tuple[str, str]] = set()
     for (subject_type, key), samples in (await _hourly(session, since)).items():
+        extra: tuple[tuple[str, str], ...] = ()
         if subject_type == "host":
             host = hosts.get(key)
             target = ("host", str(host.id) if host else key)
             label = key
-            extra: tuple[tuple[str, str], ...] = ()
+        elif subject_type == "workload":
+            target = ("workload", key)
+            label = key
         else:
             cluster_name, _, vmid = key.rpartition("/")
             target = ("guest", key)

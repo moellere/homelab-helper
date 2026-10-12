@@ -108,6 +108,11 @@ def maintenance_plan(
     target: str | None = typer.Option(
         None, "--target", help="Send every migratable guest to this node instead of the emptiest."
     ),
+    resume: str | None = typer.Option(
+        None,
+        "--resume",
+        help="A stopped run (id or prefix) on this node whose drained guests this run brings back.",
+    ),
 ) -> None:
     """Draft the run: one proposal per step, nothing executed."""
 
@@ -120,9 +125,19 @@ def maintenance_plan(
             return 2
         try:
             async with session_scope(make_sessionmaker(engine)) as session:
+                earlier = None
+                if resume is not None:
+                    earlier = await _resolve(session, resume)
+                    if earlier is None:
+                        return 2
                 try:
                     run = await plan_maintenance(
-                        session, adapter, node, actor=operator_identity(), target_node=target
+                        session,
+                        adapter,
+                        node,
+                        actor=operator_identity(),
+                        target_node=target,
+                        resume_from=earlier,
                     )
                 except MaintenanceError as exc:
                     console.print(f"[red]cannot plan:[/red] {escape(str(exc))}")

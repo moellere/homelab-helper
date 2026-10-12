@@ -15,6 +15,15 @@ daily history; later runs re-upsert the overlapping buckets (idempotent on
 the source still holds. ``prune_usage`` deletes rows older than the per-
 resolution horizon, which is what keeps the table bounded.
 
+Phase 11.4 adds a fourth subject type, ``workload``: a Kubernetes Deployment,
+StatefulSet or DaemonSet, keyed ``namespace/kind/name``. There is no RRD to
+roll up — metrics-server holds only the current reading — so each
+``record_workload_usage`` call writes one hourly bucket from that reading
+(``cpu`` is the fraction of the workload's summed CPU limits, or requests when
+no limit is set, or of one core when neither is; ``cpus`` records which) and
+the latest call in an hour wins. Baselines therefore need the usage source
+scheduled hourly for workloads, which ``schedule.yaml`` can do.
+
 ``summarize`` is the read side the planners use: nearest-rank p95 and peak of
 CPU and memory over a window, plus the latest allocation, and how many buckets
 backed the answer — a caller can refuse to recommend on thin history.
@@ -69,6 +78,7 @@ GUEST_FIELDS = {
 }
 STORAGE_FIELDS = {"used": "disk_used", "total": "disk_total"}
 """A pool's RRD carries only these two; 8.5 projects time-to-full from them."""
+WORKLOAD = "workload"
 NODE_EXTRA = ("iowait", "loadavg", "pressurecpusome", "pressurememorysome", "pressureiosome")
 _INT_COLUMNS = {"mem_used", "mem_total", "disk_used", "disk_total"}
 
@@ -208,6 +218,42 @@ async def record_usage(
     return result
 
 
+def workload_bucket(row: dict[str, Any], now: datetime) -> Bucket:
+    """One hourly bucket from a metrics-server reading summed per workload."""
+    cpus = row.get("cpu_limit") or row.get("cpu_request") or 1.0
+    cores = float(row.get("cpu_cores") or 0.0)
+    values: dict[str, Any] = {
+        "cpu": cores / cpus,
+        "cpu_max": cores / cpus,
+        "cpus": float(cpus),
+        "mem_used": int(row.get("mem_bytes") or 0),
+        "mem_used_max": int(row.get("mem_bytes") or 0),
+    }
+    if row.get("mem_limit"):
+        values["mem_total"] = int(row["mem_limit"])
+    return Bucket(ts=_bucket_start(now.timestamp(), BUCKET_SECONDS[HOUR]), values=values)
+
+
+async def record_workload_usage(
+    session: AsyncSession, rows: list[dict[str, Any]], *, now: datetime | None = None
+) -> UsageWrite:
+    """One hourly sample per workload from the current metrics-server reading."""
+    moment = now or datetime.now(UTC)
+    total = UsageWrite()
+    for row in rows:
+        w = await record_usage(
+            session,
+            subject_type=WORKLOAD,
+            subject_key=f"{row['namespace']}/{row['kind']}/{row['name']}",
+            label=str(row["name"]),
+            resolution=HOUR,
+            buckets=[workload_bucket(row, moment)],
+        )
+        total.inserted += w.inserted
+        total.updated += w.updated
+    return total
+
+
 async def prune_usage(session: AsyncSession, *, now: datetime | None = None) -> dict[str, int]:
     """Delete rows older than each resolution's horizon; returns rows removed."""
     current = (now or datetime.now(UTC)).replace(tzinfo=None)
@@ -342,13 +388,16 @@ __all__ = [
     "NODE_FIELDS",
     "SOURCE_TIMEFRAME",
     "STORAGE_FIELDS",
+    "WORKLOAD",
     "Bucket",
     "UsageWrite",
     "percentile",
     "pool_history",
     "prune_usage",
     "record_usage",
+    "record_workload_usage",
     "retention",
     "rollup",
     "summarize",
+    "workload_bucket",
 ]

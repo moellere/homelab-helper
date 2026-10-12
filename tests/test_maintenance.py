@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 import httpx
@@ -445,3 +446,75 @@ async def test_abort_rejects_what_is_left(sessionmaker) -> None:
 
 def test_summary_is_json() -> None:
     assert json.dumps({"steps": []})  # sanity for the shape helper's consumers
+
+
+async def test_plan_resume_brings_back_what_a_stopped_run_left_displaced(sessionmaker) -> None:
+    """A run that drained and then stopped: the next plan returns its guests."""
+    requests: list[httpx.Request] = []
+    async with session_scope(sessionmaker) as s:
+        await seed(s, cp1_local=False)
+        first = await plan_maintenance(
+            s, make_proxmox(requests, guests=GUESTS, nodes=NODES), NODE, actor="e"
+        )
+        parked = {
+            int(
+                (await s.get(ProposalLog, uuid.UUID(st["proposal_id"]))).artifact["action"][
+                    "target"
+                ]["vmid"]
+            ): (await s.get(ProposalLog, uuid.UUID(st["proposal_id"]))).artifact["action"][
+                "target"
+            ]["target_node"]
+            for st in first.steps
+            if st["kind"] == "drain-migrate"
+        }
+        assert parked, "the fixture drains at least one guest"
+        steps = [dict(st) for st in first.steps]
+        for st in steps:
+            st["state"] = "succeeded" if st["kind"].startswith("drain-") else "skipped"
+        steps[len(parked)]["state"] = "failed"
+        first.steps = steps
+        first.status = MaintenanceStatus.FAILED
+        await s.flush()
+
+        # The guests now sit where the first run parked them; one has since moved on.
+        moved_on, *_ = sorted(parked)
+        relocated = []
+        for g in GUESTS:
+            if g["vmid"] in parked:
+                dest = (
+                    "pve3"
+                    if g["vmid"] == moved_on and parked[g["vmid"]] != "pve3"
+                    else parked[g["vmid"]]
+                )
+                relocated.append({**g, "node": dest})
+            else:
+                relocated.append(g)
+        first.status = MaintenanceStatus.RUNNING
+        still_open = make_proxmox(requests, guests=relocated, nodes=NODES)
+        with pytest.raises(MaintenanceError, match="unfinished run"):
+            await plan_maintenance(s, still_open, NODE, actor="e", resume_from=first)
+        first.status = MaintenanceStatus.FAILED
+        second = await plan_maintenance(
+            s,
+            make_proxmox(requests, guests=relocated, nodes=NODES),
+            NODE,
+            actor="e",
+            resume_from=first,
+        )
+        kinds = [st["kind"] for st in second.steps]
+        assert kinds[:2] == ["node-update", "node-reboot"], "nothing left to drain"
+        assert kinds[2:] == ["return-migrate"] * (len(parked) - 1)
+        returned = {
+            int(
+                (await s.get(ProposalLog, uuid.UUID(st["proposal_id"]))).artifact["action"][
+                    "target"
+                ]["vmid"]
+            )
+            for st in second.steps
+            if st["kind"] == "return-migrate"
+        }
+        assert returned == set(parked) - {moved_on}, "the guest that moved on is left alone"
+        for st in second.steps[2:]:
+            art = (await s.get(ProposalLog, uuid.UUID(st["proposal_id"]))).artifact["action"]
+            assert art["target"]["target_node"] == NODE
+            assert art["target"]["node"] == parked[int(art["target"]["vmid"])]

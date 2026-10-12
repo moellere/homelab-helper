@@ -87,6 +87,20 @@ def parse_quantity(value: Any) -> int | None:
     return int(float(s)) if _is_number(s) else None
 
 
+_CPU_SUFFIX = {"n": 1e-9, "u": 1e-6, "m": 1e-3}
+
+
+def parse_cpu_cores(value: Any) -> float | None:
+    """Parse a CPU quantity (``"250m"``, ``"3456789n"``, ``"2"``) to cores."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    for suffix, mult in _CPU_SUFFIX.items():
+        if s.endswith(suffix) and _is_number(s[:-1]):
+            return float(s[:-1]) * mult
+    return float(s) if _is_number(s) else None
+
+
 def _is_number(s: str) -> bool:
     try:
         float(s)
@@ -191,6 +205,20 @@ class K8sAdapter:
 
     async def list_nodes(self) -> list[dict[str, Any]]:
         return [parse_node(n) for n in await self.get_resource("nodes")]
+
+    async def list_pods(self) -> list[dict[str, Any]]:
+        """Every pod in the cluster, raw."""
+        out = await self._run("get", "pods", "-A", "-o", "json")
+        payload = json.loads(out) if out.strip() else {}
+        items = payload.get("items") if isinstance(payload, dict) else None
+        return items if isinstance(items, list) else []
+
+    async def pod_metrics(self) -> list[dict[str, Any]]:
+        """metrics-server's current pod usage (``PodMetrics`` items); raw."""
+        out = await self._run("get", "--raw", "/apis/metrics.k8s.io/v1beta1/pods")
+        payload = json.loads(out) if out.strip() else {}
+        items = payload.get("items") if isinstance(payload, dict) else None
+        return items if isinstance(items, list) else []
 
     async def server_version(self) -> str | None:
         out = await self._run("version", "-o", "json")
@@ -323,6 +351,92 @@ def parse_workload(raw: dict[str, Any]) -> dict[str, Any]:
         "available": conditions.get("Available"),
         "progressing": conditions.get("Progressing"),
     }
+
+
+_OWNER_KINDS = {"StatefulSet": "statefulset", "DaemonSet": "daemonset", "ReplicaSet": "deployment"}
+
+
+def pod_workload(pod: dict[str, Any]) -> tuple[str, str, str] | None:
+    """``(namespace, kind, name)`` of the workload a pod belongs to, or None for a
+    bare pod, a Job's pod or a static pod. A ReplicaSet's pod is attributed to
+    its Deployment by stripping the ``pod-template-hash`` the set is named with."""
+    meta = pod.get("metadata") or {}
+    for owner in meta.get("ownerReferences") or []:
+        kind = _OWNER_KINDS.get(str(owner.get("kind")))
+        if kind is None:
+            continue
+        name = str(owner.get("name") or "")
+        if kind == "deployment":
+            suffix = "-" + str((meta.get("labels") or {}).get("pod-template-hash") or "")
+            name = name.removesuffix(suffix) if len(suffix) > 1 and name.endswith(suffix) else name
+        if name:
+            return str(meta.get("namespace") or "default"), kind, name
+    return None
+
+
+def workload_usage(
+    pods: list[dict[str, Any]], metrics: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Sum metrics-server usage and declared resources per workload.
+
+    Per workload: ``cpu_cores`` used, ``mem_bytes`` used, ``cpu_limit`` /
+    ``cpu_request`` and ``mem_limit`` summed over the pods' containers (None
+    when any container leaves it unset), and ``pods`` counted. Pods without a
+    metrics entry (just scheduled, or a node whose kubelet is not answering)
+    contribute their requests but no usage.
+    """
+    usage: dict[tuple[str, str], tuple[float, int]] = {}
+    for item in metrics:
+        meta = item.get("metadata") or {}
+        cpu = mem = 0.0
+        for c in item.get("containers") or []:
+            u = c.get("usage") or {}
+            cpu += parse_cpu_cores(u.get("cpu")) or 0.0
+            mem += parse_quantity(u.get("memory")) or 0
+        usage[(str(meta.get("namespace")), str(meta.get("name")))] = (cpu, int(mem))
+    out: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for pod in pods:
+        owner = pod_workload(pod)
+        if owner is None or (pod.get("status") or {}).get("phase") not in (None, "Running"):
+            continue
+        meta = pod.get("metadata") or {}
+        row = out.setdefault(
+            owner,
+            {
+                "namespace": owner[0],
+                "kind": owner[1],
+                "name": owner[2],
+                "pods": 0,
+                "cpu_cores": 0.0,
+                "mem_bytes": 0,
+                "cpu_limit": 0.0,
+                "cpu_request": 0.0,
+                "mem_limit": 0,
+                "_unset": set(),
+            },
+        )
+        row["pods"] += 1
+        cpu, mem = usage.get((str(meta.get("namespace")), str(meta.get("name"))), (0.0, 0))
+        row["cpu_cores"] += cpu
+        row["mem_bytes"] += mem
+        for c in (pod.get("spec") or {}).get("containers") or []:
+            res = c.get("resources") or {}
+            for field, source, parse in (
+                ("cpu_limit", (res.get("limits") or {}).get("cpu"), parse_cpu_cores),
+                ("cpu_request", (res.get("requests") or {}).get("cpu"), parse_cpu_cores),
+                ("mem_limit", (res.get("limits") or {}).get("memory"), parse_quantity),
+            ):
+                value = parse(source)
+                if value is None:
+                    row["_unset"].add(field)
+                else:
+                    row[field] += value
+    rows = []
+    for row in out.values():
+        for field in row.pop("_unset"):
+            row[field] = None
+        rows.append(row)
+    return sorted(rows, key=lambda r: (r["namespace"], r["kind"], r["name"]))
 
 
 def workload_is_unhealthy(w: dict[str, Any]) -> bool:

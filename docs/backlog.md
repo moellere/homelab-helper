@@ -1215,10 +1215,14 @@ keeps; no model anywhere.
   `plan_maintenance_run`, `list_maintenance_runs`, `execute_maintenance_run`
   (one phone prompt per run). Also fixed: `helper exec run` never passed an
   SSH adapter, so a `node-update` could only be run from MCP.
-  - [ ] Follow-ups: a Talos node variant (`talosctl upgrade` is the same shape:
-    drain, act, wait for return); pre-flight "newest installed kernel is the
-    running one" after the reboot; Ceph "PGs clean" in the return wait when the
-    cluster runs Ceph.
+  - [x] `plan --resume <run>` (10/12/2026): a run that stopped after its
+    drain is finished by a second one — the guests the stopped run moved and
+    never returned join the new run's return leg, checked against where each
+    guest is now. Born of the first live run, which drained bmax3 and stopped
+    at the update step for want of a `credentials_ref`.
+  - [ ] Follow-ups: the Talos node variant landed as 11.3; pre-flight "newest
+    installed kernel is the running one" after the reboot; Ceph "PGs clean" in
+    the return wait when the cluster runs Ceph.
 
 ## Phase 11 — Talos as a managed plane
 
@@ -1269,8 +1273,20 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
     `k8s-eol` finding (the registry drafts one proposal; a run is many — needs
     a `Draft` that carries a plan); pre-pull the installer image before the
     first node; a per-member `talosconfig`.
-- [ ] **11.4 Workload usage** — metrics-server pod CPU/memory as `workload`
-  usage subjects for baselines, rightsizing and the digest.
+- [x] **11.4 Workload usage** (10/12/2026) — `run_discovery("usage")` now also
+  reads metrics-server (`K8sAdapter.pod_metrics`, `list_pods`) and sums pod
+  usage and declared resources per Deployment / StatefulSet / DaemonSet
+  (`adapters/kubernetes.py::workload_usage`; a ReplicaSet's pod is attributed
+  to its Deployment by the `pod-template-hash`, Jobs and bare pods are left
+  out); `engine/usage.py::record_workload_usage` writes one hourly `workload`
+  sample per reading (`cpu` = fraction of summed CPU limits, else requests,
+  else one core — `cpus` says which; the latest reading in an hour wins), and
+  `engine/baselines.py` judges `workload` subjects like guests. Skipped without
+  kubectl; a cluster without metrics-server reports the error in the result.
+  - [ ] Follow-ups: a usage source cadence of 1 h in `schedule.yaml` is what
+    gives workloads a baseline (the 4-hourly default leaves gaps); workload
+    rightsizing (requests/limits from history) and the digest's workload rows;
+    a mean within the hour rather than last-reading-wins.
 
 ## Not tracked here
 

@@ -151,8 +151,8 @@ async def test_plan_refuses_bad_versions_nothing_to_do_and_a_second_open_run(
     async with session_scope(sessionmaker_) as s:
         with pytest.raises(MaintenanceError):
             await plan_talos_maintenance(s, _FakeCluster(MEMBERS), CP, "1.14.2", actor="e")  # type: ignore[arg-type]
+        at_old = _FakeCluster([m for m in MEMBERS if m["talos"] == OLD])
         with pytest.raises(MaintenanceError, match="nothing to plan"):
-            at_old = _FakeCluster([m for m in MEMBERS if m["talos"] == OLD])
             await plan_talos_maintenance(s, at_old, CP, OLD, actor="e")  # type: ignore[arg-type]
         with pytest.raises(MaintenanceError, match="no cluster members"):
             await plan_talos_maintenance(s, _FakeCluster([]), CP, NEW, actor="e")  # type: ignore[arg-type]

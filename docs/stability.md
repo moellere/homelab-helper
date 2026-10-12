@@ -75,7 +75,7 @@ every option.
 | `exec` | `accept` `list` `receipts` `reject` `rollback` `run` |
 | `findings` | `ack` `list` `narrate` `resolve` `show` `suppress` |
 | `host` | `intent` `retire` `show` |
-| `maintenance` | `abort` `list` `plan` `run` `show` |
+| `maintenance` | `abort` `list` `plan` `plan-talos` `run` `show` |
 | `mcp` | `serve` `tools` |
 | `netbox` | `bootstrap` `health` `sync-cluster` `sync-host` |
 | `onboard` | — |
@@ -110,7 +110,7 @@ stable; results are JSON objects that only ever gain keys.
 | Discovery | `run_discovery` `probe_host` `probe_talos` `retire_host` |
 | Planning | `list_workloads` `recommend_placement` `plan_rebalance` `analyze_bottlenecks` `analyze_surplus` `network_path` `rightsizing` `usage_summary` |
 | Proposals | `propose_action` `propose_workload_action` `propose_argocd_sync` `propose_dns_record` `propose_talos_upgrade` `propose_k8s_upgrade` `draft_remediations` `list_proposals` `get_proposal` `pending_actions` `execute_proposal` |
-| Maintenance | `plan_maintenance_run` `list_maintenance_runs` `execute_maintenance_run` |
+| Maintenance | `plan_maintenance_run` `plan_talos_maintenance_run` `list_maintenance_runs` `execute_maintenance_run` |
 | Trust, read-only | `trust_status` `list_receipts` |
 
 Two conventions are part of the contract. A lookup that misses returns

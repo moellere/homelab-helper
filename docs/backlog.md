@@ -1254,9 +1254,21 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   synchronous `upgrade-k8s`, then requires the kubelet to report the target
   and health to pass again. `no-inverse`, so CONFIRM for good.
   `propose_k8s_upgrade` over MCP.
-- [ ] **11.3 Talos maintenance run** — control planes then workers, each step
-  gated on the previous node's return and `talosctl health`; a playbook from
-  `talos-eol` / `k8s-eol`; `helper maintenance plan --talos`.
+- [x] **11.3 Talos maintenance run** (10/12/2026) — `MaintenanceRun.plane`
+  (`proxmox` | `talos`, migration `b2c8d4e9f1a3`); `plan_talos_maintenance`
+  reads the members through one control-plane node and drafts a
+  `talos-upgrade` per member — control planes first, then workers, members
+  already on the target skipped — plus an optional closing `k8s-upgrade` (at
+  blast radius `cluster`); `execute_maintenance` gained `talos_adapter` and a
+  `health_cb` asked before every step after the first, so a node that came
+  back wrong (`talosctl health` failing) stops the run with the check's words
+  on the step. `helper maintenance plan-talos <cp> --to vX [--kubernetes Y]`,
+  MCP `plan_talos_maintenance_run`; `run` builds the Talos adapter and the
+  health gate from the row's plane.
+  - [ ] Follow-ups: a playbook that drafts the run from a `talos-eol` /
+    `k8s-eol` finding (the registry drafts one proposal; a run is many — needs
+    a `Draft` that carries a plan); pre-pull the installer image before the
+    first node; a per-member `talosconfig`.
 - [ ] **11.4 Workload usage** — metrics-server pod CPU/memory as `workload`
   usage subjects for baselines, rightsizing and the digest.
 

@@ -1,7 +1,8 @@
 """``helper maintenance ...`` — plan and run one node's drain → update → reboot → return (Phase 10.4).
 
-``plan`` drafts the steps as proposals and shows them; ``run`` executes them in
-order after one consent, relaying it to every step's CONFIRM; ``show``,
+``plan`` drafts the steps as proposals and shows them (``plan-talos`` does the
+same for a Talos cluster: one upgrade per node, control planes first, optionally
+Kubernetes last); ``run`` executes them in order after one consent, relaying it to every step's CONFIRM; ``show``,
 ``list`` and ``abort`` do what they say. The run is a trigger: each step is
 gated by ``decide()`` on its own cell, and ``node-reboot`` can never be
 autonomous.
@@ -21,6 +22,7 @@ from sqlalchemy import select
 
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.proxmox import ProxmoxConfigError
+from homelab_helper.adapters.talos import TalosAdapter, TalosError
 from homelab_helper.cli.execute import (
     _build_adapter,
     _build_argocd_adapter,
@@ -35,6 +37,8 @@ from homelab_helper.engine.maintenance import (
     abort_maintenance,
     execute_maintenance,
     plan_maintenance,
+    plan_talos_maintenance,
+    talos_health_gate,
 )
 from homelab_helper.engine.notify import notifier_from_env
 from homelab_helper.engine.trust import operator_identity
@@ -75,9 +79,10 @@ def _print_run(run: MaintenanceRun) -> None:
         MaintenanceStatus.FAILED: "red",
         MaintenanceStatus.ABORTED: "yellow",
     }.get(run.status, "cyan")
+    plane = " (talos)" if run.plane == "talos" else ""
     console.print(
-        f"[bold]{escape(run.node)}[/bold] run {run.id} — [{style}]{run.status.value}[/{style}]"
-        + (f" — {escape(run.notes)}" if run.notes else "")
+        f"[bold]{escape(run.node)}[/bold]{plane} run {run.id} — "
+        f"[{style}]{run.status.value}[/{style}]" + (f" — {escape(run.notes)}" if run.notes else "")
     )
     table = Table(show_header=True)
     table.add_column("#", no_wrap=True)
@@ -132,6 +137,47 @@ def maintenance_plan(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
+@maintenance_app.command(name="plan-talos")
+def maintenance_plan_talos(
+    control_plane: str = typer.Argument(
+        ..., help="A control-plane node as `talosctl -n` knows it (address or name)."
+    ),
+    to: str = typer.Option(..., "--to", help="Talos release tag for every node, e.g. v1.14.2."),
+    kubernetes: str | None = typer.Option(
+        None, "--kubernetes", help="Also upgrade Kubernetes to this version last, e.g. 1.37.2."
+    ),
+    talosconfig: str | None = typer.Option(
+        None, "--talosconfig", help="Path to a talosconfig (default: talosctl's own)."
+    ),
+) -> None:
+    """Draft a Talos cluster upgrade: one step per node, control planes first."""
+
+    async def _go() -> int:
+        engine = make_engine(database_url())
+        talos = TalosAdapter(talosconfig=talosconfig)
+        try:
+            async with session_scope(make_sessionmaker(engine)) as session:
+                try:
+                    run = await plan_talos_maintenance(
+                        session,
+                        talos,
+                        control_plane,
+                        to,
+                        actor=operator_identity(),
+                        kubernetes=kubernetes,
+                    )
+                except (MaintenanceError, TalosError) as exc:
+                    console.print(f"[red]cannot plan:[/red] {escape(str(exc))}")
+                    return 2
+                _print_run(run)
+                console.print(f"[dim]run it: helper maintenance run {str(run.id)[:8]}[/dim]")
+                return 0
+        finally:
+            await engine.dispose()
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
 @maintenance_app.command(name="run")
 def maintenance_run(
     run_id: str = typer.Argument(..., help="Run id (or unique prefix) from `maintenance plan`."),
@@ -170,6 +216,7 @@ def maintenance_run(
                     )
                     return True
 
+                talos = TalosAdapter() if run.plane == "talos" else None
                 try:
                     run = await execute_maintenance(
                         session,
@@ -180,6 +227,8 @@ def maintenance_run(
                         ssh_adapter=KernelSSHAdapter(),
                         k8s_adapter=_build_k8s_adapter(),
                         argocd_adapter=_build_argocd_adapter(),
+                        talos_adapter=talos,
+                        health_cb=talos_health_gate(talos, run.node) if talos else None,
                         notifier=notifier_from_env(),
                     )
                 except MaintenanceError as exc:

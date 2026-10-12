@@ -17,6 +17,13 @@ The run itself is never an authority — the operator's one "yes" at the CLI
 (or one tap on the phone) is relayed to each step's CONFIRM, and a step whose
 cell sits at PROPOSE refuses exactly as it would alone. ``node-reboot`` has
 no inverse and cannot be promoted, so a run can never execute unattended.
+
+Phase 11.3 adds the Talos plane: :func:`plan_talos_maintenance` reads the
+cluster's members through one control-plane node and drafts a
+``talos-upgrade`` per member — control planes first, then workers, skipping
+members already on the target — and optionally a closing ``k8s-upgrade``.
+Between steps the run asks ``talosctl health`` (``health_cb``) and stops when
+the cluster is not healthy, so a node that came back wrong halts the rest.
 """
 
 from __future__ import annotations
@@ -43,18 +50,31 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.engine.executor import ExecutionRefused, ManifestError, execute_proposal
-from homelab_helper.engine.manifest import build_artifact, build_node_artifact
+from homelab_helper.engine.manifest import (
+    ManifestError as _ManifestError,
+)
+from homelab_helper.engine.manifest import (
+    build_artifact,
+    build_k8s_upgrade_artifact,
+    build_node_artifact,
+    build_talos_artifact,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from homelab_helper.adapters.argocd import ArgoCDAdapter
     from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
     from homelab_helper.adapters.kubernetes import K8sAdapter
     from homelab_helper.adapters.proxmox import ProxmoxAdapter
+    from homelab_helper.adapters.talos import TalosAdapter
     from homelab_helper.adapters.unifi import UniFiAdapter
     from homelab_helper.engine.executor import ConfirmCallback
     from homelab_helper.engine.notify import Notifier
+
+    HealthCallback = Callable[[], Awaitable[tuple[bool, str]]]
 
 STEP_KINDS = (
     "drain-migrate",
@@ -63,7 +83,10 @@ STEP_KINDS = (
     "node-reboot",
     "return-migrate",
     "return-start",
+    "talos-upgrade",
+    "k8s-upgrade",
 )
+PLANES = ("proxmox", "talos")
 _OS_RESERVE = 1024**3
 _OPEN = (MaintenanceStatus.PLANNED, MaintenanceStatus.RUNNING)
 
@@ -148,6 +171,7 @@ def _proposal(
     title: str,
     artifact: dict[str, Any],
     actor: str,
+    blast_radius: str = "single-host",
 ) -> ProposalLog:
     hosts = artifact["action"]["hostnames"]
     return ProposalLog(
@@ -155,9 +179,57 @@ def _proposal(
         description=f"Step {index} of maintenance run {run_id} on {node}.",
         artifact=artifact,
         affected=[{"target_type": "host", "target_id": h} for h in hosts],
-        blast_radius="single-host",
+        blast_radius=blast_radius,
         proposed_by=f"maintenance:{actor}",
     )
+
+
+async def _refuse_open_run(session: AsyncSession, node: str) -> None:
+    open_run = (
+        (
+            await session.execute(
+                select(MaintenanceRun).where(
+                    MaintenanceRun.node == node, MaintenanceRun.status.in_(list(_OPEN))
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if open_run is not None:
+        raise MaintenanceError(
+            f"{node} already has an unfinished run {open_run.id} — finish or abort it first"
+        )
+
+
+async def _record_steps(
+    session: AsyncSession,
+    run: MaintenanceRun,
+    planned: list[tuple[str, str, dict[str, Any]]],
+    actor: str,
+) -> MaintenanceRun:
+    steps: list[dict[str, Any]] = []
+    for index, (kind, title, artifact) in enumerate(planned, 1):
+        radius = "cluster" if kind == "k8s-upgrade" else "single-host"
+        proposal = _proposal(
+            run.id, index, len(planned), run.node, title, artifact, actor, blast_radius=radius
+        )
+        session.add(proposal)
+        await session.flush()
+        steps.append(
+            {
+                "index": index,
+                "name": title,
+                "kind": kind,
+                "proposal_id": str(proposal.id),
+                "receipt_id": None,
+                "state": "planned",
+                "detail": None,
+            }
+        )
+    run.steps = steps
+    await session.flush()
+    return run
 
 
 async def plan_maintenance(
@@ -169,21 +241,7 @@ async def plan_maintenance(
     target_node: str | None = None,
 ) -> MaintenanceRun:
     """Draft one run for ``node``: its proposals in order, nothing executed."""
-    open_runs = (
-        (
-            await session.execute(
-                select(MaintenanceRun).where(
-                    MaintenanceRun.node == node, MaintenanceRun.status.in_(list(_OPEN))
-                )
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if open_runs is not None:
-        raise MaintenanceError(
-            f"{node} already has an unfinished run {open_runs.id} — finish or abort it first"
-        )
+    await _refuse_open_run(session, node)
     host = (await session.execute(select(Host).where(Host.hostname == node))).scalar_one_or_none()
     if host is None:
         raise MaintenanceError(
@@ -212,25 +270,73 @@ async def plan_maintenance(
     run = MaintenanceRun(node=node, created_by=actor, status=MaintenanceStatus.PLANNED)
     session.add(run)
     await session.flush()
-    steps: list[dict[str, Any]] = []
-    for index, (kind, title, artifact) in enumerate(planned, 1):
-        proposal = _proposal(run.id, index, len(planned), node, title, artifact, actor)
-        session.add(proposal)
-        await session.flush()
-        steps.append(
-            {
-                "index": index,
-                "name": title,
-                "kind": kind,
-                "proposal_id": str(proposal.id),
-                "receipt_id": None,
-                "state": "planned",
-                "detail": None,
-            }
-        )
-    run.steps = steps
+    return await _record_steps(session, run, planned, actor)
+
+
+_MACHINE_ORDER = {"controlplane": 0, "init": 0, "worker": 1}
+
+
+def talos_health_gate(talos: TalosAdapter, control_plane: str) -> HealthCallback:
+    """The between-steps check for a Talos run: ``talosctl health`` from the control plane."""
+
+    async def _check() -> tuple[bool, str]:
+        return await talos.cluster_health(control_plane)
+
+    return _check
+
+
+async def plan_talos_maintenance(
+    session: AsyncSession,
+    talos: TalosAdapter,
+    control_plane: str,
+    version: str,
+    *,
+    actor: str,
+    kubernetes: str | None = None,
+) -> MaintenanceRun:
+    """Draft a cluster upgrade: one ``talos-upgrade`` per member — control
+    planes first, then workers, members already on ``version`` skipped — and,
+    with ``kubernetes``, a closing ``k8s-upgrade``. Nothing executed."""
+    await _refuse_open_run(session, control_plane)
+    members = await talos.members(control_plane)
+    if not members:
+        raise MaintenanceError(f"{control_plane} reports no cluster members")
+    ordered = sorted(
+        members, key=lambda m: (_MACHINE_ORDER.get(m["machine_type"], 2), m["hostname"])
+    )
+    planned: list[tuple[str, str, dict[str, Any]]] = []
+    try:
+        for member in ordered:
+            if member["talos"] == version or not member["address"]:
+                continue
+            label = f"{member['hostname']} ({member['machine_type']})"
+            planned.append(
+                (
+                    "talos-upgrade",
+                    f"upgrade {label} {member['talos'] or '?'} -> {version}",
+                    build_talos_artifact(
+                        node=member["address"], version=version, hostnames=(member["hostname"],)
+                    ),
+                )
+            )
+        if kubernetes:
+            planned.append(
+                (
+                    "k8s-upgrade",
+                    f"upgrade Kubernetes -> {kubernetes}",
+                    build_k8s_upgrade_artifact(control_plane=control_plane, version=kubernetes),
+                )
+            )
+    except _ManifestError as exc:
+        raise MaintenanceError(str(exc)) from exc
+    if not planned:
+        raise MaintenanceError(f"every member already runs Talos {version}; nothing to plan")
+    run = MaintenanceRun(
+        node=control_plane, plane="talos", created_by=actor, status=MaintenanceStatus.PLANNED
+    )
+    session.add(run)
     await session.flush()
-    return run
+    return await _record_steps(session, run, planned, actor)
 
 
 def _room_by_node(
@@ -346,13 +452,17 @@ async def execute_maintenance(
     k8s_adapter: K8sAdapter | None = None,
     argocd_adapter: ArgoCDAdapter | None = None,
     unifi_adapter: UniFiAdapter | None = None,
+    talos_adapter: TalosAdapter | None = None,
+    health_cb: HealthCallback | None = None,
     notifier: Notifier | None = None,
 ) -> MaintenanceRun:
     """Execute the run's steps in order through the executor; stop at the first failure.
 
     ``confirm_cb`` is the operator's answer, relayed to every step that lands
     at CONFIRM. A refused step (PROPOSE, BLOCK, a declined confirmation, a
-    closed window) and a failed dispatch end the run the same way.
+    closed window) and a failed dispatch end the run the same way. ``health_cb``
+    is asked before every step after the first; a cluster that is not healthy
+    stops the run there, with the health check's own words on the step.
     """
     if run.status not in _OPEN:
         raise MaintenanceError(f"run {run.id} is {run.status.value}, not runnable")
@@ -366,7 +476,12 @@ async def execute_maintenance(
         proposal = await session.get(ProposalLog, uuid.UUID(step["proposal_id"]))
         failure: str | None = None
         receipt_id: str | None = None
-        if proposal is None:
+        healthy, health_detail = (
+            await health_cb() if health_cb is not None and index > 1 else (True, "")
+        )
+        if not healthy:
+            failure = f"cluster not healthy before this step: {health_detail}"
+        elif proposal is None:
             failure = "proposal is gone"
         elif proposal.outcome is not ProposalOutcome.PENDING:
             failure = f"proposal is {proposal.outcome.value}, not pending"
@@ -383,6 +498,7 @@ async def execute_maintenance(
                     argocd_adapter=argocd_adapter,
                     unifi_adapter=unifi_adapter,
                     ssh_adapter=ssh_adapter,
+                    talos_adapter=talos_adapter,
                     notifier=notifier,
                 )
                 receipt_id = str(result.receipt_id)
@@ -434,6 +550,7 @@ def run_summary(run: MaintenanceRun) -> dict[str, Any]:
     return {
         "id": str(run.id),
         "node": run.node,
+        "plane": run.plane,
         "status": run.status.value,
         "created_by": run.created_by,
         "created_at": run.created_at.isoformat() if run.created_at else None,
@@ -445,10 +562,13 @@ def run_summary(run: MaintenanceRun) -> dict[str, Any]:
 
 
 __all__ = [
+    "PLANES",
     "STEP_KINDS",
     "MaintenanceError",
     "abort_maintenance",
     "execute_maintenance",
     "plan_maintenance",
+    "plan_talos_maintenance",
     "run_summary",
+    "talos_health_gate",
 ]

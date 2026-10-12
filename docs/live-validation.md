@@ -477,6 +477,17 @@ single-host`, `host-os node-reboot single-host`. Consider revoking the two
 ```bash
 uv run helper maintenance plan bmax2            # drafts the steps; nothing moves
 uv run helper maintenance run <id>              # one consent, then step by step
+```
+
+The Talos cluster has the same shape (Phase 11.3) with `talosctl rollback` as
+each node step's inverse:
+
+```bash
+uv run helper trust grant host-os talos-upgrade single-host confirm
+uv run helper trust grant containers k8s-upgrade cluster confirm   # only with --kubernetes
+uv run helper maintenance plan-talos 10.250.6.13 --to v1.14.3     # control planes, then workers
+uv run helper maintenance run <id>                                 # health-gated between nodes
+uv run helper exec rollback <receipt-id>                           # one node back to its prior release
 uv run helper maintenance show <id>             # where it got to, with receipts
 ```
 

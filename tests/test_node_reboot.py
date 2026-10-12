@@ -180,7 +180,7 @@ async def test_an_undrained_node_is_refused_before_the_reboot(sessionmaker_, fas
         s.add(p)
         await s.flush()
         result = await execute_proposal(s, p, pve, actor="enoch", confirm_cb=_yes, ssh_adapter=ssh)
-        assert result.outcome == "failed"
+        assert result.outcome == "refused"
         assert "drain it first" in (result.error or "")
     assert ssh.reboots == []
 

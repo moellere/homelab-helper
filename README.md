@@ -71,7 +71,7 @@ and a kubeconfig. Chat works out of the box against a local
 **1. Install.** As a tool on your PATH (no checkout needed):
 
 ```bash
-uv tool install homelab-helper                      # from PyPI
+uv tool install homelab-helper                      # from PyPI (upgrading from an rc installed with --prerelease allow? use --reinstall)
 # or: pipx install homelab-helper
 helper --install-completion                          # bash / zsh / fish
 # bleeding edge: uv tool install git+https://github.com/moellere/homelab-helper

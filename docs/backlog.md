@@ -1220,6 +1220,17 @@ keeps; no model anywhere.
     never returned join the new run's return leg, checked against where each
     guest is now. Born of the first live run, which drained bmax3 and stopped
     at the update step for want of a `credentials_ref`.
+  - [x] Hardening from the first live runs (10/12/2026): a preflight that stops
+    before the target is touched (undrained node, missing login, node already on
+    the release, cluster not healthy) is a `refused` receipt — the proposal stays
+    pending and the cell is **not** demoted (the first run's step-6 refusal had
+    cost `host-os/node-update` its grant twice); an unexpected exception in a
+    dispatch is a `failed` receipt rather than a crash with no record; `plan`
+    marks every step the gate would refuse today ("would be refused today: … is
+    at propose — grant it first"); the run commits after each step so a crash
+    later cannot roll back the record of what already moved; `httpx<1` pinned
+    after an `uv tool upgrade` from an rc installed with `--prerelease allow`
+    pulled httpx 1.0.dev6 (no `AsyncClient`).
   - [ ] Follow-ups: the Talos node variant landed as 11.3; pre-flight "newest
     installed kernel is the running one" after the reboot; Ceph "PGs clean" in
     the return wait when the cluster runs Ceph.

@@ -201,7 +201,7 @@ async def test_preflight_failures_refuse_before_the_write(
     async with session_scope(sessionmaker_) as s:
         await seeded(s)
         p, result = await _run(s, talos, version)
-        assert result.outcome == "failed"
+        assert result.outcome == "refused"
         assert message in (result.error or "")
         assert p.outcome is ProposalOutcome.PENDING
     assert talos.upgrades == []
@@ -239,5 +239,5 @@ async def test_without_talosctl_nothing_runs(sessionmaker_) -> None:  # noqa: F8
     async with session_scope(sessionmaker_) as s:
         await seeded(s)
         _, result = await _run(s, None)
-        assert result.outcome == "failed"
+        assert result.outcome == "refused"
         assert "no Talos adapter" in (result.error or "")

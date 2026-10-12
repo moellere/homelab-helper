@@ -225,7 +225,7 @@ async def test_a_node_already_on_the_tag_is_unverified_and_refused(
             confirm_cb=_yes,
             talos_adapter=talos,
         )
-        assert result.outcome == "failed"
+        assert result.outcome == "refused"
         assert "already runs" in (result.error or "")
         receipt = (
             await s.execute(select(ExecutionReceipt).where(ExecutionReceipt.proposal_id == p.id))
@@ -250,7 +250,7 @@ async def test_without_talosctl_nothing_is_verified_and_nothing_runs(
             actor="enoch",
             confirm_cb=_yes,  # type: ignore[arg-type]
         )
-        assert result.outcome == "failed"
+        assert result.outcome == "refused"
         assert "no Talos adapter" in (result.error or "")
 
 
@@ -272,7 +272,7 @@ async def test_a_node_that_is_not_ready_is_refused_before_the_write(
             confirm_cb=_yes,
             talos_adapter=talos,
         )
-        assert result.outcome == "failed"
+        assert result.outcome == "refused"
         assert "not ready" in (result.error or "")
     assert talos.upgrades == []
 

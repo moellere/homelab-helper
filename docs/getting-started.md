@@ -19,6 +19,11 @@ uv tool install homelab-helper                      # from PyPI
 helper --install-completion                          # bash / zsh / fish, optional
 ```
 
+If you installed a release candidate with `--prerelease allow`, reinstall
+rather than upgrade: `uv tool install --reinstall homelab-helper`. An upgrade
+keeps allowing pre-releases for every dependency too, and that is how one lab
+ended up with an `httpx` 1.0 development build that has no `AsyncClient`.
+
 To work from a checkout instead, `uv sync --all-extras --group dev` and prefix
 every command below with `uv run`.
 

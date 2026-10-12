@@ -185,7 +185,8 @@ async def _receipts(session: AsyncSession, now: datetime) -> dict[str, Any]:
     )
     return {
         "succeeded": sum(1 for r in rows if r.outcome == "succeeded"),
-        "failed": sum(1 for r in rows if r.outcome != "succeeded"),
+        "failed": sum(1 for r in rows if r.outcome == "failed"),
+        "refused": sum(1 for r in rows if r.outcome == "refused"),
         "last_at": _iso(max((r.executed_at for r in rows), default=None)),
     }
 

@@ -109,6 +109,7 @@ EXPECTED_TOOLS = {
     "propose_argocd_sync",
     "propose_dns_record",
     "propose_talos_upgrade",
+    "propose_k8s_upgrade",
     "list_proposals",
     "get_proposal",
     # Phase 7: a *trigger*, not an authority — see test_execute_proposal_* below.

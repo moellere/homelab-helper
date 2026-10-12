@@ -32,6 +32,7 @@ WRITE_METHODS = (
     "reboot_node",
     "upgrade_node",
     "rollback_node",
+    "upgrade_k8s",
 )
 ALLOWED = {
     SRC / "adapters" / "proxmox.py",  # the definitions

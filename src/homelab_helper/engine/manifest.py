@@ -60,6 +60,11 @@ TALOS_ACTION_KINDS: tuple[str, ...] = ("talos-upgrade",)
 TALOS_DOMAIN = TrustDomain.HOST_OS
 TALOS_VERSION_PATTERN = r"^v\d+\.\d+\.\d+$"
 """A release tag and nothing else: the installer image is derived from the node's own, never carried."""
+K8S_ACTION_KINDS: tuple[str, ...] = ("k8s-upgrade",)
+K8S_DOMAIN = TrustDomain.CONTAINERS
+K8S_VERSION_PATTERN = r"^\d+\.\d+\.\d+$"
+K8S_BLAST_RADIUS = "cluster"
+"""A Kubernetes upgrade touches every control plane and kubelet; no narrower radius is accepted."""
 ACTION_KINDS: tuple[str, ...] = (
     *GUEST_ACTION_KINDS,
     *WORKLOAD_ACTION_KINDS,
@@ -67,6 +72,7 @@ ACTION_KINDS: tuple[str, ...] = (
     *DNS_ACTION_KINDS,
     *NODE_ACTION_KINDS,
     *TALOS_ACTION_KINDS,
+    *K8S_ACTION_KINDS,
 )
 DNS_RECORD_TYPES: tuple[str, ...] = ("A", "AAAA", "CNAME", "TXT")
 MAX_CORES = 512
@@ -97,6 +103,7 @@ ActionKind = Literal[
     "node-update",
     "node-reboot",
     "talos-upgrade",
+    "k8s-upgrade",
 ]
 VMKind = Literal["qemu", "lxc"]
 WorkloadKind = Literal["deployment", "statefulset", "daemonset"]
@@ -184,6 +191,20 @@ class TalosTarget(BaseModel):
     version: str = Field(pattern=TALOS_VERSION_PATTERN)
 
 
+class K8sUpgradeTarget(BaseModel):
+    """The Kubernetes control plane, addressed through one control-plane node, and a version.
+
+    No image, no component list: ``talosctl upgrade-k8s`` decides what moves.
+    A Kubernetes upgrade has no inverse, so this kind never leaves CONFIRM.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    control_plane: str = Field(min_length=1)
+    """A control-plane node as ``talosctl -n`` knows it."""
+    version: str = Field(pattern=K8S_VERSION_PATTERN)
+
+
 class RollbackSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -197,7 +218,13 @@ class ActionSpec(BaseModel):
     domain: TrustDomain
     action_kind: ActionKind
     target: (
-        ActionTarget | WorkloadTarget | ArgoAppTarget | DnsRecordTarget | NodeTarget | TalosTarget
+        ActionTarget
+        | WorkloadTarget
+        | ArgoAppTarget
+        | DnsRecordTarget
+        | NodeTarget
+        | TalosTarget
+        | K8sUpgradeTarget
     )
     hostnames: tuple[str, ...] = ()
 
@@ -246,10 +273,15 @@ def _talos_rule(t: TalosTarget) -> tuple[TrustDomain, tuple[str, ...], str]:
     return TALOS_DOMAIN, TALOS_ACTION_KINDS, "a Talos node"
 
 
+def _k8s_rule(t: K8sUpgradeTarget) -> tuple[TrustDomain, tuple[str, ...], str]:
+    return K8S_DOMAIN, K8S_ACTION_KINDS, "a Kubernetes control plane"
+
+
 _TARGET_RULES: dict[type, Any] = {
     ActionTarget: _guest_rule,
     NodeTarget: _node_rule,
     TalosTarget: _talos_rule,
+    K8sUpgradeTarget: _k8s_rule,
     WorkloadTarget: _workload_rule,
     ArgoAppTarget: _argocd_rule,
     DnsRecordTarget: _dns_rule,
@@ -291,6 +323,7 @@ class ActionArtifact(BaseModel):
 
 _VARIANT_BY_KEY = (
     ("vmid", "ActionTarget"),
+    ("control_plane", "K8sUpgradeTarget"),
     ("application", "ArgoAppTarget"),
     ("hostname", "DnsRecordTarget"),
     ("namespace", "WorkloadTarget"),
@@ -303,6 +336,7 @@ _TARGET_VARIANTS = {
     "DnsRecordTarget",
     "NodeTarget",
     "TalosTarget",
+    "K8sUpgradeTarget",
 }
 
 
@@ -469,6 +503,29 @@ def build_talos_artifact(
     return artifact.as_artifact()
 
 
+def build_k8s_upgrade_artifact(
+    *,
+    control_plane: str,
+    version: str,
+    hostnames: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, Any]:
+    """An executor-ready ``k8s-upgrade`` artifact. No inverse exists, so the
+    strategy is fixed at no-inverse and ``verified`` can only ever be false."""
+    artifact = validate_artifact(
+        {
+            "kind": "action",
+            "action": {
+                "domain": K8S_DOMAIN.value,
+                "action_kind": "k8s-upgrade",
+                "target": {"control_plane": control_plane, "version": version},
+                "hostnames": list(hostnames) if hostnames else [control_plane],
+            },
+            "rollback": {"verified": False, "strategy": "no-inverse"},
+        }
+    )
+    return artifact.as_artifact()
+
+
 def build_argocd_artifact(
     *,
     application: str,
@@ -539,6 +596,10 @@ __all__ = [
     "DNS_DOMAIN",
     "DNS_RECORD_TYPES",
     "GUEST_ACTION_KINDS",
+    "K8S_ACTION_KINDS",
+    "K8S_BLAST_RADIUS",
+    "K8S_DOMAIN",
+    "K8S_VERSION_PATTERN",
     "NODE_ACTION_KINDS",
     "NODE_DOMAIN",
     "POWER_ACTION_KINDS",
@@ -554,6 +615,7 @@ __all__ = [
     "ActionTarget",
     "ArgoAppTarget",
     "DnsRecordTarget",
+    "K8sUpgradeTarget",
     "ManifestError",
     "NodeTarget",
     "RollbackSpec",
@@ -562,6 +624,7 @@ __all__ = [
     "build_argocd_artifact",
     "build_artifact",
     "build_dns_artifact",
+    "build_k8s_upgrade_artifact",
     "build_node_artifact",
     "build_talos_artifact",
     "build_workload_artifact",

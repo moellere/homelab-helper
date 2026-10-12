@@ -232,3 +232,84 @@ async def test_wait_for_tag_is_not_fooled_by_a_node_that_never_left(fast_clock) 
 
     with pytest.raises(TalosError, match="did not come back"):
         await wait_for_tag(TalosAdapter(runner=runner), "10.0.0.1", "v1.14.2", timeout_s=300)
+
+
+# --- Phase 11.2: the Kubernetes-side reads and the upgrade-k8s write -------------
+
+_KUBELETCONFIG = """{
+    "metadata": {"id": "kubelet", "namespace": "k8s"},
+    "node": "10.0.0.1",
+    "spec": {"image": "ghcr.io/siderolabs/kubelet:v1.37.1", "clusterDNS": ["10.96.0.10"]}
+}"""
+
+_MEMBERS = """{
+    "metadata": {"id": "talos-cp1", "namespace": "cluster"},
+    "node": "10.0.0.1",
+    "spec": {"nodeId": "a", "addresses": ["10.0.6.13", "10.0.6.16"], "hostname": "talos-cp1",
+             "machineType": "controlplane", "operatingSystem": "Talos (v1.14.2)"}
+}
+{
+    "metadata": {"id": "bmax4", "namespace": "cluster"},
+    "node": "10.0.0.1",
+    "spec": {"nodeId": "b", "addresses": ["10.0.6.24"], "hostname": "bmax4",
+             "machineType": "worker", "operatingSystem": "Talos (v1.13.5)"}
+}"""
+
+
+async def test_kubernetes_version_is_the_kubelet_image_tag() -> None:
+    async def runner(args, timeout_s):  # noqa: ANN001, ARG001
+        return 0, _KUBELETCONFIG, ""
+
+    assert await TalosAdapter(runner=runner).kubernetes_version("10.0.0.1") == "1.37.1"
+
+    async def untagged(args, timeout_s):  # noqa: ANN001, ARG001
+        return 0, _KUBELETCONFIG.replace(":v1.37.1", ""), ""
+
+    with pytest.raises(TalosError, match="no kubelet image tag"):
+        await TalosAdapter(runner=untagged).kubernetes_version("10.0.0.1")
+
+
+async def test_members_carry_type_address_and_talos_release() -> None:
+    async def runner(args, timeout_s):  # noqa: ANN001, ARG001
+        return 0, _MEMBERS, ""
+
+    members = await TalosAdapter(runner=runner).members("10.0.0.1")
+    assert members == [
+        {
+            "hostname": "talos-cp1",
+            "machine_type": "controlplane",
+            "address": "10.0.6.13",
+            "talos": "v1.14.2",
+        },
+        {"hostname": "bmax4", "machine_type": "worker", "address": "10.0.6.24", "talos": "v1.13.5"},
+    ]
+
+
+async def test_cluster_health_reports_the_exit_code_and_the_tail() -> None:
+    seen: list[list[str]] = []
+
+    async def runner(args, timeout_s):  # noqa: ANN001, ARG001
+        seen.append(list(args))
+        return (
+            1,
+            "",
+            "waiting for etcd to be healthy: OK\nwaiting for all nodes to be ready: timeout",
+        )
+
+    ok, tail = await TalosAdapter(runner=runner).cluster_health("10.0.0.1", timeout=60)
+    assert ok is False
+    assert tail.endswith("ready: timeout")
+    assert seen == [["-n", "10.0.0.1", "health", "--wait-timeout", "50s"]]
+
+
+async def test_upgrade_k8s_builds_the_exact_argv() -> None:
+    seen: list[tuple[list[str], int]] = []
+
+    async def runner(args, timeout_s):  # noqa: ANN001
+        seen.append((list(args), timeout_s))
+        return 0, "", ""
+
+    await TalosAdapter(runner=runner).upgrade_k8s("10.0.0.1", "1.38.0")
+    assert seen == [
+        (["-n", "10.0.0.1", "upgrade-k8s", "--to", "1.38.0"], talos_mod.K8S_UPGRADE_TIMEOUT_S)
+    ]

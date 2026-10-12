@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import time
 from typing import TYPE_CHECKING, Any, Protocol
@@ -47,6 +48,8 @@ RETURN_TIMEOUT_S = 900
 """How long an upgraded or rolled-back node may take to boot the other install and report ready."""
 RETURN_POLL_S = 10
 GOING_DOWN_S = 120
+K8S_UPGRADE_TIMEOUT_S = 2400
+"""``upgrade-k8s`` pre-pulls images and walks every control plane and kubelet; 40 minutes covers a small cluster."""
 """How long to wait for the node to actually leave before its old version is mistaken for its return."""
 
 
@@ -244,6 +247,45 @@ class TalosAdapter:
         ready = stage == "running" and bool((spec.get("status") or {}).get("ready"))
         return ready, stage
 
+    async def kubernetes_version(self, node: str, *, timeout: int | None = None) -> str:
+        """The Kubernetes version the node's kubelet runs, from its ``kubeletconfig`` image tag."""
+        docs = await self.get_resources(node, "kubeletconfig", timeout=timeout)
+        image = str((docs[0].get("spec") or {}).get("image") or "") if docs else ""
+        _, sep, tag = image.rpartition(":")
+        if not sep or "/" in tag:
+            raise TalosError(f"{node} reports no kubelet image tag (got {image!r})")
+        return tag.removeprefix("v")
+
+    async def members(self, node: str, *, timeout: int | None = None) -> list[dict[str, Any]]:
+        """The cluster's discovered members: ``{hostname, machine_type, address, talos}`` each."""
+        out: list[dict[str, Any]] = []
+        for doc in await self.get_resources(node, "members", timeout=timeout):
+            spec = doc.get("spec") or {}
+            addresses = [str(a) for a in spec.get("addresses") or []]
+            os_version = str(spec.get("operatingSystem") or "")
+            match = re.search(r"\((v[0-9][^)]*)\)", os_version)
+            out.append(
+                {
+                    "hostname": str(
+                        spec.get("hostname") or doc.get("metadata", {}).get("id") or ""
+                    ),
+                    "machine_type": str(spec.get("machineType") or ""),
+                    "address": addresses[0] if addresses else "",
+                    "talos": match.group(1) if match else os_version,
+                }
+            )
+        return out
+
+    async def cluster_health(self, node: str, *, timeout: int = 180) -> tuple[bool, str]:
+        """``talosctl health`` from ``node``'s point of view: ``(ok, last lines)``. Read-only."""
+        args = [*self._base_args(node), "health", "--wait-timeout", f"{max(timeout - 10, 30)}s"]
+        try:
+            code, stdout, stderr = await self._runner(args, timeout)
+        except TalosError as exc:
+            return False, str(exc)
+        tail = "\n".join((stderr or stdout).strip().splitlines()[-4:])
+        return code == 0, tail
+
     # --- writes --------------------------------------------------------------
     # Only ``engine/executor.py`` (and ``engine/rollback.py``, which it drives)
     # may call these; ``tests/test_write_isolation.py`` enforces it.
@@ -257,6 +299,12 @@ class TalosAdapter:
     async def rollback_node(self, node: str, *, timeout: int | None = None) -> str:
         """``talosctl rollback``: boot the previous install again. The caller watches the return."""
         return await self._run(node, "rollback", timeout=timeout or 120)
+
+    async def upgrade_k8s(self, node: str, version: str, *, timeout: int | None = None) -> str:
+        """``talosctl upgrade-k8s --to <version>``: synchronous, control planes then kubelets."""
+        return await self._run(
+            node, "upgrade-k8s", "--to", version, timeout=timeout or K8S_UPGRADE_TIMEOUT_S
+        )
 
 
 async def wait_for_tag(
@@ -301,6 +349,7 @@ async def wait_for_tag(
 
 __all__ = [
     "GOING_DOWN_S",
+    "K8S_UPGRADE_TIMEOUT_S",
     "RETURN_POLL_S",
     "RETURN_TIMEOUT_S",
     "TalosAdapter",

@@ -63,6 +63,7 @@ gesture can change that.
 | `dns` (UniFi static DNS) | `dns-record` | the prior record, or deleting the created one |
 | `host-os` | `node-update` (an apt dist-upgrade on one drained node), `node-reboot` | **none** — see below |
 | `host-os` (Talos) | `talos-upgrade` (one node to a release tag; the image is the node's own with the tag swapped) | `talosctl rollback` — the previous install stays in the other boot partition |
+| `containers` (Kubernetes control plane) | `k8s-upgrade` (`talosctl upgrade-k8s` to a version, always blast radius `cluster`) | **none** — pinned at CONFIRM like `node-update` |
 
 ## Granting your first cell
 

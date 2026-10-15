@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from sqlalchemy import select
 
 import homelab_helper.mcp_server as mcp_srv
+from homelab_helper import __version__
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
 from homelab_helper.adapters.mikrotik import MikroTikAdapter, MikroTikConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter, OpenMediaVaultConfig
@@ -138,6 +139,11 @@ FORBIDDEN_TOOL_SUBSTRINGS = (
     "demote",
     "boundary",
 )
+
+
+def test_server_reports_the_package_version() -> None:
+    assert mcp_srv.server.version == __version__
+    assert mcp_srv.server.version
 
 
 async def test_server_registers_expected_tools() -> None:

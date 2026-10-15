@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 from mcp.server.mcpserver import MCPServer
 from sqlalchemy import func, or_, select
 
+from homelab_helper import __version__
 from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfigError
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
@@ -206,6 +207,7 @@ if TYPE_CHECKING:
 
 server = MCPServer(
     "homelab-helper",
+    version=__version__,
     instructions=(
         "Inventory, audit, and findings for a homelab. All tools are read-only "
         "against the infrastructure (L1: propose, never apply); run_discovery "

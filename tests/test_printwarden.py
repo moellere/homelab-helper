@@ -265,3 +265,49 @@ def test_cli_discover_printwarden_unreachable_persists(
             await eng.dispose()
 
     assert asyncio.run(_count()) == 1
+
+
+def test_shutdown_cause_failing_and_maintenance():
+    status = _status(
+        hot=_printer(
+            klippy="shutdown",
+            last_shutdown={
+                "cause": "thermal_runaway",
+                "hint": "check the thermistor and heater",
+                "s_ago": 60,
+            },
+        ),
+        flaky=_printer(outcomes_7d={"prints": 4, "failed": 3}),
+        few=_printer(outcomes_7d={"prints": 2, "failed": 2}),
+        worn=_printer(connected=False, maintenance_due=["nozzle", "belts"]),
+    )
+    issues = {(i.target_id, i.category): i for i in printer_issues(status)}
+    hot = issues[("print-warden/hot", "printer-klippy")]
+    assert hot.title == "Klipper on hot is shutdown: thermal runaway"
+    assert "check the thermistor and heater" in hot.description
+    assert issues[("print-warden/flaky", "printer-failing")].severity == FindingSeverity.MEDIUM
+    assert ("print-warden/few", "printer-failing") not in issues
+    worn = issues[("print-warden/worn", "printer-maintenance")]
+    assert worn.title == "Maintenance due on worn: nozzle, belts"
+    assert ("print-warden/worn", "printer-offline") in issues
+
+
+async def test_ledger_findings_resolve_only_when_reported(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    worn = {"maintenance_due": ["nozzle"], "outcomes_7d": {"prints": 0, "failed": 0}}
+    async with session_scope(sessionmaker) as s:
+        await reconcile_printwarden(s, URL, _status(sw1=_printer(**worn)))
+        assert await _open(s) == {"Maintenance due on sw1: nozzle"}
+    async with session_scope(sessionmaker) as s:
+        await reconcile_printwarden(s, URL, _status(sw1=_printer()))
+        assert await _open(s) == {"Maintenance due on sw1: nozzle"}, (
+            "an older warden observes nothing"
+        )
+    async with session_scope(sessionmaker) as s:
+        clean = {"maintenance_due": [], "outcomes_7d": {"prints": 1, "failed": 0}}
+        _, counts = await reconcile_printwarden(
+            s, URL, _status(sw1=_printer(connected=False, **clean))
+        )
+        assert counts["resolved"] == 1
+        assert await _open(s) == {"Printer sw1 is offline to print-warden"}

@@ -33,7 +33,7 @@ The framework proposes; the operator migrates/moves/buys by hand (L1).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -48,6 +48,7 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.engine.cluster_nodes import cluster_nodes
+from homelab_helper.engine.dimm_fit import Board, DimmFit
 from homelab_helper.engine.network_path import Topology, load_topology
 from homelab_helper.engine.retire import retired_host_ids
 from homelab_helper.engine.rightsizing import MIN_SAMPLES as USAGE_MIN_SAMPLES
@@ -89,6 +90,8 @@ class HostLoad:
     """Clusters this host is a node of — the only places its guests may be sent."""
     no_new_guests: bool = False
     """Operator intent: never a destination; its own guests may still leave."""
+    board: Board | None = None
+    """Slots and stated maximum, for what a DIMM can actually do here."""
 
     @property
     def capacity(self) -> int | None:
@@ -194,6 +197,7 @@ async def _load_fleet(
     for h in hosts:
         mem = (h.capabilities or {}).get("mem_total_bytes")
         load = HostLoad(hostname=h.hostname, host_id=h.id, mem_total=int(mem) if mem else None)
+        load.board = Board.of(h.capabilities, [])
         if load.mem_total is None:
             unknown.append(h.hostname)
         by_id[h.id] = load
@@ -248,6 +252,9 @@ async def _load_fleet(
         if placement.host_id in by_id and part.capacity_bytes:
             label = part.model or part.serial or "dimm"
             by_id[placement.host_id].dimms.append((str(label), int(part.capacity_bytes)))
+    for load in by_id.values():
+        if load.board is not None:
+            load.board = replace(load.board, installed=tuple(sorted(s for _, s in load.dimms)))
 
     eligible = [load for load in by_id.values() if load.mem_total is not None]
     return sorted(eligible, key=lambda h: h.hostname), unknown
@@ -376,13 +383,23 @@ def _shifted(
                 dimms=list(h.dimms),
                 clusters=set(h.clusters),
                 no_new_guests=h.no_new_guests,
+                board=h.board,
             )
         )
     return out
 
 
+def _board(h: HostLoad) -> Board:
+    return h.board or Board(free_slots=None, installed=tuple(sorted(s for _, s in h.dimms)))
+
+
 def _plan_dimm_move(hosts: list[HostLoad], topology: Topology | None) -> RebalancePlan | None:
-    """Move one DIMM from the emptiest donor with spares to the tightest host."""
+    """Move one DIMM from the emptiest donor with spares to the tightest host.
+
+    The first donor DIMM (emptiest donor, smallest DIMM) that grows the receiver
+    wins. A full receiver can only swap: it gives back its smallest DIMM, so both
+    hosts change by the difference, and a swap that gains nothing is skipped.
+    """
     ranked = sorted((h for h in hosts if h.ratio is not None), key=lambda h: h.ratio or 0)
     if len(ranked) < _MIN_FLEET_FOR_MOVE:
         return None
@@ -390,75 +407,113 @@ def _plan_dimm_move(hosts: list[HostLoad], topology: Topology | None) -> Rebalan
     donors = [h for h in ranked[:-1] if len(h.dimms) >= _MIN_DONOR_DIMMS]
     if not donors or (receiver.ratio or 0) <= _TARGET_MAX_RATIO:
         return None
-    donor = donors[0]
-    label, size = min(donor.dimms, key=lambda d: d[1])
-    shifted = _shifted(hosts, donor, receiver, size)
-    steps = [
-        PlanStep(
-            action="move-dimm",
-            description=(
-                f"move DIMM {label} ({size / _GB:.0f} GiB) from {donor.hostname} "
-                f"to {receiver.hostname} (both hosts powered down briefly)"
-            ),
+    board = _board(receiver)
+    for donor in donors:
+        for label, size in sorted(donor.dimms, key=lambda d: d[1]):
+            fit = board.fit(size)
+            if fit is not None:
+                return _dimm_move_plan(hosts, topology, donor, receiver, label, size, fit)
+    return None
+
+
+def _dimm_move_plan(
+    hosts: list[HostLoad],
+    topology: Topology | None,
+    donor: HostLoad,
+    receiver: HostLoad,
+    label: str,
+    size: int,
+    fit: DimmFit,
+) -> RebalancePlan:
+    net = fit.net_bytes
+    if fit.replaces_bytes is None:
+        description = (
+            f"move DIMM {label} ({size / _GB:.0f} GiB) from {donor.hostname} "
+            f"to {receiver.hostname} (both hosts powered down briefly)"
         )
-    ]
+    else:
+        description = (
+            f"swap DIMM {label} ({size / _GB:.0f} GiB) from {donor.hostname} with "
+            f"{receiver.hostname}'s {fit.replaces_bytes / _GB:.0f} GiB DIMM, which goes to "
+            f"{donor.hostname} ({receiver.hostname} has no free slot; both hosts powered "
+            "down briefly)"
+        )
+    shifted = _shifted(hosts, donor, receiver, net)
+    steps = [PlanStep(action="move-dimm", description=description)]
     move_steps, ratios = _greedy_moves(shifted, topology)
     steps.extend(move_steps)
     return RebalancePlan(
         name="one-dimm-move",
         summary=(
-            f"shift {size / _GB:.0f} GiB of existing RAM from {donor.hostname} "
+            f"shift {net / _GB:.0f} GiB of existing RAM from {donor.hostname} "
             f"to {receiver.hostname}, then {len(move_steps)} migration(s)"
         ),
         steps=steps,
         tradeoffs=[
             "zero spend — uses hardware you already own",
             f"physical access + downtime on {donor.hostname} and {receiver.hostname}",
-            f"{donor.hostname} permanently loses {size / _GB:.0f} GiB",
+            f"{donor.hostname} permanently loses {net / _GB:.0f} GiB",
+            *fit.warnings,
         ],
         resulting_ratios=ratios,
     )
 
 
 def _plan_purchase(hosts: list[HostLoad], topology: Topology | None) -> RebalancePlan | None:
-    """The smallest standard DIMM that relieves the most-constrained host."""
+    """The smallest standard DIMM that relieves the most-constrained host.
+
+    A full receiver means the DIMM replaces its smallest one, so a size counts
+    only for what it adds; when no size relieves the host, the largest that
+    still adds something is proposed.
+    """
     ranked = sorted((h for h in hosts if h.ratio is not None), key=lambda h: h.ratio or 0)
     if not ranked:
         return None
     receiver = ranked[-1]
     if (receiver.ratio or 0) <= _TARGET_MAX_RATIO:
         return None
-    chosen = None
-    for size_gb in _STANDARD_DIMM_GB:
-        cap = (receiver.mem_total or 0) + size_gb * _GB - _OS_RESERVE_BYTES
+    board = _board(receiver)
+    fits = [
+        (size_gb, fit)
+        for size_gb in _STANDARD_DIMM_GB
+        if (fit := board.fit(size_gb * _GB)) is not None
+    ]
+    if not fits:
+        return None
+    chosen, fit = fits[-1]
+    for size_gb, candidate in fits:
+        cap = (receiver.mem_total or 0) + candidate.net_bytes - _OS_RESERVE_BYTES
         if cap > 0 and receiver.committed / cap <= _TARGET_MAX_RATIO:
-            chosen = size_gb
+            chosen, fit = size_gb, candidate
             break
-    if chosen is None:
-        chosen = _STANDARD_DIMM_GB[-1]
     shifted = _shifted(hosts, receiver, receiver, 0)
     for h in shifted:
         if h.hostname == receiver.hostname and h.mem_total is not None:
-            h.mem_total += chosen * _GB
+            h.mem_total += fit.net_bytes
     move_steps, ratios = _greedy_moves(shifted, topology)
-    steps = [
-        PlanStep(
-            action="buy-dimm",
-            description=(
-                f"buy and install one {chosen} GiB DIMM in {receiver.hostname} "
-                "(match the installed generation/speed)"
-            ),
-        ),
-        *move_steps,
-    ]
+    if fit.replaces_bytes is None:
+        description = (
+            f"buy and install one {chosen} GiB DIMM in {receiver.hostname} "
+            "(match the installed generation/speed)"
+        )
+    else:
+        description = (
+            f"buy one {chosen} GiB DIMM to replace the {fit.replaces_bytes / _GB:.0f} GiB "
+            f"in {receiver.hostname} (no free slot; match the installed generation/speed)"
+        )
+    steps = [PlanStep(action="buy-dimm", description=description), *move_steps]
     return RebalancePlan(
         name="one-part-purchase",
-        summary=f"add one {chosen} GiB DIMM to {receiver.hostname}, then {len(move_steps)} migration(s)",
+        summary=(
+            f"add {fit.net_bytes / _GB:.0f} GiB to {receiver.hostname} with one {chosen} GiB "
+            f"DIMM, then {len(move_steps)} migration(s)"
+        ),
         steps=steps,
         tradeoffs=[
             f"costs one {chosen} GiB DIMM",
             f"downtime on {receiver.hostname} only",
             "raises total fleet capacity instead of redistributing it",
+            *fit.warnings,
         ],
         resulting_ratios=ratios,
     )

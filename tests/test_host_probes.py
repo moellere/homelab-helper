@@ -20,7 +20,12 @@ from homelab_helper.probes.host.cpu import (
     parse_int_or_none,
     parse_proc_cpuinfo,
 )
-from homelab_helper.probes.host.memory import parse_dmidecode_memory, parse_meminfo
+from homelab_helper.probes.host.memory import (
+    _dimm_observations,
+    parse_dmidecode_memory,
+    parse_dmidecode_memory_array,
+    parse_meminfo,
+)
 from homelab_helper.probes.host.network import parse_ip_link_show, parse_speed_lines
 from homelab_helper.probes.host.services import parse_systemctl_units
 from homelab_helper.probes.host.storage import parse_lsblk_json
@@ -140,6 +145,60 @@ Memory Device
 def test_parse_dmidecode_memory_empty_on_garbage() -> None:
     assert parse_dmidecode_memory("") == []
     assert parse_dmidecode_memory("no memory devices here") == []
+
+
+_ARRAY_RAW = """# dmidecode 3.5
+Handle 0x000A, DMI type 16, 23 bytes
+Physical Memory Array
+\tLocation: System Board Or Motherboard
+\tUse: System Memory
+\tError Correction Type: None
+\tMaximum Capacity: 32 GB
+\tNumber Of Devices: 2
+
+Handle 0x000B, DMI type 16, 23 bytes
+Physical Memory Array
+\tLocation: System Board Or Motherboard
+\tUse: Flash Memory
+\tMaximum Capacity: 16 MB
+\tNumber Of Devices: 1
+
+Handle 0x0010, DMI type 17, 92 bytes
+Memory Device
+\tSize: 32 GB
+\tLocator: DIMM A
+\tSerial Number: SN-A
+
+Handle 0x0011, DMI type 17, 92 bytes
+Memory Device
+\tSize: No Module Installed
+\tLocator: DIMM B
+"""
+
+
+def test_parse_dmidecode_memory_array_counts_system_slots_only() -> None:
+    """The flash array is not RAM; its device does not count as a DIMM slot (#106)."""
+    assert parse_dmidecode_memory_array(_ARRAY_RAW) == {"slots": 2, "max_bytes": 32 * 1024**3}
+
+
+def test_parse_dmidecode_memory_array_none_without_an_array() -> None:
+    assert parse_dmidecode_memory_array("") is None
+    assert parse_dmidecode_memory_array("Memory Device\n\tSize: 8 GB\n") is None
+
+
+def test_dimm_observations_report_free_slots_and_stated_maximum() -> None:
+    dimms = parse_dmidecode_memory(_ARRAY_RAW)
+    obs = dict(_dimm_observations(dimms, parse_dmidecode_memory_array(_ARRAY_RAW)))
+    assert obs["host.memory.dimm_count"] == 1
+    assert obs["host.memory.dimm_slots"] == 2
+    assert obs["host.memory.dimm_slots_free"] == 1
+    assert obs["host.memory.memory_max_bytes"] == 32 * 1024**3
+
+
+def test_dimm_observations_without_an_array_report_no_slots() -> None:
+    obs = dict(_dimm_observations(parse_dmidecode_memory(_ARRAY_RAW), None))
+    assert "host.memory.dimm_slots" not in obs
+    assert "host.memory.dimm_slots_free" not in obs
 
 
 def test_parse_ip_link_show_drops_loopback_and_merges_addresses() -> None:

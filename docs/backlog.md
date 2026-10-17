@@ -207,7 +207,10 @@ The rest of Phase 1, and all of Phase 6, is below.
   `host.memory.dimms` (slot/size/serial/vendor/part/type) from `dmidecode -t
   memory` (root; `sudo -n` when not root, graceful-skip otherwise), the exact
   shape the reconciler's DIMM lineage consumes — so `PhysicalPart`/`Placement`
-  rows populate per DIMM (closes the AC2 DIMM gap).
+  rows populate per DIMM (closes the AC2 DIMM gap). Since #106 it also emits
+  the board's system-memory array from the same output (`dimm_slots`,
+  `dimm_slots_free`, `memory_max_bytes` → capabilities), which the DIMM
+  planners read through `engine/dimm_fit.py`.
 - [x] **`host.pci` + `host.gpu` probes** — PCI enumeration via `lspci -vmmnn`
   (shared parser) and GPU detection from PCI class `03xx`. Graceful-skip with no
   PCI bus. The last two P1 warm-probe deliverables.
@@ -449,7 +452,11 @@ The rest of Phase 1, and all of Phase 6, is below.
   spanning three cost classes**: current-hardware (VM migrations only),
   one-dimm-move (smallest spare DIMM from the emptiest donor with ≥2 DIMMs →
   the constrained host, then fewer migrations), one-part-purchase (smallest
-  standard DIMM that relieves the constrained host). Every plan carries typed
+  standard DIMM that relieves the constrained host). Both DIMM plans go
+  through `engine/dimm_fit.py` (#106): a full receiver can only swap out its
+  smallest DIMM, so it gains the difference; a swap that gains nothing is not
+  proposed; the board's stated maximum is a warning in the tradeoffs, never a
+  refusal; unobserved slots keep the additive answer with a caveat. Every plan carries typed
   steps, tradeoffs, and the resulting per-host load. Deterministic bounded
   greedy — each move must strictly improve the pairwise max ratio (the
   oscillation guard) — not OR-Tools; the plan/step shapes are solver-agnostic
@@ -481,7 +488,8 @@ The rest of Phase 1, and all of Phase 6, is below.
   surplus [--narrate]`, P5-AC5) — the mirror image: hosts with low commitment
   AND reconfigurable slack (stopped VMs, spare DIMMs beyond a kept minimum).
   Options generated from facts: spin the named stopped VMs back up; move the
-  named spare DIMMs to the actually-loaded host (pointing at `helper plan
+  named spare DIMMs to the first loaded host they would actually grow, counting
+  free slots and swaps (#106), or say no loaded host has room (pointing at `helper plan
   rebalance`); accept — declare the reserve deliberate via OperationalIntent /
   stopped-by-design so it stops resurfacing. AC5's node2 case (24 GB RAM, two
   stopped VMs, named CPU) verified through the real CLI. Low commitment alone

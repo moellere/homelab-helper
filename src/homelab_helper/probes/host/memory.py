@@ -9,6 +9,10 @@ Two layers:
   dmidecode is unavailable or unauthorized. The emitted ``host.memory.dimms``
   list is exactly the shape the reconciler's DIMM lineage consumes, so a
   successful run populates ``PhysicalPart``/``Placement`` rows per DIMM.
+- From the same output, the board's system-memory array: slot count, free
+  slots, and the stated ``Maximum Capacity``. The DIMM planners need the slots
+  to know whether a DIMM can be added or only swapped; the stated maximum is
+  advisory, since boards routinely run more than they claim.
 """
 
 from __future__ import annotations
@@ -53,23 +57,16 @@ def _parse_speed_mts(value: str | None) -> int | None:
     return int(first) if first.isdigit() else None
 
 
-def parse_dmidecode_memory(content: str) -> list[dict[str, Any]]:
-    """Parse ``dmidecode -t memory`` into the reconciler's DIMM dict shape.
-
-    Each ``Memory Device`` block becomes a dict ``{slot, serial, size_bytes,
-    speed_mts, manufacturer, part_number, type}``. Empty slots (``Size: No
-    Module Installed``) are dropped — only populated DIMMs are parts.
-    """
+def _dmidecode_blocks(content: str, header: str) -> list[dict[str, str]]:
+    """The ``key: value`` fields of every dmidecode section titled ``header``."""
     blocks: list[dict[str, str]] = []
     cur: dict[str, str] | None = None
-    in_device = False
     for raw in content.splitlines():
         if not raw.startswith((" ", "\t")):  # non-indented = section header
             if cur is not None:
                 blocks.append(cur)
                 cur = None
-            in_device = raw.strip() == "Memory Device"
-            if in_device:
+            if raw.strip() == header:
                 cur = {}
             continue
         if cur is None:
@@ -79,9 +76,45 @@ def parse_dmidecode_memory(content: str) -> list[dict[str, Any]]:
             cur[key.strip()] = val.strip()
     if cur is not None:
         blocks.append(cur)
+    return blocks
 
+
+def parse_dmidecode_memory_array(content: str) -> dict[str, int] | None:
+    """Slot count and stated maximum of the board's system-memory array(s).
+
+    Sums every ``Physical Memory Array`` whose ``Use`` is ``System Memory``.
+    Returns ``{"slots": n}`` plus ``"max_bytes"`` when the board states one, or
+    None when no such array is reported.
+    """
+    slots = 0
+    max_bytes = 0
+    found = False
+    for b in _dmidecode_blocks(content, "Physical Memory Array"):
+        if (b.get("Use") or "").lower() != "system memory":
+            continue
+        count = b.get("Number Of Devices", "")
+        if not count.isdigit():
+            continue
+        found = True
+        slots += int(count)
+        max_bytes += _parse_dimm_size(b.get("Maximum Capacity")) or 0
+    if not found:
+        return None
+    out = {"slots": slots}
+    if max_bytes:
+        out["max_bytes"] = max_bytes
+    return out
+
+
+def parse_dmidecode_memory(content: str) -> list[dict[str, Any]]:
+    """Parse ``dmidecode -t memory`` into the reconciler's DIMM dict shape.
+
+    Each ``Memory Device`` block becomes a dict ``{slot, serial, size_bytes,
+    speed_mts, manufacturer, part_number, type}``. Empty slots (``Size: No
+    Module Installed``) are dropped — only populated DIMMs are parts.
+    """
     dimms: list[dict[str, Any]] = []
-    for b in blocks:
+    for b in _dmidecode_blocks(content, "Memory Device"):
         size = _parse_dimm_size(b.get("Size"))
         if size is None:  # empty slot or unreadable size
             continue
@@ -126,6 +159,23 @@ def parse_meminfo(content: str) -> dict[str, int]:
     return out
 
 
+def _dimm_observations(
+    dimms: list[dict[str, Any]], array: dict[str, int] | None
+) -> list[tuple[str, Any]]:
+    """``(key, value)`` pairs for the DIMM layout and the board's slots."""
+    out: list[tuple[str, Any]] = []
+    if dimms:
+        out += [("host.memory.dimms", dimms), ("host.memory.dimm_count", len(dimms))]
+    if array is not None:
+        out += [
+            ("host.memory.dimm_slots", array["slots"]),
+            ("host.memory.dimm_slots_free", max(array["slots"] - len(dimms), 0)),
+        ]
+        if "max_bytes" in array:
+            out.append(("host.memory.memory_max_bytes", array["max_bytes"]))
+    return out
+
+
 class HostMemoryOutput(BaseModel):
     mem_total_bytes: int | None = None
     mem_available_bytes: int | None = None
@@ -139,7 +189,7 @@ class HostMemoryOutput(BaseModel):
 
 class HostMemoryProbe(Probe):
     name: ClassVar[str] = "host.memory"
-    version: ClassVar[str] = "0.1.0"
+    version: ClassVar[str] = "0.2.0"
     schema_version: ClassVar[int] = 1
     required_privilege: ClassVar[PrivilegeLevel] = PrivilegeLevel.USER
     target_kinds: ClassVar[list[str]] = ["host"]
@@ -154,11 +204,15 @@ class HostMemoryProbe(Probe):
         "host.memory.hugepagesize_bytes",
         "host.memory.dimms",
         "host.memory.dimm_count",
+        "host.memory.dimm_slots",
+        "host.memory.dimm_slots_free",
+        "host.memory.memory_max_bytes",
     ]
     output_schema: ClassVar[type[BaseModel] | None] = HostMemoryOutput
     description: ClassVar[str | None] = (
         "RAM/swap totals from /proc/meminfo plus best-effort per-DIMM layout "
-        "from dmidecode (root): slot, size, serial, vendor, part number."
+        "from dmidecode (root): slot, size, serial, vendor, part number; and "
+        "the board's slot count, free slots and stated maximum."
     )
 
     async def run(self, ctx: ProbeContext) -> ProbeResult:  # noqa: PLR0911
@@ -197,6 +251,7 @@ class HostMemoryProbe(Probe):
             )
 
         dimms = parse_dmidecode_memory(dmi.stdout) if dmi.ok else []
+        array = parse_dmidecode_memory_array(dmi.stdout) if dmi.ok else None
         info = parse_meminfo(res.stdout)
         structured = HostMemoryOutput(
             mem_total_bytes=info.get("MemTotal"),
@@ -232,11 +287,8 @@ class HostMemoryProbe(Probe):
                 )
             )
 
-        if dimms:
-            dimm_obs: tuple[tuple[str, Any], ...] = (
-                ("host.memory.dimms", dimms),
-                ("host.memory.dimm_count", len(dimms)),
-            )
+        dimm_obs = _dimm_observations(dimms, array)
+        if dimm_obs:
             for dkey, dval in dimm_obs:
                 observations.append(
                     ObservationData(
@@ -258,5 +310,6 @@ __all__ = [
     "HostMemoryOutput",
     "HostMemoryProbe",
     "parse_dmidecode_memory",
+    "parse_dmidecode_memory_array",
     "parse_meminfo",
 ]

@@ -165,7 +165,7 @@ helper discover proxmox --persist   # clusters, nodes, guests
 helper discover k8s --persist       # nodes, workloads
 helper discover unifi --persist     # static DNS, clients
 helper discover omv --persist       # filesystems, disks, shares; stray exports
-helper discover printwarden --persist   # 3D printers: offline, Klipper down, stale telemetry
+helper discover printwarden --persist   # 3D printers: offline, Klipper down, failing, maintenance due
 helper audit
 ```
 

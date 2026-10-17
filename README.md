@@ -150,7 +150,7 @@ helper discover argocd
 helper discover proxmox --persist
 helper discover omv --persist   # OpenMediaVault NAS: filesystems, disks, shares; stray exports → findings
 helper discover hass --persist  # Home Assistant: version, integrations, entity summary
-helper discover printwarden --persist   # print-warden: printers offline, Klipper down, stale telemetry → findings
+helper discover printwarden --persist   # print-warden: printers offline, Klipper down (with cause), stale telemetry, failing, maintenance due → findings
 
 helper view service <name>      # internal/external endpoints + DNS split-brain
 helper view host <name>         # guests, endpoints, findings

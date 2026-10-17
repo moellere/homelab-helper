@@ -8,9 +8,17 @@ shared categorised reconcile, so invariant 1 holds: a category resolves only whe
 - ``printer-offline``: the warden has no Moonraker connection to a printer.
 - ``printer-klippy``: Moonraker is connected but Klipper is not ready (shutdown, error, startup).
 - ``printer-telemetry-stale``: connected, but no update for ``STALE_AFTER_S``.
+- ``printer-failing``: at least ``FAILING_MIN_PRINTS`` prints in the warden's last 7 days and at least
+  ``FAILING_RATE`` of them failed (a person's label wins over how the job ended).
+- ``printer-maintenance``: maintenance items the warden reports as due.
+
+A Klipper finding names the shutdown's classified cause and the warden's hint when the status carries
+``last_shutdown`` (print-warden 0.4+).
 
 Klipper state and telemetry age are only observed for a connected printer, so an offline printer's klippy or stale
-finding stands until the printer is back and seen healthy.
+finding stands until the printer is back and seen healthy. Failures and maintenance come from the warden's ledger,
+so they are observed for every printer whose status carries them, connected or not; an older warden that does not
+report them observes nothing in those categories.
 
 Targets are ``("service", "print-warden")`` and ``("service", "print-warden/<printer>")``. No playbook maps this kind:
 these findings report, they never draft a remediation.
@@ -30,8 +38,17 @@ if TYPE_CHECKING:
 KIND = FindingKind.SERVICE_UNHEALTHY
 SERVICE = "print-warden"
 UNREACHABLE = "printwarden-unreachable"
-PRINTER_CATEGORIES = ("printer-offline", "printer-klippy", "printer-telemetry-stale")
+PRINTER_CATEGORIES = (
+    "printer-offline",
+    "printer-klippy",
+    "printer-telemetry-stale",
+    "printer-failing",
+    "printer-maintenance",
+)
+LEDGER_CATEGORIES = ("printer-failing", "printer-maintenance")
 STALE_AFTER_S = 600
+FAILING_MIN_PRINTS = 3
+FAILING_RATE = 0.5
 
 
 def _printer_target(name: str) -> str:
@@ -57,6 +74,7 @@ def printer_issues(status: dict[str, Any]) -> list[CategoryIssue]:
     for name, p in sorted((status.get("printers") or {}).items()):
         target = _printer_target(name)
         evidence = {"printer": name, "version": status.get("version"), **p}
+        issues += _ledger_issues(name, target, p, evidence)
         if not p.get("connected"):
             issues.append(
                 CategoryIssue(
@@ -75,7 +93,9 @@ def printer_issues(status: dict[str, Any]) -> list[CategoryIssue]:
             )
             continue
         klippy = p.get("klippy")
+        shutdown = p.get("last_shutdown") or None
         if klippy not in ("ready", None):
+            cause = str(shutdown["cause"]).replace("_", " ") if shutdown else None
             issues.append(
                 CategoryIssue(
                     kind=KIND,
@@ -85,10 +105,15 @@ def printer_issues(status: dict[str, Any]) -> list[CategoryIssue]:
                     severity=FindingSeverity.HIGH
                     if klippy == "shutdown"
                     else FindingSeverity.MEDIUM,
-                    title=f"Klipper on {name} is {klippy}",
+                    title=f"Klipper on {name} is {klippy}" + (f": {cause}" if cause else ""),
                     description=(
                         f"Moonraker is reachable but Klipper reports {klippy!r}; the printer cannot print "
-                        "until it is restarted. print-warden's events carry the classified shutdown reason."
+                        "until it is restarted. "
+                        + (
+                            f"print-warden classified the shutdown as {cause}: {shutdown['hint']}."
+                            if shutdown
+                            else "print-warden's events carry the classified shutdown reason."
+                        )
                     ),
                     evidence=evidence,
                 )
@@ -113,6 +138,47 @@ def printer_issues(status: dict[str, Any]) -> list[CategoryIssue]:
     return issues
 
 
+def _ledger_issues(
+    name: str, target: str, p: dict[str, Any], evidence: dict[str, Any]
+) -> list[CategoryIssue]:
+    out: list[CategoryIssue] = []
+    seen = p.get("outcomes_7d") or {}
+    prints, failed = int(seen.get("prints") or 0), int(seen.get("failed") or 0)
+    if prints >= FAILING_MIN_PRINTS and failed / prints >= FAILING_RATE:
+        out.append(
+            CategoryIssue(
+                kind=KIND,
+                category="printer-failing",
+                target_type="service",
+                target_id=target,
+                severity=FindingSeverity.MEDIUM,
+                title=f"{failed} of {prints} prints on {name} failed this week",
+                description=(
+                    f"print-warden recorded {failed} failed prints out of {prints} on {name} in the last 7 days. "
+                    "printer_stats there has the reasons."
+                ),
+                evidence=evidence,
+            )
+        )
+    if due := [str(i) for i in p.get("maintenance_due") or []]:
+        out.append(
+            CategoryIssue(
+                kind=KIND,
+                category="printer-maintenance",
+                target_type="service",
+                target_id=target,
+                severity=FindingSeverity.LOW,
+                title=f"Maintenance due on {name}: {', '.join(due)}",
+                description=(
+                    f"print-warden counts {', '.join(due)} on {name} as due; marking it done there "
+                    "(the phone's Done button or record_maintenance_done) resolves this."
+                ),
+                evidence=evidence,
+            )
+        )
+    return out
+
+
 async def reconcile_printwarden(
     session: AsyncSession,
     url: str,
@@ -134,9 +200,15 @@ async def reconcile_printwarden(
         for name, p in (status.get("printers") or {}).items()
         if p.get("connected")
     }
-    passes = (
+    reporting = {
+        ("service", _printer_target(name))
+        for name, p in (status.get("printers") or {}).items()
+        if "outcomes_7d" in p
+    }
+    passes: tuple[tuple[set[str], set[tuple[str, str]] | None], ...] = (
         ({UNREACHABLE, "printer-offline"}, None),
         ({"printer-klippy", "printer-telemetry-stale"}, connected),
+        (set(LEDGER_CATEGORIES), reporting),
     )
     for observed, targets in passes:
         result = await reconcile_category_findings(

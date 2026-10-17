@@ -1328,6 +1328,12 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   age are observed only for connected printers, so nothing resolves for want
   of a reading. `run_discovery("printwarden")`, a `SOURCES` entry (the daemon
   picks it up), `helper discover printwarden [--persist] [--dry-run]`.
+  - [x] Warden events (10/17/2026, print-warden 0.4 status fields): a Klipper
+    finding names the shutdown's classified cause and hint (`last_shutdown`);
+    `printer-failing` (≥3 prints in 7 days, ≥50% failed, labels winning) and
+    `printer-maintenance` (`maintenance_due`) come from the warden's ledger, so
+    they are observed for every printer that reports them, connected or not,
+    and never for an older warden that does not.
   - [ ] Follow-ups: a removed printer's klippy/stale finding stays open until
     resolved by hand; live validation against the operator's warden.
 

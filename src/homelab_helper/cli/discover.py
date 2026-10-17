@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -32,6 +33,7 @@ from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
+from homelab_helper.adapters.printwarden import PrintWardenAdapter, PrintWardenAPIError
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli._probe_sync import sync_probes_sync
@@ -60,6 +62,7 @@ from homelab_helper.engine.lab_replay import (
     parse_lab_fixture,
     resolve_lab_fixture,
 )
+from homelab_helper.engine.printwarden import reconcile_printwarden
 from homelab_helper.engine.reconciler import Reconciler, ReconcileResult
 from homelab_helper.engine.runner import ProbeRunner
 from homelab_helper.engine.scan_import import (
@@ -159,6 +162,11 @@ def _load_omv_adapter() -> OpenMediaVaultAdapter:
 def _load_hass_adapter() -> HomeAssistantAdapter:
     """Factory (monkeypatched in tests) — builds a Home Assistant adapter from env."""
     return HomeAssistantAdapter.from_env()
+
+
+def _load_printwarden_adapter() -> PrintWardenAdapter:
+    """Factory (monkeypatched in tests)."""
+    return PrintWardenAdapter.from_env()
 
 
 def _load_mikrotik_adapter() -> MikroTikAdapter:
@@ -1202,6 +1210,74 @@ def discover_omv(
             f"{len(result.resolved)} resolved"
         )
         return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+@discover_app.command(name="printwarden")
+def discover_printwarden(
+    persist: bool = typer.Option(
+        False,
+        "--persist",
+        help="Reconcile service-unhealthy findings for the warden and its printers.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --persist, preview + roll back."),
+) -> None:
+    """Read print-warden's status (read-only): reachability, Moonraker, Klipper, telemetry age."""
+
+    async def _go() -> int:
+        adapter = _load_printwarden_adapter()
+        status: dict[str, Any] | None = None
+        error: str | None = None
+        try:
+            status = await adapter.status()
+        except (httpx.HTTPError, PrintWardenAPIError) as exc:
+            error = str(exc) or type(exc).__name__
+        finally:
+            await adapter.aclose()
+
+        if status is None:
+            console.print(f"[red]print-warden[/red] {adapter.url} unreachable: {error}")
+        else:
+            printers = status.get("printers") or {}
+            console.print(
+                f"[cyan]print-warden[/cyan] {status.get('version') or '?'} at {adapter.url}: "
+                f"{len(printers)} printer(s)"
+            )
+            table = Table(title="printers")
+            for col in ("printer", "connected", "klippy", "state", "progress", "queue", "updated"):
+                table.add_column(col, no_wrap=True)
+            for name, p in sorted(printers.items()):
+                age = p.get("last_update_s_ago")
+                pct = p.get("progress_pct")
+                table.add_row(
+                    name,
+                    str(p.get("connected")),
+                    str(p.get("klippy") or "-"),
+                    str(p.get("state") or "-"),
+                    "-" if pct is None else f"{pct}%",
+                    str(p.get("queue") or 0),
+                    "-" if age is None else f"{age:.0f}s ago",
+                )
+            console.print(table)
+
+        if persist:
+            engine = make_engine(_database_url())
+            try:
+                async with session_scope(make_sessionmaker(engine)) as session:
+                    issues, f = await reconcile_printwarden(session, adapter.url, status, error)
+                    for issue in issues:
+                        console.print(f"[yellow]{issue.severity.value}[/yellow] {issue.title}")
+                    console.print(
+                        f"[green]service-unhealthy[/green]: {f['opened']} opened, "
+                        f"{f['reopened']} reopened, {f['updated']} updated, {f['resolved']} resolved"
+                    )
+                    if dry_run:
+                        await session.rollback()
+                        console.print("[dim](dry-run, rolled back)[/dim]")
+            finally:
+                await engine.dispose()
+        return 0 if status is not None else 1
 
     raise typer.Exit(code=asyncio.run(_go()))
 

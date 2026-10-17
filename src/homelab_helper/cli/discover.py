@@ -525,6 +525,7 @@ def discover_proxmox(
                         f"({'new' if vr.cluster_created else 'updated'}), "
                         f"VMs {len(vr.vms_created)} created / {len(vr.vms_updated)} updated / "
                         f"{len(vr.vms_unchanged)} unchanged"
+                        + (f" / {len(vr.vms_removed)} removed" if vr.vms_removed else "")
                         + (
                             f" / {len(vr.vms_adopted)} adopted from the legacy (standalone) row"
                             if vr.vms_adopted
@@ -532,6 +533,14 @@ def discover_proxmox(
                         )
                         + (" (legacy row removed)" if vr.legacy_cluster_removed else "")
                     )
+                    if vr.vms_removed:
+                        console.print(
+                            "  removed (no longer in Proxmox): " + ", ".join(vr.vms_removed)
+                        )
+                    if vr.removal_skipped:
+                        console.print(
+                            f"  [yellow]kept absent guests[/yellow]: {vr.removal_skipped}"
+                        )
                 finally:
                     await engine.dispose()
 

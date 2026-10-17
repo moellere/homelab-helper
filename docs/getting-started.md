@@ -168,8 +168,10 @@ helper audit
 ```
 
 Each verb is a read; `--persist` writes what it read into the harness
-database, and `--dry-run` previews that. From here the planners have something
-to reason about:
+database, and `--dry-run` previews that. A persisted Proxmox run also drops
+guests that no longer exist in Proxmox and names them in its output. It keeps
+them, and says why, when the cluster reports itself non-quorate or the listing
+comes back empty. From here the planners have something to reason about:
 
 ```bash
 helper plan placement immich        # where would this workload go, and why not elsewhere

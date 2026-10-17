@@ -109,6 +109,46 @@ async def test_reconcile_updates_changed_vm(sessionmaker) -> None:
         assert web.status == "stopped"
 
 
+async def test_guest_deleted_at_source_is_removed(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await reconcile_proxmox_cluster(s, _STATUS, _VMS, when=_WHEN)
+    async with session_scope(sessionmaker) as s:
+        result = await reconcile_proxmox_cluster(s, _STATUS, [_VMS[0]], when=_WHEN)
+
+    assert result.vms_removed == ["ct"]
+    assert result.vms_unchanged == ["web"]
+    assert result.removal_skipped is None
+    async with sessionmaker() as s:
+        names = [v.name for v in (await s.execute(select(VirtualMachine))).scalars()]
+    assert names == ["web"]
+
+
+async def test_non_quorate_listing_keeps_absent_guests(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await reconcile_proxmox_cluster(s, _STATUS, _VMS, when=_WHEN)
+    async with session_scope(sessionmaker) as s:
+        result = await reconcile_proxmox_cluster(
+            s, dict(_STATUS, quorate=False), [_VMS[0]], when=_WHEN
+        )
+
+    assert result.vms_removed == []
+    assert result.removal_skipped == "cluster is not quorate"
+    async with sessionmaker() as s:
+        assert len((await s.execute(select(VirtualMachine))).scalars().all()) == 2
+
+
+async def test_empty_listing_keeps_absent_guests(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await reconcile_proxmox_cluster(s, _STATUS, _VMS, when=_WHEN)
+    async with session_scope(sessionmaker) as s:
+        result = await reconcile_proxmox_cluster(s, _STATUS, [], when=_WHEN)
+
+    assert result.vms_removed == []
+    assert result.removal_skipped == "listing returned no guests"
+    async with sessionmaker() as s:
+        assert len((await s.execute(select(VirtualMachine))).scalars().all()) == 2
+
+
 def _standalone(node: str) -> dict[str, Any]:
     # Single-node installs have no `type == cluster` row, so the name is None.
     return {"name": None, "quorate": None, "node_count": 1, "nodes": [{"name": node}]}
@@ -141,6 +181,23 @@ async def test_standalone_nodes_do_not_collide_on_vmid(sessionmaker) -> None:
         ("pve-b", 101): "docker-a",
         ("pve-b", 102): "photos",
     }
+
+
+async def test_removal_stays_inside_the_listed_cluster(sessionmaker) -> None:
+    """Each standalone node is its own VMID namespace: pve-b's listing says
+    nothing about pve-a's guests, so a guest gone from pve-b removes only that."""
+    node_a = [_vm(101, "nas", "pve-a")]
+    node_b = [_vm(101, "docker-a", "pve-b"), _vm(102, "photos", "pve-b")]
+    async with session_scope(sessionmaker) as s:
+        await reconcile_proxmox_cluster(s, _standalone("pve-a"), node_a, when=_WHEN)
+        await reconcile_proxmox_cluster(s, _standalone("pve-b"), node_b, when=_WHEN)
+    async with session_scope(sessionmaker) as s:
+        result = await reconcile_proxmox_cluster(s, _standalone("pve-b"), [node_b[1]], when=_WHEN)
+
+    assert result.vms_removed == ["docker-a"]
+    async with sessionmaker() as s:
+        names = sorted(v.name for v in (await s.execute(select(VirtualMachine))).scalars())
+    assert names == ["nas", "photos"]
 
 
 def test_standalone_cluster_name_falls_back_without_a_single_node() -> None:

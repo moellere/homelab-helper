@@ -1306,6 +1306,21 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
     workloads recorded on the first run; none declares CPU limits or requests,
     so `cpu` is cores used against `cpus = 1.0`.
 
+## Integrations
+
+- [x] **print-warden source** (10/17/2026) — `adapters/printwarden.py` reads
+  print-warden's unauthenticated `GET /healthz` (status api 1; any other api
+  is refused rather than misread). `engine/printwarden.py` turns it into
+  `SERVICE_UNHEALTHY` findings (new kind, migration `c6e1a9f4d2b7`; no
+  playbook maps it) in four categories: `printwarden-unreachable`,
+  `printer-offline`, `printer-klippy`, `printer-telemetry-stale` (> 10 min).
+  Unreachable observes only its own category, and Klipper state and telemetry
+  age are observed only for connected printers, so nothing resolves for want
+  of a reading. `run_discovery("printwarden")`, a `SOURCES` entry (the daemon
+  picks it up), `helper discover printwarden [--persist] [--dry-run]`.
+  - [ ] Follow-ups: a removed printer's klippy/stale finding stays open until
+    resolved by hand; live validation against the operator's warden.
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but

@@ -137,6 +137,7 @@ printing the value.
 | Argo CD | `ARGOCD_URL`, `ARGOCD_API_TOKEN`, `ARGOCD_VERIFY_SSL` |
 | OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
 | Home Assistant | `HASS_URL`, `HASS_TOKEN` (a long-lived token; a non-admin user is enough) |
+| print-warden | `PRINTWARDEN_URL`, `PRINTWARDEN_VERIFY_SSL` (its open `/healthz`; no credentials) |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` — the inventory you own; see [NetBox custom fields](netbox-custom-fields.md) |
 | Chat | `LLM_PRIVACY` (`strict-local` / `prefer-local` / `open`), `OLLAMA_URL`, `OLLAMA_MODEL`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
 
@@ -164,6 +165,7 @@ helper discover proxmox --persist   # clusters, nodes, guests
 helper discover k8s --persist       # nodes, workloads
 helper discover unifi --persist     # static DNS, clients
 helper discover omv --persist       # filesystems, disks, shares; stray exports
+helper discover printwarden --persist   # 3D printers: offline, Klipper down, stale telemetry
 helper audit
 ```
 

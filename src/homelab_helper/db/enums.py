@@ -213,6 +213,8 @@ class FindingKind(StrEnum):
     ANOMALY = "anomaly"
     """A guest or node outside its own usage baseline (Phase 10.3)."""
     SERVICE_SUGGESTION = "service-suggestion"
+    SERVICE_UNHEALTHY = "service-unhealthy"
+    """A monitored service reports itself or what it manages unhealthy (print-warden). No playbook acts on it."""
     STORAGE_EFFICIENCY = "storage-efficiency"
     """A Kubernetes workload has fewer ready replicas than it asks for, with its rollout settled (Phase 7)."""
     STORAGE_PROVENANCE_DELTA = "storage-provenance-delta"

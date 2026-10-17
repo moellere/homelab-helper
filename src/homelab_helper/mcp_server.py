@@ -42,6 +42,7 @@ from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from mcp.server.mcpserver import MCPServer
 from sqlalchemy import func, or_, select
 
@@ -53,6 +54,7 @@ from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter, KubeError, workload_usage
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
+from homelab_helper.adapters.printwarden import PrintWardenAdapter, PrintWardenAPIError
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfigError
 from homelab_helper.adapters.talos import TalosAdapter, TalosError
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig, UniFiConfigError
@@ -146,6 +148,7 @@ from homelab_helper.engine.notify import notifier_from_env
 from homelab_helper.engine.placement import network_verdict
 from homelab_helper.engine.placement import recommend_placement as _recommend_placement
 from homelab_helper.engine.playbooks import PLAYBOOKS, run_playbooks
+from homelab_helper.engine.printwarden import reconcile_printwarden
 from homelab_helper.engine.rebalance import plan_rebalance as _plan_rebalance
 from homelab_helper.engine.reconfigure import analyze_surplus as _analyze_surplus
 from homelab_helper.engine.retire import is_retired, retired_host_ids
@@ -584,6 +587,11 @@ def _load_mikrotik_adapter() -> MikroTikAdapter:
     return MikroTikAdapter.from_env()
 
 
+def _load_printwarden_adapter() -> PrintWardenAdapter:
+    """Factory (monkeypatched in tests)."""
+    return PrintWardenAdapter.from_env()
+
+
 async def _discover_one_unifi(session: AsyncSession, adapter: UniFiAdapter) -> dict[str, Any]:
     cfg = adapter.config
     try:
@@ -731,6 +739,28 @@ async def _discover_omv(session: AsyncSession) -> dict[str, Any]:
             "resolved": len(result.resolved),
         },
         "note": "stray-export findings persisted; other OMV facts are read-only summaries",
+    }
+
+
+async def _discover_printwarden(session: AsyncSession) -> dict[str, Any]:
+    adapter = _load_printwarden_adapter()
+    status: dict[str, Any] | None = None
+    error: str | None = None
+    try:
+        status = await adapter.status()
+    except (httpx.HTTPError, PrintWardenAPIError) as exc:
+        error = redact(str(exc)) or type(exc).__name__
+    finally:
+        await adapter.aclose()
+    issues, counts = await reconcile_printwarden(session, adapter.url, status, error)
+    return {
+        "reachable": status is not None,
+        "version": (status or {}).get("version"),
+        "printers": sorted((status or {}).get("printers") or {}),
+        "issues": [
+            {"category": i.category, "severity": i.severity.value, "title": i.title} for i in issues
+        ],
+        "findings": counts,
     }
 
 
@@ -1210,6 +1240,7 @@ _DISCOVERERS = {
     "omv": _discover_omv,
     "hass": _discover_hass,
     "mikrotik": _discover_mikrotik,
+    "printwarden": _discover_printwarden,
     "versions": _discover_versions,
     "backups": _discover_backups,
     "usage": _discover_usage,
@@ -1224,6 +1255,7 @@ _DISCOVERERS = {
 async def run_discovery(source: str) -> dict[str, Any]:
     """Run a management-plane discovery and persist into the harness DB.
     Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass, mikrotik,
+    printwarden (print-warden reachability and printer health from its /healthz),
     versions (Phase 8.1: package lag, mixed versions, OS end of life, HA updates),
     backups (Phase 8.2: uncovered/stale/unverified guests, orphaned backups, capacity),
     usage (Phase 8.3: hourly/daily usage rollups from Proxmox RRD, backfilled, pruned),

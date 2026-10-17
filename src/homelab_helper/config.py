@@ -214,6 +214,12 @@ SOURCES: tuple[SourceConfig, ...] = (
         note="Home Assistant; a long-lived access token",
     ),
     SourceConfig(
+        name="printwarden",
+        required=("HOMELAB_HELPER_PRINTWARDEN_URL",),
+        optional=("HOMELAB_HELPER_PRINTWARDEN_VERIFY_SSL",),
+        note="print-warden's open /healthz; no credentials",
+    ),
+    SourceConfig(
         name="k8s",
         required=(),
         optional=("HOMELAB_HELPER_KUBECONFIG", "HOMELAB_HELPER_KUBE_CONTEXT"),

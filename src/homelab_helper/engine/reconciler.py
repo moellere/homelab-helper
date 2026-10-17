@@ -255,9 +255,13 @@ _CPU_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.cpu.interesting_flags", capability="cpu_interesting_flags"),
 )
 
-# Memory: RAM/swap/hugepage totals from /proc/meminfo. DIMM-level inventory
-# arrives via host.memory.dimms (handled by the lineage path below), not here.
+# Memory: RAM/swap/hugepage totals from /proc/meminfo, plus the board's slot
+# count, free slots and stated maximum. DIMM-level inventory arrives via
+# host.memory.dimms (handled by the lineage path below), not here.
 _MEMORY_RULES: tuple[HostProjectionRule, ...] = (
+    HostProjectionRule(key="host.memory.dimm_slots", capability="dimm_slots"),
+    HostProjectionRule(key="host.memory.dimm_slots_free", capability="dimm_slots_free"),
+    HostProjectionRule(key="host.memory.memory_max_bytes", capability="memory_max_bytes"),
     HostProjectionRule(key="host.memory.mem_total_bytes", capability="mem_total_bytes"),
     HostProjectionRule(key="host.memory.mem_available_bytes", capability="mem_available_bytes"),
     HostProjectionRule(key="host.memory.mem_free_bytes", capability="mem_free_bytes"),

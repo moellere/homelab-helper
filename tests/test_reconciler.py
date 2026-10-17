@@ -503,6 +503,31 @@ async def test_memory_totals_project_into_capabilities(sessionmaker) -> None:
     }
 
 
+async def test_board_slots_project_into_capabilities(sessionmaker) -> None:
+    """#106: the DIMM planners read slots and the stated maximum from capabilities."""
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id, probe_name="host.memory")
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.memory.dimm_slots": 2,
+                "host.memory.dimm_slots_free": 0,
+                "host.memory.memory_max_bytes": 32 * 1024**3,
+            },
+        )
+
+        result = await Reconciler().reconcile_host(s, host.id)
+
+    assert result.changes == {
+        "capabilities.dimm_slots": 2,
+        "capabilities.dimm_slots_free": 0,
+        "capabilities.memory_max_bytes": 32 * 1024**3,
+    }
+
+
 async def test_memory_zero_values_round_trip_cleanly(sessionmaker) -> None:
     """Hugepage counts are routinely 0 — that's a real value, not 'no observation'.
 

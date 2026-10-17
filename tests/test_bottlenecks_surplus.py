@@ -468,3 +468,38 @@ def test_cli_bottlenecks_narrate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert result.exit_code == 0
     assert "Reweight first" in result.stdout
     assert "option:" in router.messages[0][0]["content"]
+
+
+async def _surplus_with_busy_board(sessionmaker, dimm_gb: list[int], free: int) -> str:
+    """The node2 case with busy's slots observed (#106); returns node2's DIMM option."""
+    async with session_scope(sessionmaker) as s:
+        await _seed_surplus(s)
+        busy = (await s.execute(select(Host).where(Host.hostname == "busy"))).scalar_one()
+        busy.capabilities = {
+            **(busy.capabilities or {}),
+            "dimm_slots": len(dimm_gb) + free,
+            "dimm_slots_free": free,
+        }
+        for n, gb in enumerate(dimm_gb):
+            await _add_dimm(s, busy, f"B-{n}", gb)
+    async with sessionmaker() as s:
+        hit = (await analyze_surplus(s)).hits[0]
+    return next(o for o in hit.options if "DIMM" in o)
+
+
+async def test_surplus_dimms_are_not_offered_to_a_full_board(sessionmaker) -> None:
+    """busy's two slots hold 16 GiB each: node2's 8 GiB spares cannot grow it."""
+    option = await _surplus_with_busy_board(sessionmaker, [16, 16], free=0)
+    assert option.startswith("spare DIMM(s) (8 GiB + 8 GiB) would not grow any loaded host")
+    assert "busy: no free slot" in option
+
+
+async def test_surplus_dimms_fill_free_slots_then_stop(sessionmaker) -> None:
+    """One free slot takes one spare; the second could only replace an equal 8 GiB."""
+    option = await _surplus_with_busy_board(sessionmaker, [16], free=1)
+    assert option.startswith("move spare DIMM(s) (8 GiB) to busy, +8 GiB there")
+
+
+async def test_surplus_dimm_swap_counts_only_the_gain(sessionmaker) -> None:
+    option = await _surplus_with_busy_board(sessionmaker, [4, 16], free=0)
+    assert option.startswith("move spare DIMM(s) (8 GiB in place of its 4 GiB) to busy, +4 GiB")

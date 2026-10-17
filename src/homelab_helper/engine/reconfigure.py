@@ -30,6 +30,7 @@ from sqlalchemy import select
 from homelab_helper.db.enums import PartKind
 from homelab_helper.db.models import Host, PhysicalPart, Placement, VirtualMachine
 from homelab_helper.engine.cluster_nodes import NOT_A_NODE, cluster_nodes
+from homelab_helper.engine.dimm_fit import Board
 from homelab_helper.engine.retire import retired_host_ids
 
 if TYPE_CHECKING:
@@ -111,7 +112,7 @@ async def analyze_surplus(session: AsyncSession) -> SurplusReport:
         capacity = max(int(mem) - _OS_RESERVE_BYTES, 1)
         return committed.get(h.id, 0) / capacity
 
-    loaded = [h.hostname for h in hosts if (ratio_of(h) or 0) >= _LOADED_MIN_RATIO]
+    loaded = [h for h in hosts if (ratio_of(h) or 0) >= _LOADED_MIN_RATIO]
 
     hits: list[SurplusHit] = []
     for host in hosts:
@@ -139,11 +140,7 @@ async def analyze_surplus(session: AsyncSession) -> SurplusReport:
                 f"spin the stopped VM(s) back up ({names}) — the capacity is already provisioned"
             )
         if spare:
-            sizes = " + ".join(f"{d / _GB:.0f} GiB" for d in spare)
-            target = loaded[0] if loaded else "a more-loaded host"
-            hit.options.append(
-                f"move spare DIMM(s) ({sizes}) to {target} (see `helper plan rebalance`)"
-            )
+            hit.options.append(_dimm_move_option(spare, loaded, dimms))
         hit.options.append(
             "accept: declare the surplus a deliberate capacity reserve — mark the "
             "stopped VMs stopped-by-design (OperationalIntent) so this stops resurfacing"
@@ -151,6 +148,42 @@ async def analyze_surplus(session: AsyncSession) -> SurplusReport:
         hits.append(hit)
     report.hits = hits
     return report
+
+
+def _dimm_move_option(spare: list[int], loaded: list[Host], dimms: dict[Any, list[int]]) -> str:
+    """The first loaded host the spare DIMM(s) would actually grow, as an option line."""
+    sizes = " + ".join(f"{d / _GB:.0f} GiB" for d in spare)
+    if not loaded:
+        return f"move spare DIMM(s) ({sizes}) to a more-loaded host (see `helper plan rebalance`)"
+    for target in loaded:
+        board = Board.of(target.capabilities, dimms.get(target.id, []))
+        parts: list[str] = []
+        gained = 0
+        warnings: list[str] = []
+        for size in spare:
+            fit = board.fit(size)
+            if fit is None:
+                continue
+            board = board.after(size, fit)
+            gained += fit.net_bytes
+            warnings.extend(fit.warnings)
+            part = f"{size / _GB:.0f} GiB"
+            if fit.replaces_bytes is not None:
+                part += f" in place of its {fit.replaces_bytes / _GB:.0f} GiB"
+            parts.append(part)
+        if parts:
+            line = (
+                f"move spare DIMM(s) ({' + '.join(parts)}) to {target.hostname}, "
+                f"+{gained / _GB:.0f} GiB there (see `helper plan rebalance`)"
+            )
+            if warnings:
+                line += " — " + "; ".join(dict.fromkeys(warnings))
+            return line
+    names = ", ".join(h.hostname for h in loaded)
+    return (
+        f"spare DIMM(s) ({sizes}) would not grow any loaded host ({names}: no free slot, "
+        "and nothing smaller to replace) — keep them as a reserve"
+    )
 
 
 __all__ = ["SurplusHit", "SurplusReport", "analyze_surplus"]

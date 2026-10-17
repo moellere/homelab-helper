@@ -382,3 +382,80 @@ def test_cli_host_intent_records_shows_and_clears(
     assert "cleared" in r.output
     r = runner.invoke(app, ["host", "intent", "node9", "--clear", "--no-new-guests"])
     assert r.exit_code == 2
+
+
+async def _board_on_node1(s, dimm_gb: list[int], *, free: int, max_gb: int | None = None) -> None:
+    """Give node1 observed slots and installed DIMMs (#106)."""
+    node1 = (await s.execute(select(Host).where(Host.hostname == "node1"))).scalar_one()
+    caps = dict(node1.capabilities or {})
+    caps["dimm_slots"] = len(dimm_gb) + free
+    caps["dimm_slots_free"] = free
+    if max_gb is not None:
+        caps["memory_max_bytes"] = max_gb * _GB
+    node1.capabilities = caps
+    for n, size in enumerate(dimm_gb):
+        part = PhysicalPart(
+            kind=PartKind.DIMM, model=f"N1-{n}", serial=f"N1-{n}", capacity_bytes=size * _GB
+        )
+        s.add(part)
+        await s.flush()
+        s.add(Placement(part_id=part.id, host_id=node1.id, slot=f"N1{n}"))
+
+
+async def _plans(sessionmaker, dimm_gb: list[int], **board) -> dict:
+    async with session_scope(sessionmaker) as s:
+        await _seed_imbalanced(s)
+        await _board_on_node1(s, dimm_gb, **board)
+    async with sessionmaker() as s:
+        report = await plan_rebalance(s, topology=None)
+    return {p.name: p for p in report.plans}
+
+
+async def test_dimm_move_into_a_full_board_with_nothing_smaller_is_not_proposed(
+    sessionmaker,
+) -> None:
+    """node1's two slots hold 16 GiB each: an 8 GiB DIMM can only make it smaller."""
+    plans = await _plans(sessionmaker, [16, 16], free=0)
+    assert "one-dimm-move" not in plans
+
+
+async def test_dimm_move_into_a_full_board_becomes_a_swap_for_the_difference(
+    sessionmaker,
+) -> None:
+    plans = await _plans(sessionmaker, [4, 16], free=0)
+    step = plans["one-dimm-move"].steps[0]
+    assert step.description.startswith("swap DIMM")
+    assert "4 GiB DIMM, which goes to node2" in step.description
+    assert "shift 4 GiB" in plans["one-dimm-move"].summary
+    assert "node2 permanently loses 4 GiB" in plans["one-dimm-move"].tradeoffs
+
+
+async def test_dimm_move_into_a_free_slot_is_a_plain_move(sessionmaker) -> None:
+    plans = await _plans(sessionmaker, [16], free=1)
+    plan = plans["one-dimm-move"]
+    assert plan.steps[0].description.startswith("move DIMM")
+    assert not any("slot count" in t for t in plan.tradeoffs)
+
+
+async def test_unobserved_slots_keep_the_additive_answer_and_say_so(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await _seed_imbalanced(s)
+    async with sessionmaker() as s:
+        report = await plan_rebalance(s, topology=None)
+    plan = next(p for p in report.plans if p.name == "one-dimm-move")
+    assert "slot count not observed: assumes a free slot" in plan.tradeoffs
+
+
+async def test_purchase_for_a_full_board_replaces_and_counts_only_the_gain(sessionmaker) -> None:
+    """8 and 16 GiB add nothing over a 16 GiB DIMM; 32 GiB adds 16 and relieves node1."""
+    plans = await _plans(sessionmaker, [16, 16], free=0)
+    buy = plans["one-part-purchase"]
+    assert "buy one 32 GiB DIMM to replace the 16 GiB in node1" in buy.steps[0].description
+    assert buy.summary.startswith("add 16 GiB to node1")
+
+
+async def test_stated_board_maximum_warns_but_does_not_block(sessionmaker) -> None:
+    plans = await _plans(sessionmaker, [16], free=1, max_gb=16)
+    buy = plans["one-part-purchase"]
+    assert "buy and install one 8 GiB DIMM in node1" in buy.steps[0].description
+    assert any("exceeds the board's stated 16 GiB maximum" in t for t in buy.tradeoffs)

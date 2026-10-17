@@ -20,6 +20,9 @@ finding stands until the printer is back and seen healthy. Failures and maintena
 so they are observed for every printer whose status carries them, connected or not; an older warden that does not
 report them observes nothing in those categories.
 
+The status lists every printer the warden has, so a printer that has left it is observed gone: its open findings in
+every printer category resolve on the next successful read.
+
 Targets are ``("service", "print-warden")`` and ``("service", "print-warden/<printer>")``. No playbook maps this kind:
 these findings report, they never draft a remediation.
 """
@@ -29,7 +32,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from homelab_helper.db.enums import FindingKind, FindingSeverity
+from sqlalchemy import select
+
+from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus
+from homelab_helper.db.models import ReconciliationFinding
 from homelab_helper.engine.category_findings import CategoryIssue, reconcile_category_findings
 
 if TYPE_CHECKING:
@@ -179,6 +185,26 @@ def _ledger_issues(
     return out
 
 
+async def _removed_printers(session: AsyncSession, names: set[str]) -> set[tuple[str, str]]:
+    """Targets of open printer findings whose printer the warden no longer lists."""
+    rows = (
+        await session.execute(
+            select(ReconciliationFinding.affected).where(
+                ReconciliationFinding.kind == KIND,
+                ReconciliationFinding.status.in_((FindingStatus.OPEN, FindingStatus.ACKNOWLEDGED)),
+            )
+        )
+    ).scalars()
+    prefix = f"{SERVICE}/"
+    return {
+        ("service", tid)
+        for affected in rows
+        for a in affected or []
+        if (tid := str(a.get("target_id") or "")).startswith(prefix)
+        and tid.removeprefix(prefix) not in names
+    }
+
+
 async def reconcile_printwarden(
     session: AsyncSession,
     url: str,
@@ -205,6 +231,9 @@ async def reconcile_printwarden(
         for name, p in (status.get("printers") or {}).items()
         if "outcomes_7d" in p
     }
+    gone = await _removed_printers(session, set(status.get("printers") or {}))
+    connected |= gone
+    reporting |= gone
     passes: tuple[tuple[set[str], set[tuple[str, str]] | None], ...] = (
         ({UNREACHABLE, "printer-offline"}, None),
         ({"printer-klippy", "printer-telemetry-stale"}, connected),

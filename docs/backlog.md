@@ -1334,8 +1334,10 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
     `printer-maintenance` (`maintenance_due`) come from the warden's ledger, so
     they are observed for every printer that reports them, connected or not,
     and never for an older warden that does not.
-  - [ ] Follow-ups: a removed printer's klippy/stale finding stays open until
-    resolved by hand; live validation against the operator's warden.
+  - [x] A printer removed from the warden (10/17/2026): the status lists every
+    printer, so one that has left it is observed gone and its open findings
+    resolve on the next successful read.
+  - [ ] Follow-ups: live validation against the operator's warden.
 
 ## Not tracked here
 

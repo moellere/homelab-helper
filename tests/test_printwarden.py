@@ -311,3 +311,22 @@ async def test_ledger_findings_resolve_only_when_reported(
         )
         assert counts["resolved"] == 1
         assert await _open(s) == {"Printer sw1 is offline to print-warden"}
+
+
+async def test_a_printer_removed_from_the_warden_resolves(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_scope(sessionmaker) as s:
+        await reconcile_printwarden(
+            s,
+            URL,
+            _status(old=_printer(klippy="shutdown", maintenance_due=["nozzle"], outcomes_7d={})),
+        )
+        assert len(await _open(s)) == 2
+    async with session_scope(sessionmaker) as s:
+        await reconcile_printwarden(s, URL, None, "timeout")
+        assert "Klipper on old is shutdown" in await _open(s), "unreachable observes nothing"
+    async with session_scope(sessionmaker) as s:
+        _, counts = await reconcile_printwarden(s, URL, _status(new=_printer()))
+        assert counts["resolved"] == 3
+        assert await _open(s) == set()

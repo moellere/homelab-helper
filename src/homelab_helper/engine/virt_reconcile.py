@@ -6,6 +6,12 @@ standalone node is its own VMID namespace), each VM by ``(cluster, vmid)``. A gu
 resolved to a ``Host`` row when that node is already known, so VM placement can
 be reasoned about against hardware. Discovery is read-only at the source (L1):
 this only writes harness rows from what the adapter already read.
+
+A successful cluster-wide listing is authoritative for that cluster's VMID
+namespace, so a stored guest whose VMID is absent from it was deleted at the
+source and its row is removed. Two listings are not trusted for that: one from a
+cluster reporting itself non-quorate, and an empty one while rows exist (a token
+without ``VM.Audit`` lists nothing). Both keep every row and say why.
 """
 
 from __future__ import annotations
@@ -47,6 +53,9 @@ class VirtReconcileResult:
     vms_updated: list[str] = field(default_factory=list)
     vms_unchanged: list[str] = field(default_factory=list)
     vms_adopted: list[str] = field(default_factory=list)
+    vms_removed: list[str] = field(default_factory=list)
+    removal_skipped: str | None = None
+    """Why absent guests were kept this run, when the listing was not trusted."""
     legacy_cluster_removed: bool = False
 
 
@@ -255,8 +264,34 @@ async def reconcile_proxmox_cluster(
         row.attributes = attrs  # JSON column: reassign, never mutate in place
         result.vms_updated.append(fields["name"])
 
+    await _remove_absent(session, cluster_status, vms, existing, result)
     await session.flush()
     return result
+
+
+async def _remove_absent(
+    session: AsyncSession,
+    cluster_status: dict[str, Any],
+    vms: list[dict[str, Any]],
+    existing: dict[int, VirtualMachine],
+    result: VirtReconcileResult,
+) -> None:
+    """Drop rows whose VMID the listing no longer has, unless the listing is untrusted."""
+    listed = {vm.get("vmid") for vm in vms}
+    absent = sorted(
+        (row for vmid, row in existing.items() if vmid not in listed), key=lambda r: r.vmid or 0
+    )
+    if not absent:
+        return
+    if cluster_status.get("quorate") is False:
+        result.removal_skipped = "cluster is not quorate"
+        return
+    if not vms:
+        result.removal_skipped = "listing returned no guests"
+        return
+    for row in absent:
+        result.vms_removed.append(row.name)
+        await session.delete(row)
 
 
 __all__ = [

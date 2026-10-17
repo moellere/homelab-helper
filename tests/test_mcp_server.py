@@ -410,6 +410,38 @@ async def test_run_discovery_unifi_persists(
     assert any(s["name"] == "nas" for s in services)
 
 
+class _FakeProxmox:
+    def __init__(self, vms: list[dict]) -> None:
+        self._vms = vms
+
+    async def cluster_status(self) -> dict:
+        return {"name": "lab", "quorate": True, "node_count": 1, "nodes": [{"name": "node0"}]}
+
+    async def list_vms(self) -> list[dict]:
+        return self._vms
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_run_discovery_proxmox_reports_removed_guests(
+    seeded_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The seeded "ha" (vmid 105) is gone from Proxmox; one other guest remains.
+    other = {"vmid": 200, "name": "web", "node": "node0", "type": "qemu", "status": "running"}
+    monkeypatch.setattr(mcp_srv, "_load_proxmox_adapter", lambda: _FakeProxmox([other]))
+
+    async def _no_storage(adapter: object, vms: list[dict]) -> None:
+        return None
+
+    monkeypatch.setattr(mcp_srv, "annotate_guest_storage", _no_storage)
+    out = await run_discovery("proxmox")
+    assert out["vms"]["created"] == 1
+    assert out["vms"]["removed"] == 1
+    assert out["vms"]["removed_names"] == ["ha"]
+    assert out["vms"]["removal_skipped"] is None
+
+
 async def test_run_discovery_unknown_source(seeded_db: str) -> None:
     out = await run_discovery("fridge")
     assert "error" in out

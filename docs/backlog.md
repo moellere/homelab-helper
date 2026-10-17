@@ -168,7 +168,9 @@ The rest of Phase 1, and all of Phase 6, is below.
   writes the cluster + guests to the harness DB; `--netbox-sync` proposes them
   into an existing NetBox cluster via `sync_cluster_vms`; `helper audit` now
   reports cluster/VM counts. Live-validated: cluster + 20 guests persisted,
-  re-run idempotent.
+  re-run idempotent. A guest deleted in Proxmox has its row removed on the next
+  persisted run (#105). Removal is scoped to the listed cluster, and nothing is
+  removed when the cluster reports itself non-quorate or the listing is empty.
 - [x] **Talos adapter** (`adapters/talos.py` + `probes/talos/host.py` +
   `helper discover talos`) — `talosctl`-subprocess adapter (injectable runner
   for tests) + a `talos.host` probe that pulls COSI resources (`nodename`,

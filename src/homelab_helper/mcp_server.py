@@ -50,6 +50,7 @@ from homelab_helper import __version__
 from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfigError
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
+from homelab_helper.adapters.jetkvm import JetKVMAdapter
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter, KubeError, workload_usage
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
@@ -121,6 +122,12 @@ from homelab_helper.engine.executor import (
 from homelab_helper.engine.hass_import import import_home_assistant
 from homelab_helper.engine.host_probe import HostProbeRequest, UnknownProbeError
 from homelab_helper.engine.host_probe import probe_host as _probe_host
+from homelab_helper.engine.jetkvm import (
+    attached_from_env,
+    capture_console,
+    observe_jetkvm,
+    snapshot_dir,
+)
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.k8s_workloads import reconcile_workload_health
 from homelab_helper.engine.maintenance import (
@@ -587,6 +594,11 @@ def _load_mikrotik_adapter() -> MikroTikAdapter:
     return MikroTikAdapter.from_env()
 
 
+def _load_jetkvm_adapter() -> JetKVMAdapter:
+    """Factory (monkeypatched in tests)."""
+    return JetKVMAdapter.from_env()
+
+
 def _load_printwarden_adapter() -> PrintWardenAdapter:
     """Factory (monkeypatched in tests)."""
     return PrintWardenAdapter.from_env()
@@ -740,6 +752,21 @@ async def _discover_omv(session: AsyncSession) -> dict[str, Any]:
         },
         "note": "stray-export findings persisted; other OMV facts are read-only summaries",
     }
+
+
+async def _discover_jetkvm(session: AsyncSession) -> dict[str, Any]:
+    adapter = _load_jetkvm_adapter()
+    attached_to, port = attached_from_env()
+    try:
+        run = await observe_jetkvm(
+            session, adapter, attached_to=attached_to, port=port, snapshot_dir=snapshot_dir()
+        )
+    finally:
+        await adapter.aclose()
+    out = run.as_dict()
+    if out["error"]:
+        out["error"] = redact(out["error"])
+    return out
 
 
 async def _discover_printwarden(session: AsyncSession) -> dict[str, Any]:
@@ -1241,6 +1268,7 @@ _DISCOVERERS = {
     "hass": _discover_hass,
     "mikrotik": _discover_mikrotik,
     "printwarden": _discover_printwarden,
+    "jetkvm": _discover_jetkvm,
     "versions": _discover_versions,
     "backups": _discover_backups,
     "usage": _discover_usage,
@@ -1256,6 +1284,8 @@ async def run_discovery(source: str) -> dict[str, Any]:
     """Run a management-plane discovery and persist into the harness DB.
     Source must be one of: unifi, cloudflare, argocd, proxmox, k8s, omv, hass, mikrotik,
     printwarden (print-warden reachability and printer health from its /healthz),
+    jetkvm (the KVM's status and its attached host's reachability, with a console
+    snapshot as evidence when that host is down),
     versions (Phase 8.1: package lag, mixed versions, OS end of life, HA updates),
     backups (Phase 8.2: uncovered/stale/unverified guests, orphaned backups, capacity),
     usage (Phase 8.3: hourly/daily usage rollups from Proxmox RRD, backfilled, pruned),
@@ -1276,6 +1306,28 @@ async def run_discovery(source: str) -> dict[str, Any]:
         return {"source": source, "error": redact(str(exc))}
     finally:
         await engine.dispose()
+
+
+@server.tool()
+async def console_snapshot() -> dict[str, Any]:
+    """Capture one frame of the console behind the configured JetKVM (read-only).
+
+    Saves a PNG under the data directory and returns its path and the host
+    the KVM is declared attached to (HOMELAB_HELPER_JETKVM_ATTACHED_TO). Nothing is
+    typed or clicked: the KVM is only watched. Needs the optional jetkvm extra; a
+    failure is returned as ``{"error": ...}``."""
+    try:
+        adapter = _load_jetkvm_adapter()
+    except Exception as exc:
+        return {"error": redact(str(exc))}
+    attached_to, _ = attached_from_env()
+    try:
+        path, err = await capture_console(adapter, snapshot_dir(), attached_to or "console")
+    finally:
+        await adapter.aclose()
+    if path is None:
+        return {"error": redact(err or "snapshot failed"), "attached_to": attached_to}
+    return {"path": path, "attached_to": attached_to}
 
 
 @server.tool()

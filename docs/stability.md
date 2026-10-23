@@ -71,7 +71,7 @@ every option.
 | `db` | `init` `migrate` `reset` `status` |
 | `diff` | `git-vs-cluster` |
 | `digest` | `history` `send` `show` |
-| `discover` | `anomalies` `argocd` `backups` `capacity` `cloudflare` `hass` `host` `import` `k8s` `mikrotik` `network` `omv` `printwarden` `proxmox` `replay` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
+| `discover` | `anomalies` `argocd` `backups` `capacity` `cloudflare` `hass` `host` `import` `jetkvm` `k8s` `mikrotik` `network` `omv` `printwarden` `proxmox` `replay` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
 | `exec` | `accept` `list` `receipts` `reject` `rollback` `run` |
 | `findings` | `ack` `list` `narrate` `resolve` `show` `suppress` |
 | `host` | `intent` `retire` `show` |
@@ -107,7 +107,7 @@ stable; results are JSON objects that only ever gain keys.
 |---|---|
 | Inventory | `list_hosts` `get_host` `list_services` `get_service` `audit_summary` `config_status` |
 | Findings | `list_findings` `get_finding` `ack_finding` `resolve_finding` `suppress_finding` |
-| Discovery | `run_discovery` `probe_host` `probe_talos` `retire_host` |
+| Discovery | `run_discovery` `probe_host` `probe_talos` `retire_host` `console_snapshot` |
 | Planning | `list_workloads` `recommend_placement` `plan_rebalance` `analyze_bottlenecks` `analyze_surplus` `network_path` `rightsizing` `usage_summary` |
 | Proposals | `propose_action` `propose_workload_action` `propose_argocd_sync` `propose_dns_record` `propose_talos_upgrade` `propose_k8s_upgrade` `draft_remediations` `list_proposals` `get_proposal` `pending_actions` `execute_proposal` |
 | Maintenance | `plan_maintenance_run` `plan_talos_maintenance_run` `list_maintenance_runs` `execute_maintenance_run` |

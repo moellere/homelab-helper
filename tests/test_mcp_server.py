@@ -77,6 +77,7 @@ from tests.test_homeassistant_adapter import CONFIG_PAYLOAD, SERVICES_PAYLOAD, S
 runner = CliRunner()
 
 EXPECTED_TOOLS = {
+    "console_snapshot",
     "list_hosts",
     "get_host",
     "list_findings",

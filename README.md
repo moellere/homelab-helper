@@ -151,6 +151,7 @@ helper discover proxmox --persist
 helper discover omv --persist   # OpenMediaVault NAS: filesystems, disks, shares; stray exports → findings
 helper discover hass --persist  # Home Assistant: version, integrations, entity summary
 helper discover printwarden --persist   # print-warden: printers offline, Klipper down (with cause), stale telemetry, failing, maintenance due → findings
+helper discover jetkvm --persist        # JetKVM: the attached host unreachable → finding with a console snapshot (read-only)
 
 helper view service <name>      # internal/external endpoints + DNS split-brain
 helper view host <name>         # guests, endpoints, findings

@@ -1338,6 +1338,22 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
     printer, so one that has left it is observed gone and its open findings
     resolve on the next successful read.
   - [ ] Follow-ups: live validation against the operator's warden.
+- [x] **JetKVM source** (10/23/2026) — `adapters/jetkvm.py` reads a JetKVM:
+  the open `GET /device/status`, `GET /device` after a local-password login,
+  and `console_snapshot()`, one PNG frame taken as a receive-only WebRTC viewer
+  (optional extra `jetkvm`: aiortc + pillow). No input, power or media method,
+  by design: console input is unbounded remote code execution. `engine/jetkvm.py`
+  records a `jetkvm` Service (with the operator-declared `attached_to` host) and
+  reconciles two categories: `jetkvm-unreachable` (`SERVICE_UNHEALTHY`, observed
+  every run) and `host-unreachable` (new kind `HOST_UNREACHABLE`, migration
+  `e7d3b1a9c5f2`, observed only when the attached host resolved to an address
+  and only for that host). A down host's finding carries the snapshot path; a
+  failed snapshot is absent evidence and never raises. `run_discovery("jetkvm")`,
+  a `SOURCES` entry (the daemon picks it up), the MCP `console_snapshot` tool,
+  `helper discover jetkvm [--persist] [--dry-run] [--snapshot PATH]`.
+  - [ ] Follow-ups: live validation; a `host-unreachable` finding for a host the
+    KVM was moved away from stays open until resolved by hand (only the
+    currently attached host is observed).
 
 ## Not tracked here
 

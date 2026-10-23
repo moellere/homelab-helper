@@ -138,8 +138,32 @@ printing the value.
 | OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
 | Home Assistant | `HASS_URL`, `HASS_TOKEN` (a long-lived token; a non-admin user is enough) |
 | print-warden | `PRINTWARDEN_URL`, `PRINTWARDEN_VERIFY_SSL` (its open `/healthz`; no credentials) |
+| JetKVM | `JETKVM_URL`, `JETKVM_PASSWORD` (its local password; omit in no-password mode), `JETKVM_VERIFY_SSL`, `JETKVM_ATTACHED_TO` (the harness hostname it is plugged into), `JETKVM_ATTACHED_PORT` (default 22) — see [Console evidence](#console-evidence-from-a-jetkvm) |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` — the inventory you own; see [NetBox custom fields](netbox-custom-fields.md) |
 | Chat | `LLM_PRIVACY` (`strict-local` / `prefer-local` / `open`), `OLLAMA_URL`, `OLLAMA_MODEL`; BYOK: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
+
+#### Console evidence from a JetKVM
+
+A [JetKVM](https://jetkvm.com) on a machine's HDMI and USB lets the harness see
+that machine's screen. `helper discover jetkvm --persist` reads the device,
+records it as a `jetkvm` service with the host you declared in `JETKVM_ATTACHED_TO`,
+and tries a TCP connect to that host. When the host does not answer, a
+`host-unreachable` finding opens and carries a console snapshot (a PNG under the
+data directory, the newest five kept per host), so a kernel panic, a stuck boot
+menu or a BIOS prompt is on the finding rather than behind a trip to the rack.
+The finding resolves once the host answers again; a run that could not check the
+host leaves it alone. `helper discover jetkvm --snapshot console.png` and the MCP
+`console_snapshot` tool take a frame on demand.
+
+Snapshots join the device's WebRTC stream as a viewer, which needs the optional
+extra: `uv tool install 'homelab-helper[jetkvm]'`. Without it everything else
+works and the finding says no snapshot was taken.
+
+The harness only watches the console. There is no keyboard, mouse, power or
+virtual-media control, and there will not be one: typing into a console can run
+anything on the machine, which is unbounded remote code execution, and the
+[trust gradient](trust-gradient.md) only authorizes node actions whose effect is
+fixed in code.
 
 ### 2. Probe a host over SSH
 
@@ -166,6 +190,7 @@ helper discover k8s --persist       # nodes, workloads
 helper discover unifi --persist     # static DNS, clients
 helper discover omv --persist       # filesystems, disks, shares; stray exports
 helper discover printwarden --persist   # 3D printers: offline, Klipper down, failing, maintenance due
+helper discover jetkvm --persist        # the KVM, and its attached host: unreachable → finding + console
 helper audit
 ```
 

@@ -83,6 +83,7 @@ class DiscoverySource(StrEnum):
     NETBOX = "netbox"
     HOME_ASSISTANT = "home-assistant"
     MIKROTIK = "mikrotik"
+    JETKVM = "jetkvm"
 
 
 class Confidence(StrEnum):
@@ -215,6 +216,8 @@ class FindingKind(StrEnum):
     SERVICE_SUGGESTION = "service-suggestion"
     SERVICE_UNHEALTHY = "service-unhealthy"
     """A monitored service reports itself or what it manages unhealthy (print-warden). No playbook acts on it."""
+    HOST_UNREACHABLE = "host-unreachable"
+    """A host behind a KVM does not answer on the network; the finding carries its console snapshot. Report only."""
     STORAGE_EFFICIENCY = "storage-efficiency"
     """A Kubernetes workload has fewer ready replicas than it asks for, with its rollout settled (Phase 7)."""
     STORAGE_PROVENANCE_DELTA = "storage-provenance-delta"

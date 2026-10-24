@@ -29,6 +29,7 @@ from homelab_helper.adapters.homeassistant import (
     integrations_of_interest,
     summarize_states,
 )
+from homelab_helper.adapters.jetkvm import JetKVMAdapter, JetKVMAPIError
 from homelab_helper.adapters.kubernetes import K8sAdapter
 from homelab_helper.adapters.mikrotik import MikroTikAdapter
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
@@ -53,6 +54,13 @@ from homelab_helper.engine.host_probe import (
     UnknownProbeError,
     probe_host,
     select_host_probes,
+)
+from homelab_helper.engine.jetkvm import (
+    JetKVMRun,
+    attached_from_env,
+    observe_jetkvm,
+    snapshot_dir,
+    snapshot_to_file,
 )
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
 from homelab_helper.engine.k8s_workloads import reconcile_workload_health
@@ -162,6 +170,11 @@ def _load_omv_adapter() -> OpenMediaVaultAdapter:
 def _load_hass_adapter() -> HomeAssistantAdapter:
     """Factory (monkeypatched in tests) — builds a Home Assistant adapter from env."""
     return HomeAssistantAdapter.from_env()
+
+
+def _load_jetkvm_adapter() -> JetKVMAdapter:
+    """Factory (monkeypatched in tests)."""
+    return JetKVMAdapter.from_env()
 
 
 def _load_printwarden_adapter() -> PrintWardenAdapter:
@@ -1278,6 +1291,91 @@ def discover_printwarden(
             finally:
                 await engine.dispose()
         return 0 if status is not None else 1
+
+    raise typer.Exit(code=asyncio.run(_go()))
+
+
+def _print_jetkvm_run(run: JetKVMRun) -> bool:
+    """Report one observe pass; False when the KVM itself could not be read."""
+    if run.status is None:
+        console.print(f"[red]jetkvm[/red] {run.url} unreachable: {run.error}")
+    if run.attached is None:
+        console.print(
+            f"attached host {run.attached_to or '(not declared)'}: not checked "
+            "(declare HOMELAB_HELPER_JETKVM_ATTACHED_TO as a known host with an address)"
+        )
+    else:
+        a = run.attached
+        state = "reachable" if a.reachable else "[red]unreachable[/red]"
+        console.print(f"attached host {a.hostname} {a.address}:{a.port} {state}")
+        if a.snapshot:
+            console.print(f"console evidence: {a.snapshot}")
+    for issue in run.issues:
+        console.print(f"[yellow]{issue.severity.value}[/yellow] {issue.title}")
+    f = run.findings
+    console.print(
+        f"[green]findings[/green]: {f['opened']} opened, {f['reopened']} reopened, "
+        f"{f['updated']} updated, {f['resolved']} resolved"
+    )
+    return run.status is not None
+
+
+@discover_app.command(name="jetkvm")
+def discover_jetkvm(
+    persist: bool = typer.Option(
+        False,
+        "--persist",
+        help="Upsert the jetkvm Service; check the attached host and reconcile its findings.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --persist, preview + roll back."),
+    snapshot: Path | None = typer.Option(
+        None, "--snapshot", help="Also save one console frame (PNG) here. Needs the jetkvm extra."
+    ),
+) -> None:
+    """Read a JetKVM (read-only): device status, and the attached host's reachability + console."""
+
+    async def _go() -> int:
+        adapter = _load_jetkvm_adapter()
+        attached_to, port = attached_from_env()
+        code = 0
+        try:
+            if snapshot is not None:
+                if err := await snapshot_to_file(adapter, snapshot):
+                    console.print(f"[red]console snapshot failed:[/red] {err}")
+                    code = 1
+                else:
+                    console.print(f"console snapshot saved to {snapshot}")
+            if not persist:
+                try:
+                    status = await adapter.status()
+                except (httpx.HTTPError, JetKVMAPIError) as exc:
+                    console.print(f"[red]jetkvm[/red] {adapter.url} unreachable: {exc}")
+                    return 1
+                console.print(
+                    f"[cyan]jetkvm[/cyan] at {adapter.url}: set up={status.get('isSetup')}, "
+                    f"attached to {attached_to or '(not declared)'}"
+                )
+                return code
+            engine = make_engine(_database_url())
+            try:
+                async with session_scope(make_sessionmaker(engine)) as session:
+                    run = await observe_jetkvm(
+                        session,
+                        adapter,
+                        attached_to=attached_to,
+                        port=port,
+                        snapshot_dir=snapshot_dir(),
+                    )
+                    if not _print_jetkvm_run(run):
+                        code = 1
+                    if dry_run:
+                        await session.rollback()
+                        console.print("[dim](dry-run, rolled back)[/dim]")
+            finally:
+                await engine.dispose()
+        finally:
+            await adapter.aclose()
+        return code
 
     raise typer.Exit(code=asyncio.run(_go()))
 

@@ -220,6 +220,18 @@ SOURCES: tuple[SourceConfig, ...] = (
         note="print-warden's open /healthz; no credentials",
     ),
     SourceConfig(
+        name="jetkvm",
+        required=("HOMELAB_HELPER_JETKVM_URL",),
+        optional=(
+            "HOMELAB_HELPER_JETKVM_PASSWORD",
+            "HOMELAB_HELPER_JETKVM_VERIFY_SSL",
+            "HOMELAB_HELPER_JETKVM_ATTACHED_TO",
+            "HOMELAB_HELPER_JETKVM_ATTACHED_PORT",
+        ),
+        secret=frozenset({"HOMELAB_HELPER_JETKVM_PASSWORD"}),
+        note="JetKVM; read-only, console snapshots need the jetkvm extra",
+    ),
+    SourceConfig(
         name="k8s",
         required=(),
         optional=("HOMELAB_HELPER_KUBECONFIG", "HOMELAB_HELPER_KUBE_CONTEXT"),

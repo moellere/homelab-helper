@@ -41,6 +41,7 @@ dependencies = [
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.29.0"]
 keyring = ["keyring>=25.0"]
+jetkvm = ["aiortc>=1.9", "pillow>=10"]
 
 [project.scripts]
 helper = "homelab_helper.cli.main:app"

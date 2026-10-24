@@ -169,8 +169,10 @@ a claim the manifest carries.
 
 The database is reachable, not readable:
 
-- `helper db init` (and `helper db migrate`) bring **any earlier release's
-  database** to the current schema. The Alembic chain ships in the wheel.
+- `helper db init` brings **any earlier release's database** to the current
+  schema. The Alembic chain ships in the wheel. (`helper db migrate` is the
+  developer command that *generates* a new migration; it never upgrades a
+  database.)
 - Migrations are **forward-only**. No release ships a downgrade; before
   upgrading, back up the SQLite file (or your Postgres database) if you may
   want to go back.

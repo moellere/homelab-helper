@@ -50,6 +50,19 @@ def test_config_shows_defaults_when_env_unset(monkeypatch) -> None:
     assert "not configured" in result.stdout  # sources without credentials
 
 
+def test_config_status_masks_the_database_password(monkeypatch) -> None:
+    _clear(monkeypatch)
+    monkeypatch.setenv(
+        "HOMELAB_HELPER_DATABASE_URL", "postgresql+asyncpg://helper:s3cret@db.example.lan/helper"
+    )
+    reported = config_status()["database_url"]
+    assert "s3cret" not in reported
+    assert reported == "postgresql+asyncpg://helper:***@db.example.lan/helper"
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0
+    assert "s3cret" not in result.stdout
+
+
 def test_config_reports_env_overrides_without_leaking_secrets(monkeypatch) -> None:
     _clear(monkeypatch)
     monkeypatch.setenv("HOMELAB_HELPER_NETBOX_URL", "https://netbox.example.lan")

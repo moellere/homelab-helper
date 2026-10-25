@@ -50,11 +50,6 @@ class TableCopy:
     rows: int
 
 
-def display_url(url: str) -> str:
-    """The URL with any password masked, for printing."""
-    return make_url(url).render_as_string(hide_password=True)
-
-
 async def _revision(engine: AsyncEngine) -> str | None:
     try:
         async with engine.connect() as conn:

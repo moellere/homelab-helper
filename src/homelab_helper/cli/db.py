@@ -21,9 +21,11 @@ from sqlalchemy.engine.url import make_url
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.config import database_url as _database_url
 from homelab_helper.config import ensure_database_parent
+from homelab_helper.db.copy import CopyError, copy_database, display_url
 from homelab_helper.db.migrate import alembic_config, enable_alembic_logging
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.trust import seed_domains
+from homelab_helper.secrets import resolve_secret
 
 if TYPE_CHECKING:
     from alembic.config import Config
@@ -145,6 +147,45 @@ def db_reset(
     console.print("[cyan]upgrade head...[/cyan]")
     command.upgrade(cfg, "head")
     console.print("[green]done[/green]")
+
+
+@db_app.command(name="copy")
+def db_copy(
+    to: str = typer.Option(
+        ...,
+        "--to",
+        help="Target database URL, or a secret reference (env:VAR, file:path#key, keyring:svc/user).",
+    ),
+    source: str | None = typer.Option(
+        None,
+        "--from",
+        help="Source database URL (default: the configured database).",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Replace the target's rows without prompting."
+    ),
+) -> None:
+    """Copy every row into another database at the same revision (e.g. SQLite to Postgres)."""
+    source_url = (resolve_secret(source) or source) if source else _database_url()
+    target_url = resolve_secret(to) or to
+    console.print(f"[dim]from:[/dim] {display_url(source_url)}")
+    console.print(f"[dim]to:  [/dim] {display_url(target_url)}")
+    if not yes:
+        confirmed = typer.confirm(
+            "This REPLACES every row in the target database. Continue?", default=False
+        )
+        if not confirmed:
+            console.print("[yellow]aborted[/yellow]")
+            raise typer.Exit(code=1)
+    try:
+        copied = asyncio.run(copy_database(source_url, target_url))
+    except CopyError as exc:
+        console.print(f"[red]refused:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    for entry in copied:
+        console.print(f"  {entry.table:<32} {entry.rows:>10}")
+    total = sum(entry.rows for entry in copied)
+    console.print(f"[green]done[/green]: {total} rows in {len(copied)} tables, counts verified")
 
 
 @db_app.command(name="migrate")

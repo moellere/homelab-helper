@@ -68,7 +68,7 @@ every option.
 | `chat` | — |
 | `config` | `init` |
 | `daemon` | `run` |
-| `db` | `init` `migrate` `reset` `status` |
+| `db` | `copy` `init` `migrate` `reset` `status` |
 | `diff` | `git-vs-cluster` |
 | `digest` | `history` `send` `show` |
 | `discover` | `anomalies` `argocd` `backups` `capacity` `cloudflare` `hass` `host` `import` `jetkvm` `k8s` `mikrotik` `network` `omv` `printwarden` `proxmox` `replay` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
@@ -173,6 +173,10 @@ The database is reachable, not readable:
   schema. The Alembic chain ships in the wheel. (`helper db migrate` is the
   developer command that *generates* a new migration; it never upgrades a
   database.)
+- `helper db copy --to <url>` moves a deployment to another database, such
+  as SQLite to Postgres. Both must be at the same revision (`helper db init`
+  each first); the target's rows are replaced in one transaction and the
+  copy rolls back unless every table's row count matches.
 - Migrations are **forward-only**. No release ships a downgrade; before
   upgrading, back up the SQLite file (or your Postgres database) if you may
   want to go back.

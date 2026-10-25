@@ -20,8 +20,8 @@ from sqlalchemy.engine.url import make_url
 
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.config import database_url as _database_url
-from homelab_helper.config import ensure_database_parent
-from homelab_helper.db.copy import CopyError, copy_database, display_url
+from homelab_helper.config import display_url, ensure_database_parent
+from homelab_helper.db.copy import CopyError, copy_database
 from homelab_helper.db.migrate import alembic_config, enable_alembic_logging
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.trust import seed_domains
@@ -98,7 +98,7 @@ def db_status() -> None:
     """Show the database's current Alembic revision and table count."""
     cfg = _alembic_config()
     url = _database_url()
-    console.print(f"[dim]database URL:[/dim] {url}")
+    console.print(f"[dim]database URL:[/dim] {display_url(url)}")
 
     console.print("[dim]current revision:[/dim]")
     command.current(cfg, verbose=False)

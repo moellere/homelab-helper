@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
+from sqlalchemy.engine.url import make_url
 
 from homelab_helper.llm import backends_from_env, privacy_from_env
 from homelab_helper.secrets import reference_scheme
@@ -74,6 +75,11 @@ def sqlite_path(url: str) -> Path | None:
     if not rest or rest == ":memory:":
         return None
     return Path(rest)
+
+
+def display_url(url: str) -> str:
+    """A database URL with its password masked, for anything that prints or reports it."""
+    return make_url(url).render_as_string(hide_password=True)
 
 
 def ensure_database_parent(url: str) -> None:
@@ -357,7 +363,7 @@ def config_status() -> dict[str, Any]:
     db_exists: bool | None = None if db_path is None else db_path.exists()
     sources = [source_status(s) for s in SOURCES]
     return {
-        "database_url": url,
+        "database_url": display_url(url),
         "database_exists": db_exists,
         "data_dir": str(data_dir()),
         "config_dir": str(config_dir()),
@@ -381,6 +387,7 @@ __all__ = [
     "data_dir",
     "database_url",
     "default_database_url",
+    "display_url",
     "ensure_database_parent",
     "find_env_file",
     "llm_status",

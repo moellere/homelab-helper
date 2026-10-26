@@ -43,6 +43,14 @@ Versions follow PEP 440. Pre-releases (`a`, `b`, `rc`) are marked as
 pre-releases on GitHub; `pip`/`uv` won't install them unless asked
 (`uv tool install --prerelease allow homelab-helper`, or pin the version).
 
+## Container image
+
+`.github/workflows/image.yml` builds the `Dockerfile` on every push to `main` (tags `main` and
+`sha-<short>`) and on every `v*` tag (tags `<version>` and `latest`), and publishes it as
+`ghcr.io/moellere/homelab-helper`. The image is the CLI with the `postgres` extra plus `kubectl` and
+`talosctl`, running as a non-root user with `HOMELAB_HELPER_HOME=/home/helper`; it exists for the
+cluster's CronJobs (discovery, the daemon) and needs no PyPI release of its own.
+
 ## What users get
 
 ```bash

@@ -1355,6 +1355,18 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
     KVM was moved away from stays open until resolved by hand (only the
     currently attached host is observed).
 
+- [x] **Diagram of the lab** (10/26/2026) — `engine/diagram.py` builds a graph
+  from persisted rows: hosts grouped by site (topology file, else the /24),
+  clusters by the placement-target rule, guests inside their node, service
+  endpoints that resolve to a host (internal solid, external dashed), open
+  findings per host. `render_mermaid`, `render_html` (mermaid.js pinned from a
+  CDN), `to_dict`. `helper diagram [--format mermaid|html|json] [--out] [--site]
+  [--no-services] [--no-guests]` and the MCP `diagram` tool. Reads only.
+  - [ ] Follow-ups: a `Cluster` row for the Kubernetes cluster (`discover k8s`
+    matches nodes to hosts but records no cluster, so they draw without one);
+    workloads once they are persisted; a `--since` that greys hosts not verified
+    recently.
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but

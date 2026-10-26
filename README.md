@@ -155,6 +155,7 @@ helper discover jetkvm --persist        # JetKVM: the attached host unreachable 
 
 helper view service <name>      # internal/external endpoints + DNS split-brain
 helper view host <name>         # guests, endpoints, findings
+helper diagram --format html -o lab.html   # what runs where: sites, hosts, clusters, guests, services
 helper diff git-vs-cluster --persist   # Argo CD drift → DRIFT_CANDIDATE findings
 helper audit
 helper findings list

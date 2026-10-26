@@ -55,6 +55,7 @@ nav:
       - Live validation runbook: live-validation.md
       - Stability and deprecation: stability.md
       - Status endpoint and dashboards: status-endpoint.md
+      - Diagram of the lab: diagram.md
       - NetBox custom fields: netbox-custom-fields.md
       - NetBox modelling walkthrough: netbox-modeling-walkthrough.md
   - Extending:

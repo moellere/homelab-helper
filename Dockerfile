@@ -4,7 +4,7 @@
 FROM python:3.12-slim-bookworm AS build
 RUN pip install --no-cache-dir uv
 WORKDIR /src
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 RUN uv pip install --system --no-cache ".[postgres]"
 

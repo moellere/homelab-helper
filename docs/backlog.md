@@ -1362,10 +1362,17 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   findings per host. `render_mermaid`, `render_html` (mermaid.js pinned from a
   CDN), `to_dict`. `helper diagram [--format mermaid|html|json] [--out] [--site]
   [--no-services] [--no-guests]` and the MCP `diagram` tool. Reads only.
-  - [ ] Follow-ups: a `Cluster` row for the Kubernetes cluster (`discover k8s`
-    matches nodes to hosts but records no cluster, so they draw without one);
-    workloads once they are persisted; a `--since` that greys hosts not verified
-    recently.
+  - [ ] Follow-ups: workloads once they are persisted; a `--since` that greys
+    hosts not verified recently.
+- [ ] **Kubernetes cluster row** — `discover k8s` matches nodes to `Host` rows
+  but records no `Cluster`, so the cluster-node rule (`engine/cluster_nodes.py`),
+  the placement planners and `helper diagram` see the Talos nodes as standalone
+  hosts. Persist one `Cluster(kind="kubernetes")` per kubeconfig context from
+  `engine/k8s_import.py` with `attributes.nodes` (the node names, as the Proxmox
+  import does), `node_count`, and the control-plane / worker split in
+  `attributes.roles`; reconcile it on every run so a drained or removed node
+  leaves the list. Then the diagram draws a `node of` edge from each node, and
+  rebalance/surplus stop treating workers as unplaced capacity.
 
 ## Not tracked here
 

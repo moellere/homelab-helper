@@ -30,6 +30,7 @@ from homelab_helper.cli.chat import chat_app, onboard_app
 from homelab_helper.cli.config import config_app
 from homelab_helper.cli.daemon import daemon_app
 from homelab_helper.cli.db import db_app
+from homelab_helper.cli.diagram import diagram_app
 from homelab_helper.cli.diff import diff_app
 from homelab_helper.cli.digest import digest_app
 from homelab_helper.cli.discover import discover_app
@@ -82,6 +83,7 @@ app.add_typer(part_app)
 app.add_typer(schedule_app)
 app.add_typer(service_app)
 app.add_typer(status_app)
+app.add_typer(diagram_app)
 
 console = Console()
 

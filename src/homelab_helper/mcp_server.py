@@ -84,6 +84,7 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine import diagram as diagram_engine
 from homelab_helper.engine.approval import (
     ApprovalConfigError,
     ApprovalError,
@@ -543,6 +544,30 @@ async def audit_summary() -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ discovery
+
+
+@server.tool()
+async def diagram(site: str | None = None, format: str = "mermaid") -> dict[str, Any]:
+    """The inventory as a diagram: sites, hosts (with guests and open findings),
+    clusters, and the services that resolve to each host. A read over the harness
+    DB; nothing is contacted. `format` is "mermaid" (default, paste into docs or a
+    page), "html" (a standalone page) or "json" (the graph). `site` keeps one site."""
+    if format not in ("mermaid", "html", "json"):
+        return {"error": "format must be mermaid, html or json"}
+    engine = make_engine(database_url())
+    try:
+        async with make_sessionmaker(engine)() as session:
+            model = await diagram_engine.build_model(session, site=site)
+    finally:
+        await engine.dispose()
+    if format == "json":
+        return {"format": format, "graph": diagram_engine.to_dict(model), "stats": model.stats}
+    text = (
+        diagram_engine.render_html(model)
+        if format == "html"
+        else diagram_engine.render_mermaid(model)
+    )
+    return {"format": format, "text": text, "stats": model.stats}
 
 
 def _load_unifi_adapter() -> UniFiAdapter:

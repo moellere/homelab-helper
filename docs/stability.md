@@ -69,6 +69,7 @@ every option.
 | `config` | `init` |
 | `daemon` | `run` |
 | `db` | `copy` `init` `migrate` `reset` `status` |
+| `diagram` | — |
 | `diff` | `git-vs-cluster` |
 | `digest` | `history` `send` `show` |
 | `discover` | `anomalies` `argocd` `backups` `capacity` `cloudflare` `hass` `host` `import` `jetkvm` `k8s` `mikrotik` `network` `omv` `printwarden` `proxmox` `replay` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
@@ -105,7 +106,7 @@ stable; results are JSON objects that only ever gain keys.
 
 | Area | Tools |
 |---|---|
-| Inventory | `list_hosts` `get_host` `list_services` `get_service` `audit_summary` `config_status` |
+| Inventory | `list_hosts` `get_host` `list_services` `get_service` `audit_summary` `config_status` `diagram` |
 | Findings | `list_findings` `get_finding` `ack_finding` `resolve_finding` `suppress_finding` |
 | Discovery | `run_discovery` `probe_host` `probe_talos` `retire_host` `console_snapshot` |
 | Planning | `list_workloads` `recommend_placement` `plan_rebalance` `analyze_bottlenecks` `analyze_surplus` `network_path` `rightsizing` `usage_summary` |

@@ -85,6 +85,7 @@ EXPECTED_TOOLS = {
     "list_services",
     "get_service",
     "audit_summary",
+    "diagram",
     "run_discovery",
     "rightsizing",
     "usage_summary",

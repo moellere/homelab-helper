@@ -889,3 +889,14 @@ async def test_run_discovery_mikrotik_persists(
     assert out["resolver"] == "mikrotik:wyola"
     assert out["endpoints"]["created"] == 2
     assert out["stray_config"]["opened"] == 1
+
+
+async def test_run_discovery_error_names_the_exception_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(session: object) -> dict[str, object]:
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setitem(mcp_srv._DISCOVERERS, "usage", _boom)
+    result = await mcp_srv.run_discovery("usage")
+    assert result["error"] == "ReadTimeout"

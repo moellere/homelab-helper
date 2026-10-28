@@ -1304,6 +1304,11 @@ _DISCOVERERS = {
 }
 
 
+def _describe(exc: BaseException) -> str:
+    """str(exc), or the class name when that is empty (httpx timeouts are)."""
+    return str(exc) or type(exc).__name__
+
+
 @server.tool()
 async def run_discovery(source: str) -> dict[str, Any]:
     """Run a management-plane discovery and persist into the harness DB.
@@ -1328,7 +1333,7 @@ async def run_discovery(source: str) -> dict[str, Any]:
             result = await discoverer(session)
         return {"source": source, **result}
     except Exception as exc:  # surface adapter/config errors as data, not protocol faults
-        return {"source": source, "error": redact(str(exc))}
+        return {"source": source, "error": redact(_describe(exc))}
     finally:
         await engine.dispose()
 

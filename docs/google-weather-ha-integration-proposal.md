@@ -3,12 +3,20 @@
 Status: proposal (L1 — nothing here changes harness behavior; this is a review
 and recommendation for the Home Assistant side of the homelab).
 
-Execution status (2026-08-10): Track A is in flight — library PR submitted as
-[tronikos/python-google-weather-api#11](https://github.com/tronikos/python-google-weather-api/pull/11);
-the matching core change is pushed to the
-[`google-weather-minute-forecast` branch of moellere/ha-core](https://github.com/moellere/ha-core/tree/google-weather-minute-forecast),
-to be opened as a draft `home-assistant/core` PR once the library releases.
-Track B lives in [moellere/hass-google-weather-maps](https://github.com/moellere/hass-google-weather-maps).
+Execution status (2026-11-01): Track A has landed. The library PR
+[tronikos/python-google-weather-api#11](https://github.com/tronikos/python-google-weather-api/pull/11)
+merged and shipped as 0.0.8, and the core PR
+[home-assistant/core#181699](https://github.com/home-assistant/core/pull/181699)
+merged into `dev` on 2026-11-01, so the `google_weather.get_minute_forecast`
+action ships with the next Home Assistant release. Review changed the response
+from the raw API shape to snake_case keys with Home Assistant-side values
+(`precipitation_type`, `intensity`), amounts in the weather entity's
+precipitation unit, and `snowfall_amount` as liquid-water equivalent; the
+default-disabled nowcast sensors from A3 were not part of it. The docs PR
+[home-assistant/home-assistant.io#48135](https://github.com/home-assistant/home-assistant.io/pull/48135)
+is still open and needs the final response shape. Track B shipped as the HACS
+integration [moellere/hass-google-weather-maps](https://github.com/moellere/hass-google-weather-maps)
+(v0.2.0, precipitation overlay composited on a Google basemap).
 
 Google enabled two new Weather API endpoints on Google Maps Platform:
 

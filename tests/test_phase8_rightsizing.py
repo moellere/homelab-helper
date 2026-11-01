@@ -17,7 +17,9 @@ from homelab_helper.engine.rightsizing import MIN_SAMPLES, guest_issues, reconci
 from homelab_helper.engine.usage import HOUR, Bucket, record_usage
 
 G = 1024**3
-NOW = datetime(2026, 10, 6, tzinfo=UTC)
+# Anchored to the real clock: plan_rebalance(basis="usage") looks back 30 days from
+# now, so a fixed date would age out of the window and starve it of samples.
+NOW = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
 
 @pytest.fixture

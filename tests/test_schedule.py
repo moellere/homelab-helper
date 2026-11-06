@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -30,6 +29,7 @@ from homelab_helper.db.models import (
     Host,
     ReconciliationFinding,
 )
+from homelab_helper.db.models import Probe as ProbeRow
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine import schedule as mod
 from homelab_helper.engine.schedule import (
@@ -263,12 +263,25 @@ async def _record_runs(s: Any, outcomes: list[bool], *, hostname: str = "nas0") 
         host = Host(hostname=hostname)
         s.add(host)
         await s.flush()
+    probe = (
+        await s.execute(select(ProbeRow).where(ProbeRow.name == "host.fast"))
+    ).scalar_one_or_none()
+    if probe is None:
+        probe = ProbeRow(
+            name="host.fast",
+            version="0.1.0",
+            module_path="t",
+            required_privilege=PrivilegeLevel.USER,
+            produces_keys=[],
+        )
+        s.add(probe)
+        await s.flush()
     now = datetime.now(UTC)
     for age, ok in enumerate(reversed(outcomes)):
         s.add(
             DiscoveryRun(
                 host_id=host.id,
-                probe_id=uuid.uuid4(),
+                probe_id=probe.id,
                 privilege_level=PrivilegeLevel.USER,
                 started_at=now - timedelta(minutes=age),
                 success=ok,

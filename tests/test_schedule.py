@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -16,11 +17,19 @@ from homelab_helper.db.base import Base
 from homelab_helper.db.enums import (
     AssertionKind,
     AssertionScope,
+    FindingKind,
     FindingSeverity,
+    FindingStatus,
     IntentTargetType,
     PrivilegeLevel,
 )
-from homelab_helper.db.models import AssertionRun, ConfigurationAssertion, DiscoveryRun, Host
+from homelab_helper.db.models import (
+    AssertionRun,
+    ConfigurationAssertion,
+    DiscoveryRun,
+    Host,
+    ReconciliationFinding,
+)
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine import schedule as mod
 from homelab_helper.engine.schedule import (
@@ -31,6 +40,7 @@ from homelab_helper.engine.schedule import (
     parse_interval,
     plan_assertions,
     plan_probes,
+    reconcile_probe_failures,
     run_due,
 )
 from homelab_helper.probes.base import ObservationData, Probe, ProbeContext, ProbeResult
@@ -244,6 +254,88 @@ async def test_an_unreachable_target_fails_alone(
         r = await run_due(s, schedule, now=T0, ssh_adapter=_FakeSSH(), assertions=False)
     assert r.probes_run == ["nas0: host.fast, host.slow"]
     assert r.errors == ["nas1: connection refused"]
+
+
+async def _record_runs(s: Any, outcomes: list[bool], *, hostname: str = "nas0") -> None:
+    """Add runs of host.fast, oldest first, ending now."""
+    host = (await s.execute(select(Host).where(Host.hostname == hostname))).scalar_one_or_none()
+    if host is None:
+        host = Host(hostname=hostname)
+        s.add(host)
+        await s.flush()
+    now = datetime.now(UTC)
+    for age, ok in enumerate(reversed(outcomes)):
+        s.add(
+            DiscoveryRun(
+                host_id=host.id,
+                probe_id=uuid.uuid4(),
+                privilege_level=PrivilegeLevel.USER,
+                started_at=now - timedelta(minutes=age),
+                success=ok,
+                probe_name="host.fast",
+                probe_version="0.1.0",
+                error=None if ok else "not authorized",
+            )
+        )
+    await s.flush()
+
+
+async def _probe_findings(s: Any) -> list[ReconciliationFinding]:
+    rows = await s.execute(
+        select(ReconciliationFinding).where(ReconciliationFinding.kind == FindingKind.PROBE_FAILING)
+    )
+    return list(rows.scalars())
+
+
+async def test_repeated_probe_failure_opens_a_finding_and_success_resolves_it(
+    tmp_path, sessionmaker, fakes
+) -> None:
+    schedule = load_schedule(_write(tmp_path, SCHEDULE))
+    async with session_scope(sessionmaker) as s:
+        await _record_runs(s, [False] * mod.PROBE_FAILING_AFTER)
+        assert (await reconcile_probe_failures(s, schedule)).counts()["opened"] == 1
+        [row] = await _probe_findings(s)
+        assert row.status == FindingStatus.OPEN
+        assert "not authorized" in row.description
+
+        await _record_runs(s, [True])
+        assert (await reconcile_probe_failures(s, schedule)).counts()["resolved"] == 1
+        [row] = await _probe_findings(s)
+        assert row.status == FindingStatus.RESOLVED
+
+
+async def test_too_few_failures_open_nothing(tmp_path, sessionmaker, fakes) -> None:
+    schedule = load_schedule(_write(tmp_path, SCHEDULE))
+    async with session_scope(sessionmaker) as s:
+        await _record_runs(s, [True, *[False] * (mod.PROBE_FAILING_AFTER - 1)])
+        await reconcile_probe_failures(s, schedule)
+        assert await _probe_findings(s) == []
+
+
+async def test_a_pair_no_longer_scheduled_keeps_its_finding(tmp_path, sessionmaker, fakes) -> None:
+    schedule = load_schedule(_write(tmp_path, SCHEDULE))
+    elsewhere = load_schedule(_write(tmp_path, SCHEDULE.replace("nas0", "nas9")))
+    async with session_scope(sessionmaker) as s:
+        await _record_runs(s, [False] * mod.PROBE_FAILING_AFTER)
+        await reconcile_probe_failures(s, schedule)
+        await _record_runs(s, [True], hostname="nas9")
+        await reconcile_probe_failures(s, elsewhere)
+        [row] = await _probe_findings(s)
+        assert row.status == FindingStatus.OPEN
+
+
+async def test_run_due_reports_probe_findings(tmp_path, sessionmaker, fakes) -> None:
+    schedule = load_schedule(_write(tmp_path, SCHEDULE))
+    async with session_scope(sessionmaker) as s:
+        await _record_runs(s, [False] * mod.PROBE_FAILING_AFTER)
+        r = await run_due(
+            s,
+            schedule,
+            now=datetime.now(UTC) - timedelta(hours=1),
+            ssh_adapter=_FakeSSH(),
+            assertions=False,
+        )
+    assert r.probe_findings == {"opened": 1}
 
 
 def test_daemon_once_runs_the_schedule_job_and_cli_shows_it(tmp_path, monkeypatch) -> None:

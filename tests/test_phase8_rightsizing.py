@@ -17,7 +17,7 @@ from homelab_helper.engine.rightsizing import MIN_SAMPLES, guest_issues, reconci
 from homelab_helper.engine.usage import HOUR, Bucket, record_usage
 
 G = 1024**3
-NOW = datetime(2026, 10, 6, tzinfo=UTC)
+NOW = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 @pytest.fixture

@@ -218,6 +218,8 @@ class FindingKind(StrEnum):
     """A monitored service reports itself or what it manages unhealthy (print-warden). No playbook acts on it."""
     HOST_UNREACHABLE = "host-unreachable"
     """A host behind a KVM does not answer on the network; the finding carries its console snapshot. Report only."""
+    PROBE_FAILING = "probe-failing"
+    """A scheduled probe has failed on its last runs against a host, so that host's facts have stopped refreshing."""
     STORAGE_EFFICIENCY = "storage-efficiency"
     """A Kubernetes workload has fewer ready replicas than it asks for, with its rollout settled (Phase 7)."""
     STORAGE_PROVENANCE_DELTA = "storage-provenance-delta"

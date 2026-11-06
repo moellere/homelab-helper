@@ -41,10 +41,17 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 
+from homelab_helper.db.enums import FindingKind, FindingSeverity
 from homelab_helper.db.models import AssertionRun, ConfigurationAssertion, DiscoveryRun, Host
+from homelab_helper.engine.category_findings import (
+    CategoryIssue,
+    CategoryResult,
+    reconcile_category_findings,
+)
 from homelab_helper.engine.host_probe import HostProbeRequest, probe_host
 from homelab_helper.engine.talos_probe import TalosProbeRequest, probe_talos
 from homelab_helper.probes.registry import discover_probes
+from homelab_helper.secrets import redact
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +60,8 @@ if TYPE_CHECKING:
 
 SCHEDULE_ENV_VAR = "HOMELAB_HELPER_SCHEDULE"
 DEFAULT_INTERVAL = "6h"
+PROBE_FAILING_AFTER = 3
+"""Consecutive failed runs of one probe on one host before it becomes a finding."""
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 _INTERVAL = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
 
@@ -281,6 +290,79 @@ class ScheduleRun:
     assertions_run: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     not_due: int = 0
+    probe_findings: dict[str, int] = field(default_factory=dict)
+    """``PROBE_FAILING`` activity this pass, zero counts dropped."""
+
+
+async def reconcile_probe_failures(session: AsyncSession, schedule: Schedule) -> CategoryResult:
+    """Turn a scheduled probe's repeated failure into a finding; its next success resolves it.
+
+    A failed run still counts as a run for cadence, so without this a probe that always
+    fails looks merely not due. A pair with too few runs to judge, or a mixed recent
+    history, is left out of ``observed`` and any finding on it stays as it is.
+    """
+    plan = await plan_probes(session, schedule)
+    pairs = {(d.target, d.probe) for d in plan}
+    ranked = (
+        select(
+            Host.hostname.label("hostname"),
+            DiscoveryRun.probe_name.label("probe"),
+            DiscoveryRun.success.label("success"),
+            DiscoveryRun.error.label("error"),
+            DiscoveryRun.started_at.label("started_at"),
+            func.row_number()
+            .over(
+                partition_by=(Host.hostname, DiscoveryRun.probe_name),
+                order_by=DiscoveryRun.started_at.desc(),
+            )
+            .label("rank"),
+        )
+        .join(Host, Host.id == DiscoveryRun.host_id)
+        .where(Host.hostname.in_({target for target, _ in pairs}))
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(ranked)
+            .where(ranked.c.rank <= PROBE_FAILING_AFTER)
+            .order_by(ranked.c.hostname, ranked.c.probe, ranked.c.rank)
+        )
+    ).all()
+    recent: dict[tuple[str, str], list[Any]] = {}
+    for row in rows:
+        if (row.hostname, row.probe) in pairs:
+            recent.setdefault((row.hostname, row.probe), []).append(row)
+
+    issues: list[CategoryIssue] = []
+    observed: set[str] = set()
+    targets: set[tuple[str, str]] = set()
+    for (hostname, probe), runs in recent.items():
+        failing = len(runs) == PROBE_FAILING_AFTER and not any(r.success for r in runs)
+        if not (failing or runs[0].success):
+            continue
+        category = f"probe-failing:{probe}"
+        observed.add(category)
+        targets.add(("host", hostname))
+        if failing:
+            error = redact(str(runs[0].error or "no error recorded"))[:500]
+            issues.append(
+                CategoryIssue(
+                    kind=FindingKind.PROBE_FAILING,
+                    category=category,
+                    target_type="host",
+                    target_id=hostname,
+                    severity=FindingSeverity.MEDIUM,
+                    title=f"{probe} is failing on {hostname}",
+                    description=(
+                        f"The last {PROBE_FAILING_AFTER} runs of {probe} on {hostname} failed, "
+                        f"so its facts are no longer refreshing. Latest error: {error}"
+                    ),
+                    evidence={"probe": probe, "last_error": error},
+                )
+            )
+    return await reconcile_category_findings(
+        session, FindingKind.PROBE_FAILING, issues, observed, observed_targets=targets
+    )
 
 
 async def run_due(
@@ -356,6 +438,8 @@ async def run_due(
             for p in getattr(outcome, "probes", []) or []:
                 if not getattr(p, "success", True):
                     result.probe_failures.append(f"{target}/{p.probe}: {p.error}")
+        counts = (await reconcile_probe_failures(session, schedule)).counts()
+        result.probe_findings = {k: v for k, v in counts.items() if v}
     if assertions:
         from homelab_helper.engine.assertions import AssertionEngine as _Engine  # noqa: PLC0415
 
@@ -373,6 +457,7 @@ async def run_due(
 
 __all__ = [
     "DEFAULT_INTERVAL",
+    "PROBE_FAILING_AFTER",
     "SCHEDULE_ENV_VAR",
     "DueAssertion",
     "DueProbe",
@@ -387,5 +472,6 @@ __all__ = [
     "parse_interval",
     "plan_assertions",
     "plan_probes",
+    "reconcile_probe_failures",
     "run_due",
 ]

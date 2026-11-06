@@ -147,6 +147,7 @@ async def run_schedule_pass(
             return {
                 "probes_run": r.probes_run,
                 "probe_failures": r.probe_failures,
+                "probe_findings": r.probe_findings,
                 "assertions_run": r.assertions_run,
                 "not_due": r.not_due,
                 "errors": r.errors,

@@ -29,10 +29,11 @@ from homelab_helper.db.models import (
     TrustHistory,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine import listener as listener_module
 from homelab_helper.engine.approval import ApprovalResult
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
 from homelab_helper.engine.k8s_workloads import reconcile_workload_health
-from homelab_helper.engine.listener import MAX_ASKS, REASK_AFTER, ask_pending
+from homelab_helper.engine.listener import MAX_ASKS, REASK_AFTER, ask_pending, listener_lock
 from homelab_helper.engine.playbooks import PLAYBOOKS, playbook_for, run_playbooks
 from homelab_helper.engine.trust import grant_cell, seed_domains
 
@@ -461,6 +462,159 @@ async def test_an_expired_prompt_is_asked_again_later_but_not_forever(sessionmak
         proposal = (await s.execute(select(ProposalLog))).scalar_one()
         assert proposal.outcome is ProposalOutcome.PENDING
     assert len(channel.asked) == MAX_ASKS
+
+
+async def _one_pending_restart(s, level: AutonomyLevel) -> None:
+    await seed_domains(s)
+    await grant_cell(
+        s, TrustDomain.CONTAINERS, "workload-restart", "single-service", level, actor="op"
+    )
+    await reconcile_workload_health(s, [_workload("web", ready=0)])
+    await run_playbooks(s, min_age=NOW)
+
+
+async def _approvals(s) -> list[TrustHistory]:
+    return list(
+        (await s.execute(select(TrustHistory).where(TrustHistory.event == "approval"))).scalars()
+    )
+
+
+async def test_a_deny_stops_an_action_that_would_otherwise_run_unattended(sessionmaker) -> None:
+    """At AUTONOMOUS the pessimistic gate (rollback unverified) says CONFIRM, so the phone is
+    asked; the verified rollback then lifts the final decision to AUTONOMOUS. The answer still
+    has to stand: a Deny is a veto even when the executor would not have asked."""
+    calls: list[list[str]] = []
+    channel = _Channel(answer=False)
+
+    async def adapters_for(manifest):
+        return _proxmox_fake([]), _k8s_fake(calls), None, None, None
+
+    async with session_scope(sessionmaker) as s:
+        await _one_pending_restart(s, AutonomyLevel.AUTONOMOUS)
+        first = await ask_pending(s, channel=channel, adapters_for=adapters_for)
+        assert len(first.asked) == 1
+        assert first.executed == []
+        assert len(first.declined) == 1
+        assert (await s.execute(select(ExecutionReceipt))).scalars().all() == []
+        proposal = (await s.execute(select(ProposalLog))).scalar_one()
+        assert proposal.outcome is ProposalOutcome.PENDING
+        [denial] = await _approvals(s)
+        assert denial.detail["approved"] is False
+        again = await ask_pending(s, channel=channel, adapters_for=adapters_for)
+        assert again.asked == []  # a Deny is final
+    assert not any(c[:2] == ["rollout", "restart"] for c in calls)
+
+
+async def test_an_approval_is_recorded_when_the_executor_does_not_ask(sessionmaker) -> None:
+    channel = _Channel(answer=True)
+
+    async def adapters_for(manifest):
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+
+    async with session_scope(sessionmaker) as s:
+        await _one_pending_restart(s, AutonomyLevel.AUTONOMOUS)
+        r = await ask_pending(s, channel=channel, adapters_for=adapters_for)
+        assert len(r.executed) == 1
+        [approval] = await _approvals(s)
+        assert approval.detail["approved"] is True
+        assert approval.detail["responder"] == "test-phone"
+
+
+async def test_a_proposal_decided_elsewhere_during_the_wait_is_not_run(tmp_path) -> None:
+    """Another process (``helper exec reject``, a playbook withdrawal) changes the row while
+    the prompt waits; the listener must see that, not its stale copy."""
+    eng = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'listen.db'}")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sm = make_sessionmaker(eng)
+    calls: list[list[str]] = []
+
+    class _RejectedMeanwhile(_Channel):
+        async def request(self, manifest, decision, *, proposal_id, title=None, why=None):
+            async with session_scope(sm) as other:
+                row = (await other.execute(select(ProposalLog))).scalar_one()
+                row.outcome = ProposalOutcome.USER_REJECTED
+            return ApprovalResult(approved=True, channel="fake", responder="phone")
+
+    async def adapters_for(manifest):
+        return _proxmox_fake([]), _k8s_fake(calls), None, None, None
+
+    try:
+        async with session_scope(sm) as s:
+            await _one_pending_restart(s, AutonomyLevel.CONFIRM)
+        async with session_scope(sm) as s:
+            r = await ask_pending(s, channel=_RejectedMeanwhile(True), adapters_for=adapters_for)
+            assert r.executed == []
+            assert len(r.declined) == 1
+            assert (await s.execute(select(ExecutionReceipt))).scalars().all() == []
+    finally:
+        await eng.dispose()
+    assert not any(c[:2] == ["rollout", "restart"] for c in calls)
+
+
+async def test_a_later_error_keeps_what_already_ran(tmp_path, monkeypatch) -> None:
+    """Each executed proposal is committed on its own: an exception on the second must not roll
+    back the first one's receipt, or the next pass would run it again."""
+    eng = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'listen.db'}")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sm = make_sessionmaker(eng)
+    real = listener_module.execute_proposal
+    runs: list[str] = []
+
+    async def second_one_blows_up(session, proposal, *args, **kwargs):
+        runs.append(str(proposal.id))
+        if len(runs) == 2:  # noqa: PLR2004 - the second proposal
+            raise RuntimeError("database went away")
+        return await real(session, proposal, *args, **kwargs)
+
+    monkeypatch.setattr(listener_module, "execute_proposal", second_one_blows_up)
+
+    async def adapters_for(manifest):
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+
+    try:
+        async with session_scope(sm) as s:
+            await _two_pending_restarts(s)
+        with pytest.raises(RuntimeError):
+            async with session_scope(sm) as s:
+                await ask_pending(s, channel=_Channel(answer=True), adapters_for=adapters_for)
+        async with session_scope(sm) as s:
+            receipts = (await s.execute(select(ExecutionReceipt))).scalars().all()
+            assert len(receipts) == 1
+            done = (
+                await s.execute(
+                    select(ProposalLog).where(ProposalLog.outcome == ProposalOutcome.USER_ACCEPTED)
+                )
+            ).scalars()
+            assert [str(p.id) for p in done] == runs[:1]
+    finally:
+        await eng.dispose()
+
+
+@pytest.mark.postgres_only
+async def test_only_one_listener_pass_holds_the_lock(tmp_path) -> None:
+    # The conftest redirect sends this SQLite URL to Postgres.
+    eng = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'lock.db'}")
+    try:
+        async with listener_lock(eng) as first:
+            assert first is True
+            async with listener_lock(eng) as second:
+                assert second is False
+        async with listener_lock(eng) as again:
+            assert again is True
+    finally:
+        await eng.dispose()
+
+
+async def test_the_listener_lock_is_a_no_op_off_postgres(sessionmaker) -> None:
+    eng = make_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with listener_lock(eng) as first, listener_lock(eng) as second:
+            assert first is True
+            assert second is True
+    finally:
+        await eng.dispose()
 
 
 async def test_listener_skips_cells_at_propose_without_asking(sessionmaker) -> None:

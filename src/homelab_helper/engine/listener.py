@@ -15,9 +15,16 @@ those proposals still reach the phone. One pass:
    pessimistically) — nothing to ask;
 4. ask about every remaining proposal **at once** — one prompt each, all on
    the phone together, all waiting the same window — then
-5. run the answered ones through the executor, one at a time, with the
-   prompt's answer as the confirmer. The executor's gate, receipts and
-   escalation apply unchanged; it records the answer on the audit spine.
+5. re-read each proposal (another process may have decided it during the
+   wait), record the answer on the audit spine, and run only the approved,
+   still-pending ones through the executor, one at a time, each committed on
+   its own. A Deny or an expired prompt is final for this pass even when the
+   executor, with rollback verified, would have run the action unasked: the
+   phone was asked, so its answer stands. The executor's gate, receipts and
+   escalation apply unchanged.
+
+``listener_lock`` keeps two passes from overlapping on Postgres (a pass can
+outlast the cron interval while prompts wait).
 
 Never consulted for anything above CONFIRM's authority; never passes an
 override. The listener is a trigger, like the MCP tool, not an authority.
@@ -26,12 +33,13 @@ override. The listener is a trigger, like the MCP tool, not an authority.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome
 from homelab_helper.db.models import ProposalLog, TrustHistory
@@ -41,11 +49,12 @@ from homelab_helper.engine.executor import (
     ManifestError,
     execute_proposal,
     parse_manifest,
+    record_approval,
 )
 from homelab_helper.engine.trust import ActionRequest, Decision, decide, load_trust_context
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
     from homelab_helper.engine.approval import ApprovalChannel, ApprovalResult
     from homelab_helper.engine.notify import Notifier
@@ -53,6 +62,8 @@ if TYPE_CHECKING:
 DEFAULT_SOURCES: tuple[str, ...] = ("playbook:", "agent:")
 REASK_AFTER = timedelta(hours=2)
 MAX_ASKS = 3
+LISTENER_LOCK_KEY = 0x484C4C53
+"""Postgres advisory-lock key held for the length of one listener pass."""
 
 AdaptersFor = Callable[[ActionManifest], Awaitable["tuple[Any, Any, Any, Any, Any] | str"]]
 """Resolve ``(proxmox, k8s, argocd, unifi, ssh)`` for one manifest, or a message naming what is missing."""
@@ -170,41 +181,26 @@ async def ask_pending(
             why=_why(proposal),
         )
 
+    await session.commit()  # hold no transaction open across the prompt window
     answers = await asyncio.gather(*(_ask(item) for item in ready), return_exceptions=True)
 
     try:
-        for (proposal, _manifest, _decision, adapters), answer in zip(ready, answers, strict=True):
+        for (proposal, manifest, _decision, adapters), answer in zip(ready, answers, strict=True):
             pid = str(proposal.id)
             if isinstance(answer, BaseException):
                 result.errors.append(f"{pid[:8]}: approval channel failed: {answer}")
                 continue
             result.asked.append(pid[:8])
-            proxmox, k8s, argocd, unifi, ssh = adapters
-
-            async def _confirm(
-                m: ActionManifest, d: Decision, _answer: ApprovalResult = answer
-            ) -> ApprovalResult:
-                return _answer
-
-            try:
-                outcome = await execute_proposal(
-                    session,
-                    proposal,
-                    proxmox,
-                    actor=actor,
-                    confirm_cb=_confirm,
-                    override=None,
-                    k8s_adapter=k8s,
-                    argocd_adapter=argocd,
-                    unifi_adapter=unifi,
-                    ssh_adapter=ssh,
-                    notifier=notifier,
-                )
-            except ExecutionRefused as exc:
-                result.declined.append(f"{pid[:8]}: {exc}")
-                continue
-            note = f" ({outcome.notification})" if outcome.notification else ""
-            result.executed.append(f"{pid[:8]} {_manifest.cell_key} -> {outcome.outcome}{note}")
+            await _settle(
+                session,
+                proposal,
+                manifest,
+                adapters,
+                answer,
+                result,
+                actor=actor,
+                notifier=notifier,
+            )
     finally:
         for _p, _m, _d, (proxmox, _k8s, argocd, unifi, _ssh) in ready:
             for a in (proxmox, argocd, unifi):
@@ -212,6 +208,88 @@ async def ask_pending(
                 if close is not None:
                     await close()
     return result
+
+
+async def _settle(
+    session: AsyncSession,
+    proposal: ProposalLog,
+    manifest: ActionManifest,
+    adapters: tuple[Any, Any, Any, Any, Any],
+    answer: ApprovalResult,
+    result: ListenerResult,
+    *,
+    actor: str,
+    notifier: Notifier | None,
+) -> None:
+    """Act on one answer: run it only if approved and still pending; commit either way."""
+    pid = str(proposal.id)
+    await session.refresh(proposal)  # another process may have decided it during the wait
+    if not answer.approved or proposal.outcome is not ProposalOutcome.PENDING:
+        await record_approval(session, answer, manifest=manifest, proposal=proposal, actor=actor)
+        await session.commit()
+        why = answer.summary if not answer.approved else f"now {proposal.outcome.value}"
+        result.declined.append(f"{pid[:8]}: {why} — not executed")
+        return
+    proxmox, k8s, argocd, unifi, ssh = adapters
+    consulted: list[bool] = []
+
+    async def _confirm(m: ActionManifest, d: Decision) -> ApprovalResult:
+        consulted.append(True)
+        return answer
+
+    try:
+        outcome = await execute_proposal(
+            session,
+            proposal,
+            proxmox,
+            actor=actor,
+            confirm_cb=_confirm,
+            override=None,
+            k8s_adapter=k8s,
+            argocd_adapter=argocd,
+            unifi_adapter=unifi,
+            ssh_adapter=ssh,
+            notifier=notifier,
+        )
+    except ExecutionRefused as exc:
+        if not consulted:
+            await record_approval(
+                session, answer, manifest=manifest, proposal=proposal, actor=actor
+            )
+        await session.commit()
+        result.declined.append(f"{pid[:8]}: {exc}")
+        return
+    if not consulted:  # the final decision was AUTONOMOUS; the yes still goes on record
+        await record_approval(session, answer, manifest=manifest, proposal=proposal, actor=actor)
+    await session.commit()
+    note = f" ({outcome.notification})" if outcome.notification else ""
+    result.executed.append(f"{pid[:8]} {manifest.cell_key} -> {outcome.outcome}{note}")
+
+
+@asynccontextmanager
+async def listener_lock(engine: AsyncEngine) -> AsyncIterator[bool]:
+    """Hold the listener's advisory lock for one pass; yields ``False`` if another pass has it.
+
+    Postgres only: off Postgres (the single-user SQLite default) it yields ``True``.
+    """
+    if engine.dialect.name != "postgresql":
+        yield True
+        return
+    async with engine.connect() as conn:
+        held = bool(
+            (
+                await conn.execute(
+                    text("SELECT pg_try_advisory_lock(:k)"), {"k": LISTENER_LOCK_KEY}
+                )
+            ).scalar()
+        )
+        await conn.commit()
+        try:
+            yield held
+        finally:
+            if held:
+                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": LISTENER_LOCK_KEY})
+                await conn.commit()
 
 
 def _why(proposal: ProposalLog) -> str | None:
@@ -225,9 +303,11 @@ def _why(proposal: ProposalLog) -> str | None:
 
 __all__ = [
     "DEFAULT_SOURCES",
+    "LISTENER_LOCK_KEY",
     "MAX_ASKS",
     "REASK_AFTER",
     "AdaptersFor",
     "ListenerResult",
     "ask_pending",
+    "listener_lock",
 ]

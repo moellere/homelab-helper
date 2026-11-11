@@ -38,7 +38,7 @@ from homelab_helper.engine.approval import (
     approval_channel_from_env,
 )
 from homelab_helper.engine.digest import build_digest, record_digest, render_notification
-from homelab_helper.engine.listener import ask_pending
+from homelab_helper.engine.listener import ask_pending, listener_lock
 from homelab_helper.engine.notify import notifier_from_env, send_digest
 from homelab_helper.engine.playbooks import run_playbooks
 from homelab_helper.engine.schedule import SCHEDULE_ENV_VAR, ScheduleError, load_schedule, run_due
@@ -115,10 +115,16 @@ async def run_listen_pass() -> dict[str, Any]:
         return {"error": str(exc)}
     engine = make_engine(database_url())
     try:
-        async with session_scope(make_sessionmaker(engine)) as session:
-            r = await ask_pending(
-                session, channel=channel, adapters_for=_adapters_for, notifier=notifier_from_env()
-            )
+        async with listener_lock(engine) as held:
+            if not held:
+                return {"skipped": "another listener pass is still running"}
+            async with session_scope(make_sessionmaker(engine)) as session:
+                r = await ask_pending(
+                    session,
+                    channel=channel,
+                    adapters_for=_adapters_for,
+                    notifier=notifier_from_env(),
+                )
             return {
                 "asked": r.asked,
                 "executed": r.executed,

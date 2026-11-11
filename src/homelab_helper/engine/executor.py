@@ -1000,6 +1000,33 @@ async def _log_override(
     return True
 
 
+async def record_approval(
+    session: AsyncSession,
+    answer: ApprovalResult,
+    *,
+    manifest: ActionManifest,
+    proposal: ProposalLog,
+    actor: str,
+) -> None:
+    """Write a channel's answer to ``TrustHistory`` as an ``approval`` event."""
+    session.add(
+        TrustHistory(
+            actor=actor,
+            event="approval",
+            domain=manifest.domain,
+            proposal_id=proposal.id,
+            detail={
+                "cell": manifest.cell_key,
+                "approved": answer.approved,
+                "channel": answer.channel,
+                "responder": answer.responder,
+                **answer.detail,
+            },
+        )
+    )
+    await session.flush()
+
+
 async def _confirm(
     session: AsyncSession,
     confirm_cb: ConfirmCallback | None,
@@ -1021,22 +1048,7 @@ async def _confirm(
         )
     answer = await confirm_cb(manifest, decision)
     if isinstance(answer, ApprovalResult):
-        session.add(
-            TrustHistory(
-                actor=actor,
-                event="approval",
-                domain=manifest.domain,
-                proposal_id=proposal.id,
-                detail={
-                    "cell": manifest.cell_key,
-                    "approved": answer.approved,
-                    "channel": answer.channel,
-                    "responder": answer.responder,
-                    **answer.detail,
-                },
-            )
-        )
-        await session.flush()
+        await record_approval(session, answer, manifest=manifest, proposal=proposal, actor=actor)
         if not answer.approved:
             raise ExecutionRefused(f"{answer.summary} — proposal left pending", decision)
         return answer
@@ -1382,5 +1394,6 @@ __all__ = [
     "RollbackResult",
     "execute_proposal",
     "parse_manifest",
+    "record_approval",
     "rollback_receipt",
 ]

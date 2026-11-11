@@ -607,6 +607,7 @@ async def test_only_one_listener_pass_holds_the_lock(tmp_path) -> None:
         await eng.dispose()
 
 
+@pytest.mark.sqlite_only
 async def test_the_listener_lock_is_a_no_op_off_postgres(sessionmaker) -> None:
     eng = make_engine("sqlite+aiosqlite:///:memory:")
     try:

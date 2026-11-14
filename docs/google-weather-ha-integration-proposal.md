@@ -14,7 +14,7 @@ from the raw API shape to snake_case keys with Home Assistant-side values
 precipitation unit, and `snowfall_amount` as liquid-water equivalent; the
 default-disabled nowcast sensors from A3 were not part of it. The docs PR
 [home-assistant/home-assistant.io#48135](https://github.com/home-assistant/home-assistant.io/pull/48135)
-is still open and needs the final response shape. Track B shipped as the HACS
+merged on 2026-11-09 with the final response shape. Track B shipped as the HACS
 integration [moellere/hass-google-weather-maps](https://github.com/moellere/hass-google-weather-maps)
 (v0.2.0, precipitation overlay composited on a Google basemap).
 

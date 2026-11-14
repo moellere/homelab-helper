@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
+import websockets
 from sqlalchemy import select
 
 from homelab_helper.adapters.kubernetes import K8sAdapter, K8sConfig, KubeError
@@ -20,9 +21,11 @@ from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog, TrustHistory
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.approval import (
+    ApprovalConfigError,
     ApprovalResult,
     HomeAssistantApprovalChannel,
     HomeAssistantApprovalConfig,
+    approval_channel_from_env,
 )
 from homelab_helper.engine.escalation import is_promotable
 from homelab_helper.engine.executor import (
@@ -502,7 +505,11 @@ async def test_channel_denial_is_recorded_and_nothing_runs(sessionmaker) -> None
 
 def _channel(sent: list[dict[str, Any]], answer: str | None):
     cfg = HomeAssistantApprovalConfig(
-        url="https://ha.test", token="t", notify_service="notify.mobile_app_pixel", timeout_s=1
+        url="https://ha.test",
+        token="t",
+        notify_service="notify.mobile_app_pixel",
+        timeout_s=1,
+        device_ids=frozenset({"pixel"}),
     )
 
     async def sender(payload: dict[str, Any]) -> None:
@@ -574,6 +581,124 @@ def test_channel_config_names_what_is_missing(monkeypatch) -> None:
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(Exception, match="HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE"):
         HomeAssistantApprovalConfig.from_env()
+
+
+# ------------------------------------------------- whose answer counts
+
+
+def _answering(event: dict[str, Any], **allow: Any) -> HomeAssistantApprovalChannel:
+    cfg = HomeAssistantApprovalConfig(
+        url="https://ha.test", token="t", notify_service="notify.mobile_app_pixel", **allow
+    )
+
+    async def sender(payload: dict[str, Any]) -> None:
+        return None
+
+    async def listener(approve_id: str, deny_id: str, timeout_s: float) -> dict[str, Any] | None:
+        return {"action": approve_id, **event}
+
+    return HomeAssistantApprovalChannel(cfg, sender=sender, listener=listener)
+
+
+async def _ask(channel: HomeAssistantApprovalChannel) -> ApprovalResult:
+    return await channel.request(
+        _Manifest(),  # type: ignore[arg-type]
+        _Decision(),  # type: ignore[arg-type]
+        proposal_id="abc123",
+    )
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {},  # what POST /api/events with only the button id looks like
+        {"device_id": ""},
+        {"device_id": "tablet"},
+        {"device_name": "pixel"},  # a name is not an id
+    ],
+)
+async def test_an_approve_from_no_listed_device_is_not_an_approval(event) -> None:
+    result = await _ask(_answering(event, device_ids=frozenset({"pixel"})))
+    assert result.approved is False
+    assert result.responder is None
+    assert "HOMELAB_HELPER_APPROVAL_DEVICE_IDS" in result.detail["reason"]
+
+
+async def test_an_empty_allowlist_approves_nothing() -> None:
+    result = await _ask(_answering({"device_id": "pixel"}))
+    assert result.approved is False
+
+
+async def test_the_user_allowlist_reads_the_event_context_not_its_data() -> None:
+    allow = {"device_ids": frozenset({"pixel"}), "user_ids": frozenset({"operator"})}
+    forged = {"device_id": "pixel", "user_id": "operator", "context_user_id": "helper"}
+    refused = await _ask(_answering(forged, **allow))
+    assert refused.approved is False
+    assert "HOMELAB_HELPER_APPROVAL_USER_IDS" in refused.detail["reason"]
+
+    real = await _ask(_answering({"device_id": "pixel", "context_user_id": "operator"}, **allow))
+    assert real.approved is True
+    assert real.responder == "pixel"
+    assert real.detail["context_user_id"] == "operator"
+
+
+def test_an_approval_that_names_nobody_is_not_an_approval() -> None:
+    result = ApprovalResult(approved=True, channel="home-assistant")
+    assert result.approved is False
+    assert result.detail["reason"] == "approval named no responder"
+    assert result.summary == "declined via home-assistant"
+
+
+def test_the_channel_is_unconfigured_without_a_device_allowlist(monkeypatch) -> None:
+    monkeypatch.setenv("HOMELAB_HELPER_HASS_URL", "https://ha.test")
+    monkeypatch.setenv("HOMELAB_HELPER_HASS_TOKEN", "t")
+    monkeypatch.setenv("HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE", "notify.mobile_app_pixel")
+    monkeypatch.delenv("HOMELAB_HELPER_APPROVAL_DEVICE_IDS", raising=False)
+    monkeypatch.delenv("HOMELAB_HELPER_APPROVAL_USER_IDS", raising=False)
+    with pytest.raises(ApprovalConfigError, match="HOMELAB_HELPER_APPROVAL_DEVICE_IDS"):
+        approval_channel_from_env()
+
+    monkeypatch.setenv("HOMELAB_HELPER_APPROVAL_DEVICE_IDS", " pixel, tablet ,")
+    monkeypatch.setenv("HOMELAB_HELPER_APPROVAL_USER_IDS", "operator")
+    config = approval_channel_from_env().config
+    assert config.device_ids == {"pixel", "tablet"}
+    assert config.user_ids == {"operator"}
+
+
+async def test_the_websocket_wait_ignores_answers_that_are_not_the_operators() -> None:
+    def event(data: dict[str, Any], user: str) -> str:
+        return json.dumps(
+            {"id": 1, "type": "event", "event": {"data": data, "context": {"user_id": user}}}
+        )
+
+    approve = "HELPER_APPROVE_abc123"
+
+    async def home_assistant(ws: Any) -> None:
+        await ws.send(json.dumps({"type": "auth_required"}))
+        await ws.recv()
+        await ws.send(json.dumps({"type": "auth_ok"}))
+        await ws.recv()
+        await ws.send(json.dumps({"id": 1, "type": "result", "success": True}))
+        await ws.send(event({"action": approve}, "helper"))  # forged: names no device
+        await ws.send(event({"action": approve, "device_id": "tablet"}, "operator"))
+        await ws.send(event({"action": approve, "device_id": "pixel"}, "helper"))  # copied id
+        await ws.send(event({"action": "HELPER_APPROVE_other", "device_id": "pixel"}, "operator"))
+        await ws.send(event({"action": approve, "device_id": "pixel"}, "operator"))
+        await ws.wait_closed()
+
+    async with websockets.serve(home_assistant, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        channel = HomeAssistantApprovalChannel(
+            HomeAssistantApprovalConfig(
+                url=f"http://127.0.0.1:{port}",
+                token="t",
+                notify_service="notify.mobile_app_pixel",
+                device_ids=frozenset({"pixel"}),
+                user_ids=frozenset({"operator"}),
+            )
+        )
+        answer = await channel._await_action(approve, "HELPER_DENY_abc123", 5.0)
+    assert answer == {"action": approve, "device_id": "pixel", "context_user_id": "operator"}
 
 
 # --------------------------------------------------------- receipt shapes

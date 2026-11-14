@@ -22,7 +22,12 @@ from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
 from homelab_helper.db.models import ProposalLog, TrustHistory
 from homelab_helper.db.session import make_engine, make_sessionmaker
-from homelab_helper.engine.approval import ApprovalConfigError, HomeAssistantApprovalConfig
+from homelab_helper.engine.approval import (
+    DEVICE_IDS_VAR,
+    USER_IDS_VAR,
+    ApprovalConfigError,
+    HomeAssistantApprovalConfig,
+)
 from homelab_helper.engine.executor import ManifestError, parse_manifest
 from homelab_helper.engine.trust import decide, load_trust_context
 
@@ -39,9 +44,20 @@ def _channel_line() -> str:
         cfg = HomeAssistantApprovalConfig.from_env()
     except ApprovalConfigError as exc:
         return f"[yellow]not configured[/yellow] — {escape(str(exc))}"
+    if not cfg.device_ids:
+        return (
+            f"[yellow]cannot approve[/yellow] — {escape(cfg.notify_service)} is set but "
+            f"{DEVICE_IDS_VAR} is empty, so no tap counts"
+        )
+    users = (
+        f"{len(cfg.user_ids)} allowed user(s)"
+        if cfg.user_ids
+        else f"any Home Assistant user ({USER_IDS_VAR} unset)"
+    )
     return (
         f"[green]home-assistant[/green] → {escape(cfg.notify_service)} "
-        f"(timeout {cfg.timeout_s}s, {escape(cfg.url)})"
+        f"(timeout {cfg.timeout_s}s, {escape(cfg.url)}; "
+        f"{len(cfg.device_ids)} allowed device(s), {users})"
     )
 
 

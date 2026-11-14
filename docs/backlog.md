@@ -825,6 +825,10 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
   channel; never re-asks an answered one; skips PROPOSE/BLOCK cells and
   hand-authored proposals. This is the `helper exec listen` the slice-2 notes
   deferred, with the marker question answered by "an approval event exists".
+  It resolves all six adapters, Talos included, so an approved `talos-upgrade`
+  or `k8s-upgrade` runs. At CONFIRM the executor reads the rollback state
+  again once the answer is in: restore returns to what the target held at
+  dispatch, not at the moment the question went out.
 - [x] `helper daemon run` (`cli/daemon.py`): discovery → playbooks → listener on
   APScheduler cadences; `--once` for cron; `--no-ask` / `--no-playbooks` /
   `--sources ''` to disable jobs. _P7-AC6 second half._

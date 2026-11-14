@@ -38,7 +38,7 @@ from homelab_helper.engine.approval import (
     approval_channel_from_env,
 )
 from homelab_helper.engine.digest import build_digest, record_digest, render_notification
-from homelab_helper.engine.listener import ask_pending, listener_lock
+from homelab_helper.engine.listener import Adapters, ask_pending, listener_lock
 from homelab_helper.engine.notify import notifier_from_env, send_digest
 from homelab_helper.engine.playbooks import run_playbooks
 from homelab_helper.engine.schedule import SCHEDULE_ENV_VAR, ScheduleError, load_schedule, run_due
@@ -62,14 +62,21 @@ def _stamp() -> str:
     return datetime.now(UTC).astimezone().strftime("%H:%M:%S")
 
 
-async def _adapters_for(manifest: ActionManifest) -> tuple[Any, Any, Any, Any, Any] | str:
+async def _adapters_for(manifest: ActionManifest) -> Adapters | str:
     """The listener's adapter resolver — the same one the MCP trigger uses."""
     from homelab_helper.mcp_server import _execution_adapters  # noqa: PLC0415 - interface→interface
 
     adapters, problem = _execution_adapters(manifest)
     if problem is not None or adapters is None:
         return problem or "adapters unavailable"
-    return adapters.proxmox, adapters.k8s, adapters.argocd, adapters.unifi, adapters.ssh
+    return (
+        adapters.proxmox,
+        adapters.k8s,
+        adapters.argocd,
+        adapters.unifi,
+        adapters.ssh,
+        adapters.talos,
+    )
 
 
 def configured_sources() -> list[str]:

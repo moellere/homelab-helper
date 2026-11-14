@@ -299,9 +299,10 @@ async def test_confirm_flow_dispatches_after_consent(sessionmaker) -> None:
         paths = [r.url.path for r in requests]
         assert paths == [
             "/api2/json/nodes/pve1/lxc/101/status/current",
+            "/api2/json/nodes/pve1/lxc/101/status/current",
             "/api2/json/nodes/pve1/lxc/101/status/reboot",
-        ], "rollback capture must precede dispatch, restart maps to reboot"
-        assert requests[1].method == "POST"
+        ], "the state is read again after consent, and before dispatch; restart maps to reboot"
+        assert [r.method for r in requests] == ["GET", "GET", "POST"]
 
         receipt = (await s.execute(select(ExecutionReceipt))).scalar_one()
         assert receipt.decision_level is AutonomyLevel.CONFIRM

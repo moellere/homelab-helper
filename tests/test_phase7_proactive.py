@@ -308,7 +308,7 @@ async def test_listener_asks_once_and_executes_on_approve(sessionmaker) -> None:
     channel = _Channel(answer=True)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake(calls), None, None, None
+        return _proxmox_fake([]), _k8s_fake(calls), None, None, None, None
 
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)
@@ -341,7 +341,7 @@ async def test_listener_never_reasks_a_denied_proposal(sessionmaker) -> None:
     channel = _Channel(answer=False)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None, None
 
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)
@@ -405,7 +405,7 @@ async def test_every_prompt_goes_out_before_any_waits_out(sessionmaker) -> None:
             return ApprovalResult(approved=True, channel="fake", responder="phone")
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None, None
 
     async with session_scope(sessionmaker) as s:
         await _two_pending_restarts(s)
@@ -425,7 +425,7 @@ async def test_an_expired_prompt_is_asked_again_later_but_not_forever(sessionmak
             )
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None, None
 
     channel = _Unseen(answer=False)
     async with session_scope(sessionmaker) as s:
@@ -473,7 +473,7 @@ async def test_an_approval_that_names_nobody_runs_nothing_and_is_not_final(sessi
     calls: list[list[str]] = []
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake(calls), None, None, None
+        return _proxmox_fake([]), _k8s_fake(calls), None, None, None, None
 
     channel = _Nobody(answer=True)
     async with session_scope(sessionmaker) as s:
@@ -513,7 +513,7 @@ async def test_a_deny_stops_an_action_that_would_otherwise_run_unattended(sessio
     channel = _Channel(answer=False)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake(calls), None, None, None
+        return _proxmox_fake([]), _k8s_fake(calls), None, None, None, None
 
     async with session_scope(sessionmaker) as s:
         await _one_pending_restart(s, AutonomyLevel.AUTONOMOUS)
@@ -535,7 +535,7 @@ async def test_an_approval_is_recorded_when_the_executor_does_not_ask(sessionmak
     channel = _Channel(answer=True)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None, None
 
     async with session_scope(sessionmaker) as s:
         await _one_pending_restart(s, AutonomyLevel.AUTONOMOUS)
@@ -563,7 +563,7 @@ async def test_a_proposal_decided_elsewhere_during_the_wait_is_not_run(tmp_path)
             return ApprovalResult(approved=True, channel="fake", responder="phone")
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake(calls), None, None, None
+        return _proxmox_fake([]), _k8s_fake(calls), None, None, None, None
 
     try:
         async with session_scope(sm) as s:
@@ -597,7 +597,7 @@ async def test_a_later_error_keeps_what_already_ran(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(listener_module, "execute_proposal", second_one_blows_up)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None, None
 
     try:
         async with session_scope(sm) as s:
@@ -665,7 +665,7 @@ async def test_listener_ignores_operator_authored_proposals(sessionmaker) -> Non
     channel = _Channel(answer=True)
 
     async def adapters_for(manifest):
-        return _proxmox_fake([]), _k8s_fake([]), None, None, None
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None, None
 
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)

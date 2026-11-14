@@ -23,6 +23,7 @@ from homelab_helper.adapters.netbox import (
     NetBoxConfig,
     NetBoxConfigError,
     _build_host_cf_patch,
+    _next_path,
 )
 from homelab_helper.db.enums import (
     Architecture,
@@ -273,6 +274,63 @@ async def test_list_devices_paginates() -> None:
         await adapter.aclose()
     assert [d["name"] for d in devices] == ["a", "b", "c"]
     assert call_count[0] == 2
+
+
+@pytest.mark.parametrize(
+    "next_url",
+    [
+        "http://elsewhere.example/api/dcim/devices/?limit=50&offset=50",
+        "https://netbox.example/api/dcim/devices/?limit=50&offset=50",
+        "http://netbox.example.elsewhere.example/api/dcim/devices/?limit=50&offset=50",
+        "http://netbox-internal:8080/api/dcim/devices/?limit=50&offset=50",
+    ],
+)
+async def test_pagination_never_leaves_the_configured_host(next_url: str) -> None:
+    """Only the path and query of ``next`` are followed; the token stays home."""
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        assert request.headers["Authorization"] == "Token test-token"
+        first = len(seen) == 1
+        return httpx.Response(
+            200,
+            json={
+                "count": 2,
+                "next": next_url if first else None,
+                "previous": None,
+                "results": [{"id": len(seen), "name": "a" if first else "b"}],
+            },
+        )
+
+    adapter = _make_mock_adapter(handler)
+    try:
+        devices = await adapter.list_devices()
+    finally:
+        await adapter.aclose()
+    assert [d["name"] for d in devices] == ["a", "b"]
+    assert [(u.scheme, u.host, u.port) for u in seen] == [("http", "netbox.example", None)] * 2
+    assert seen[1].path == "/api/dcim/devices/"
+    assert dict(seen[1].params) == {"limit": "50", "offset": "50"}
+
+
+@pytest.mark.parametrize(
+    ("next_url", "base", "expected"),
+    [
+        ("http://nb.example/api/x/?offset=50", "http://nb.example", "/api/x/?offset=50"),
+        (
+            "http://nb.example/netbox/api/x/?offset=50",
+            "http://nb.example/netbox/",
+            "/api/x/?offset=50",
+        ),
+        ("http://other.example/api/x/?offset=50", "http://nb.example/netbox", "/api/x/?offset=50"),
+        ("http://nb.example/netboxes/api/x/", "http://nb.example/netbox", "/netboxes/api/x/"),
+        ("/api/x/?offset=50", "http://nb.example", "/api/x/?offset=50"),
+        ("http://other.example", "http://nb.example", "/"),
+    ],
+)
+def test_next_path_keeps_only_path_and_query(next_url: str, base: str, expected: str) -> None:
+    assert _next_path(next_url, base) == expected
 
 
 # ---------------------------------------------------------------------------

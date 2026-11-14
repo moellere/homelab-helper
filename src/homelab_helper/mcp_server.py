@@ -144,6 +144,7 @@ from homelab_helper.engine.manifest import (
     DNS_RECORD_TYPES,
     K8S_BLAST_RADIUS,
     WORKLOAD_KINDS,
+    argocd_radius_error,
     build_argocd_artifact,
     build_artifact,
     build_dns_artifact,
@@ -2290,11 +2291,16 @@ async def propose_argocd_sync(
 ) -> dict[str, Any]:
     """Draft an Argo CD sync of one application (optionally pinned to a git
     `revision`, optionally pruning) as a PENDING proposal in the `containers`
-    domain. Rollback is Argo CD's own history (the current deployed entry).
+    domain. A sync with `revision` or `prune` must be `blast_radius="cluster"`:
+    it gets its own cell, never the plain resync's. Rollback is Argo CD's own
+    history (the current deployed entry).
     Same contract as `propose_action`: validates, writes only to the harness
     DB, never executes on its own."""
     if blast_radius not in BLAST_RADII:
         return {"error": f"blast_radius must be one of {', '.join(BLAST_RADII)}"}
+    refusal = argocd_radius_error(revision=revision, prune=prune, blast_radius=blast_radius)
+    if refusal:
+        return {"error": refusal}
     try:
         artifact = build_argocd_artifact(application=application, revision=revision, prune=prune)
     except ManifestError as exc:

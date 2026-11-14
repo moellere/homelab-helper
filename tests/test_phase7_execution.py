@@ -963,6 +963,72 @@ async def test_argocd_sync_without_history_is_unverifiable(sessionmaker) -> None
     await argocd.aclose()
 
 
+@pytest.mark.parametrize(
+    "extra", [{"prune": True}, {"revision": "0123abc"}, {"prune": True, "revision": "0123abc"}]
+)
+async def test_a_pruning_or_pinned_sync_never_rides_the_plain_resync_cell(
+    sessionmaker, extra: dict[str, Any]
+) -> None:
+    """The cell is earned on plain resyncs; what a sync may delete is not in its key."""
+    argo_requests: list[httpx.Request] = []
+    adapter, argocd = make_proxmox([]), make_argocd(argo_requests)
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "argocd-sync",
+            "single-service",
+            AutonomyLevel.AUTONOMOUS,
+            actor="op",
+        )
+        artifact = build_argocd_artifact(application="app-homepage", **extra)
+        narrow = await make_proposal(s, artifact, "single-service")
+        with pytest.raises(ManifestError, match="blast radius 'cluster'"):
+            await execute_proposal(s, narrow, adapter, actor="op", argocd_adapter=argocd)
+        wide = await make_proposal(s, artifact, "cluster")
+        assert parse_manifest(wide).cell_key == "containers/argocd-sync/cluster"
+        with pytest.raises(ExecutionRefused, match="not dispatching"):
+            await execute_proposal(s, wide, adapter, actor="op", argocd_adapter=argocd)
+    await adapter.aclose()
+    await argocd.aclose()
+    assert argo_requests == []
+
+
+async def test_a_pruning_sync_runs_on_its_own_cell(sessionmaker) -> None:
+    argo_requests: list[httpx.Request] = []
+    adapter, argocd = make_proxmox([]), make_argocd(argo_requests)
+
+    async def confirm(manifest, decision) -> bool:
+        return True
+
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s, TrustDomain.CONTAINERS, "argocd-sync", "cluster", AutonomyLevel.CONFIRM, actor="op"
+        )
+        artifact = build_argocd_artifact(application="app-homepage", prune=True, revision="0123abc")
+        p = await make_proposal(s, artifact, "cluster")
+        result = await execute_proposal(
+            s, p, adapter, actor="op", confirm_cb=confirm, argocd_adapter=argocd
+        )
+        assert result.outcome == "succeeded"
+    await adapter.aclose()
+    await argocd.aclose()
+    posts = [json.loads(r.content) for r in argo_requests if r.method == "POST"]
+    assert posts == [{"prune": True, "dryRun": False, "revision": "0123abc"}]
+
+
+@pytest.mark.parametrize("target", [{"prune": "false"}, {"revision": 7}, {"revision": ""}])
+async def test_argocd_target_fields_are_typed(sessionmaker, target: dict[str, Any]) -> None:
+    async with session_scope(sessionmaker) as s:
+        artifact = build_argocd_artifact(application="app-homepage")
+        artifact["action"]["target"].update(target)
+        p = await make_proposal(s, artifact, "cluster")
+        with pytest.raises(ManifestError, match="target\\."):
+            parse_manifest(p)
+
+
 async def test_dns_record_create_then_rollback_deletes_it(sessionmaker) -> None:
     requests: list[httpx.Request] = []
     records: list[dict[str, Any]] = []

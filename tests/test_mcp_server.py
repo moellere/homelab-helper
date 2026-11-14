@@ -67,6 +67,7 @@ from homelab_helper.mcp_server import (
     probe_talos,
     probe_target_refusal,
     propose_action,
+    propose_argocd_sync,
     recommend_placement,
     retire_host,
     run_discovery,
@@ -900,3 +901,14 @@ async def test_run_discovery_error_names_the_exception_class(
     monkeypatch.setitem(mcp_srv._DISCOVERERS, "usage", _boom)
     result = await mcp_srv.run_discovery("usage")
     assert result["error"] == "ReadTimeout"
+
+
+async def test_propose_argocd_sync_wants_cluster_radius_to_prune_or_pin(seeded_db: str) -> None:
+    for extra in ({"prune": True}, {"revision": "0123abc"}):
+        refused = await propose_argocd_sync("app-homepage", "sync", **extra)
+        assert "blast radius 'cluster'" in refused["error"]
+    assert await list_proposals() == []
+    drafted = await propose_argocd_sync("app-homepage", "sync", prune=True, blast_radius="cluster")
+    assert drafted["cell"] == "containers/argocd-sync/cluster"
+    plain = await propose_argocd_sync("app-homepage", "sync")
+    assert plain["cell"] == "containers/argocd-sync/single-service"

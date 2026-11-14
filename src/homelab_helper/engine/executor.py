@@ -91,6 +91,7 @@ from homelab_helper.engine.manifest import (
     WORKLOAD_DOMAIN,
     WORKLOAD_KINDS,
     ManifestError,
+    argocd_radius_error,
 )
 from homelab_helper.engine.notify import ExecutionNotice, Notifier, notify_after_run
 from homelab_helper.engine.rollback import (
@@ -474,13 +475,26 @@ def _parse_argocd_target(
             f"declared domain {domain.value!r} does not match an Argo CD application "
             f"(which is {ARGOCD_DOMAIN.value!r}) — refusing"
         )
-    revision = target.get("revision")
+    raw_revision = target.get("revision")
+    if raw_revision is not None and (not isinstance(raw_revision, str) or not raw_revision):
+        raise ManifestError("target.revision must be a non-empty string when given")
+    revision: str | None = raw_revision
+    prune = target.get("prune", False)
+    if not isinstance(prune, bool):
+        raise ManifestError("target.prune must be true or false")
+    # The cell is domain/kind/radius, so what a sync may delete or rewrite has
+    # to show in the radius: a cell earned on plain resyncs must not carry these.
+    refusal = argocd_radius_error(
+        revision=revision, prune=prune, blast_radius=common["blast_radius"]
+    )
+    if refusal:
+        raise ManifestError(refusal)
     return ActionManifest(
         **common,
         hostnames=_gate_hosts(action),
         application=application,
-        revision=revision if isinstance(revision, str) and revision else None,
-        prune=bool(target.get("prune", False)),
+        revision=revision,
+        prune=prune,
     )
 
 

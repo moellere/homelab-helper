@@ -66,6 +66,8 @@ K8S_DOMAIN = TrustDomain.CONTAINERS
 K8S_VERSION_PATTERN = r"^\d+\.\d+\.\d+$"
 K8S_BLAST_RADIUS = "cluster"
 """A Kubernetes upgrade touches every control plane and kubelet; no narrower radius is accepted."""
+ARGOCD_WIDE_BLAST_RADIUS = "cluster"
+"""A sync that prunes or pins a revision deletes or rewrites at will; it never rides the plain-resync cell."""
 ACTION_KINDS: tuple[str, ...] = (
     *GUEST_ACTION_KINDS,
     *WORKLOAD_ACTION_KINDS,
@@ -527,6 +529,19 @@ def build_k8s_upgrade_artifact(
     return artifact.as_artifact()
 
 
+def argocd_radius_error(*, revision: str | None, prune: bool, blast_radius: str) -> str | None:
+    """Why this Argo CD sync may not use this blast radius, or None when it may."""
+    if blast_radius == ARGOCD_WIDE_BLAST_RADIUS or not (prune or revision):
+        return None
+    what = " and ".join(
+        label for label, on in (("prunes", prune), ("pins a revision", bool(revision))) if on
+    )
+    return (
+        f"an Argo CD sync that {what} is blast radius {ARGOCD_WIDE_BLAST_RADIUS!r}, "
+        f"not {blast_radius!r} — refusing"
+    )
+
+
 def build_argocd_artifact(
     *,
     application: str,
@@ -592,6 +607,7 @@ __all__ = [
     "ACTION_KINDS",
     "ARGOCD_ACTION_KINDS",
     "ARGOCD_DOMAIN",
+    "ARGOCD_WIDE_BLAST_RADIUS",
     "BLAST_RADII",
     "DNS_ACTION_KINDS",
     "DNS_DOMAIN",
@@ -623,6 +639,7 @@ __all__ = [
     "RollbackSpec",
     "TalosTarget",
     "WorkloadTarget",
+    "argocd_radius_error",
     "build_argocd_artifact",
     "build_artifact",
     "build_dns_artifact",

@@ -59,7 +59,7 @@ gesture can change that.
 |---|---|---|
 | `hypervisor` (Proxmox guests) | `start` `stop` `shutdown` `restart` `migrate` `cpu-type` `resize` | prior power state or a snapshot, prior node, prior config |
 | `containers` (Kubernetes) | `workload-restart` `workload-scale` | rollout undo, prior replicas |
-| `containers` (Argo CD) | `argocd-sync` | Argo CD's own history |
+| `containers` (Argo CD) | `argocd-sync` (a sync that prunes or pins a revision is always blast radius `cluster`, a cell of its own) | Argo CD's own history |
 | `dns` (UniFi static DNS) | `dns-record` | the prior record, or deleting the created one |
 | `host-os` | `node-update` (an apt dist-upgrade on one drained node), `node-reboot` | **none** — see below |
 | `host-os` (Talos) | `talos-upgrade` (one node to a release tag; the image is the node's own with the tag swapped) | `talosctl rollback` — the previous install stays in the other boot partition |

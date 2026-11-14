@@ -20,6 +20,7 @@ from homelab_helper.engine.capacity import (
     record_filesystem_samples,
 )
 from homelab_helper.engine.digest import build_digest, render_markdown
+from homelab_helper.engine.fingerprint import make_fingerprint
 from homelab_helper.engine.usage import DAY, Bucket, record_usage
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
@@ -161,12 +162,13 @@ async def test_evaluate_covers_hosts_and_filesystems_and_resolves(sessionmaker) 
                 [{"mountpoint": "/data", "size_bytes": 1000 * G, "used_bytes": 100 * G}],
                 now=NOW - timedelta(days=20 - d),
             )
-        issues, observed = await evaluate(s, now=NOW)
-        assert observed == {
-            "memory-headroom",
-            "cpu-headroom",
-            "filesystem-full",
-            "filesystem-headroom",
+        issues, judged = await evaluate(s, now=NOW)
+        node, nas = ("host", str(host.id)), ("filesystem", "omv:/data")
+        assert judged == {
+            "memory-headroom": {node},
+            "cpu-headroom": {node},
+            "filesystem-full": {node, nas},
+            "filesystem-headroom": {node, nas},
         }
         assert [(i.target_type, i.target_id, i.category) for i in issues] == [
             ("host", str(host.id), "filesystem-headroom")
@@ -197,6 +199,85 @@ async def test_evaluate_covers_hosts_and_filesystems_and_resolves(sessionmaker) 
         rows = (await s.execute(select(ReconciliationFinding))).scalars().all()
         assert [r.kind for r in rows] == [FindingKind.CAPACITY]
         assert rows[0].status is FindingStatus.RESOLVED
+
+
+def _root(start: datetime, days: int, first: int, per_day: int) -> list[Bucket]:
+    return [
+        Bucket(
+            ts=start + timedelta(days=d),
+            values={
+                "cpu": 0.1,
+                "cpus": 8,
+                "disk_used": (first + d * per_day) * G,
+                "disk_total": 100 * G,
+            },
+        )
+        for d in range(days)
+    ]
+
+
+async def _record(s, hostname: str, buckets: list[Bucket]) -> None:
+    await record_usage(
+        s,
+        subject_type="host",
+        subject_key=hostname,
+        label=hostname,
+        resolution=DAY,
+        buckets=buckets,
+    )
+
+
+async def _statuses(s) -> dict[str, FindingStatus]:
+    rows = (await s.execute(select(ReconciliationFinding))).scalars().all()
+    return {r.title.split(":")[0]: r.status for r in rows}
+
+
+async def test_a_node_with_a_history_gap_keeps_its_finding(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        s.add_all([Host(hostname="n0", primary_ip="10.0.0.1"), Host(hostname="n1")])
+        await s.flush()
+        base = NOW.replace(tzinfo=None) - timedelta(days=20)
+        for name in ("n0", "n1"):
+            await _record(s, name, _root(base, 21, 20, 2))
+        first, _ = await reconcile_capacity_findings(s, now=NOW)
+        assert first.counts()["opened"] == 2
+
+        # 58 days on, n0 has a full flat history; n1 reported for three days and stopped.
+        later = NOW + timedelta(days=58)
+        await _record(s, "n0", _root(base + timedelta(days=21), 58, 60, 0))
+        await _record(s, "n1", _root(base + timedelta(days=21), 3, 62, 2))
+        _, judged = await evaluate(s, now=later)
+        assert {len(targets) for targets in judged.values()} == {1}
+        second, _ = await reconcile_capacity_findings(s, now=later)
+        assert second.counts() == {"opened": 0, "reopened": 0, "updated": 0, "resolved": 1}
+        assert await _statuses(s) == {"n0": FindingStatus.RESOLVED, "n1": FindingStatus.OPEN}
+
+
+async def test_no_trend_verdict_after_a_step_resolves_nothing(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        host = Host(hostname="n0", primary_ip="10.0.0.1")
+        s.add(host)
+        await s.flush()
+        base = NOW.replace(tzinfo=None) - timedelta(days=20)
+        await _record(s, "n0", _root(base, 21, 20, 2))
+        await reconcile_capacity_findings(s, now=NOW)
+
+        # A 30 GiB copy lands and three days pass: full is judged, the trend is not yet.
+        await _record(s, "n0", _root(base + timedelta(days=21), 3, 90, 0))
+        soon = NOW + timedelta(days=3)
+        _, judged = await evaluate(s, now=soon)
+        assert ("host", str(host.id)) in judged["filesystem-full"]
+        assert "filesystem-headroom" not in judged
+        result, _ = await reconcile_capacity_findings(s, now=soon)
+        assert result.counts() == {"opened": 1, "reopened": 0, "updated": 0, "resolved": 0}
+        assert result.observed == ["cpu-headroom", "filesystem-full"]
+
+        # A week of plateau is a verdict: the trend finding resolves, full stays open.
+        await _record(s, "n0", _root(base + timedelta(days=24), 7, 90, 0))
+        result, _ = await reconcile_capacity_findings(s, now=NOW + timedelta(days=10))
+        assert result.fingerprints["resolved"] == [
+            make_fingerprint("capacity", "host", str(host.id), "filesystem-headroom")
+        ]
 
 
 async def test_digest_leads_with_what_runs_out_first(sessionmaker) -> None:

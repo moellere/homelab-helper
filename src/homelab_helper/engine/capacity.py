@@ -32,6 +32,13 @@ so the NAS accrues the history the fit needs. Nodes and pools already have
 theirs from 8.3. Every rule is a stated line or horizon on the finding; a
 subject with fewer than ``MIN_HEADROOM_SAMPLES`` daily samples gets no trend
 verdict and is not counted as observed for it.
+
+"Observed" is kept per category and per subject (``evaluate`` returns the
+subjects each category judged), and a finding resolves only when its own
+subject was judged for its own category this run. One node with a full
+history says nothing about a node whose history has a gap, and a series
+still inside the quiet period after a step has no trend verdict to resolve
+the trend finding with.
 """
 
 from __future__ import annotations
@@ -215,6 +222,29 @@ def _line_issue(
     )
 
 
+def _memory_series(samples: Sequence[UsageSample]) -> tuple[list[tuple[datetime, int]], int]:
+    mem = [(s.ts, int(s.mem_used)) for s in samples if s.mem_used is not None and s.mem_total]
+    return mem, next((int(s.mem_total) for s in reversed(samples) if s.mem_total), 0)
+
+
+def _cpu_series(samples: Sequence[UsageSample]) -> list[tuple[datetime, int]]:
+    return [(s.ts, int(float(s.cpu) * _RATIO_SCALE)) for s in samples if s.cpu is not None]
+
+
+def _disk_series(samples: Sequence[UsageSample]) -> tuple[list[tuple[datetime, int]], int]:
+    disk = [(s.ts, int(s.disk_used)) for s in samples if s.disk_used is not None]
+    return disk, next((int(s.disk_total) for s in reversed(samples) if s.disk_total), 0)
+
+
+def _plateaus_under_line(total: int, memory_ceiling: int | None) -> bool:
+    return memory_ceiling is not None and memory_ceiling < int(total * MEMORY_LINE)
+
+
+def _trend_judged(points: Sequence[tuple[datetime, int]], total: int) -> bool:
+    """Whether the fit has enough samples after the last step to say anything."""
+    return bool(total) and len(after_last_step(points, total)[0]) >= MIN_HEADROOM_SAMPLES
+
+
 def node_issues(
     label: str,
     target_id: str,
@@ -229,10 +259,9 @@ def node_issues(
     reserve; when it sits under the line the memory trend is not judged.
     """
     issues: list[CategoryIssue] = []
-    mem = [(s.ts, int(s.mem_used)) for s in samples if s.mem_used is not None and s.mem_total]
-    total = next((int(s.mem_total) for s in reversed(samples) if s.mem_total), 0)
+    mem, total = _memory_series(samples)
     line_bytes = int(total * MEMORY_LINE)
-    if memory_ceiling is not None and memory_ceiling < line_bytes:
+    if _plateaus_under_line(total, memory_ceiling):
         mem = []
     if mem and total:
         segment, _ = after_last_step(mem, total)
@@ -248,7 +277,7 @@ def node_issues(
         )
         if issue is not None:
             issues.append(issue)
-    cpu = [(s.ts, int(float(s.cpu) * _RATIO_SCALE)) for s in samples if s.cpu is not None]
+    cpu = _cpu_series(samples)
     if cpu:
         segment, _ = after_last_step(cpu, _RATIO_SCALE)
         issue = _line_issue(
@@ -318,8 +347,8 @@ async def _daily(
 
 async def evaluate(
     session: AsyncSession, *, now: datetime | None = None
-) -> tuple[list[CategoryIssue], set[str]]:
-    """``(issues, observed categories)`` over nodes and NAS filesystems with history."""
+) -> tuple[list[CategoryIssue], dict[str, set[tuple[str, str]]]]:
+    """``(issues, subjects judged per category)`` over nodes and NAS filesystems with history."""
     moment = now or datetime.now(UTC)
     since = moment.replace(tzinfo=None) - TREND_WINDOW
     hosts = (await session.execute(select(Host))).scalars().all()
@@ -330,39 +359,55 @@ async def evaluate(
             committed[vm.node_host_id] = committed.get(vm.node_host_id, 0) + int(vm.memory_bytes)
     ceilings = {h.hostname: committed[h.id] + OS_RESERVE for h in hosts if h.id in committed}
     issues: list[CategoryIssue] = []
-    observed: set[str] = set()
+    judged: dict[str, set[tuple[str, str]]] = {}
+
+    def filesystem(label: str, target: tuple[str, str], samples: Sequence[UsageSample]) -> None:
+        disk, total = _disk_series(samples)
+        if not disk or not total:
+            return
+        judged.setdefault("filesystem-full", set()).add(target)
+        if _trend_judged(disk, total):
+            judged.setdefault("filesystem-headroom", set()).add(target)
+        issues.extend(filesystem_issues(label, *target, disk, total, now=moment))
+
     for hostname, samples in (await _daily(session, "host", since)).items():
-        target_id = host_ids.get(hostname, hostname)
         if len(samples) < MIN_HEADROOM_SAMPLES:
             continue
-        observed |= {"memory-headroom", "cpu-headroom"}
-        issues += node_issues(
-            hostname, target_id, samples, now=moment, memory_ceiling=ceilings.get(hostname)
-        )
-        disk = [(s.ts, int(s.disk_used)) for s in samples if s.disk_used is not None]
-        total = next((int(s.disk_total) for s in reversed(samples) if s.disk_total), 0)
-        if disk and total:
-            observed |= {"filesystem-full", "filesystem-headroom"}
-            issues += filesystem_issues(f"{hostname}:/", "host", target_id, disk, total, now=moment)
+        target = ("host", host_ids.get(hostname, hostname))
+        ceiling = ceilings.get(hostname)
+        mem, mem_total = _memory_series(samples)
+        if mem_total and (
+            _plateaus_under_line(mem_total, ceiling) or _trend_judged(mem, mem_total)
+        ):
+            judged.setdefault("memory-headroom", set()).add(target)
+        if _trend_judged(_cpu_series(samples), _RATIO_SCALE):
+            judged.setdefault("cpu-headroom", set()).add(target)
+        issues += node_issues(hostname, target[1], samples, now=moment, memory_ceiling=ceiling)
+        filesystem(f"{hostname}:/", target, samples)
     for key, samples in (await _daily(session, "filesystem", since)).items():
-        if len(samples) < MIN_HEADROOM_SAMPLES:
-            continue
-        disk = [(s.ts, int(s.disk_used)) for s in samples if s.disk_used is not None]
-        total = next((int(s.disk_total) for s in reversed(samples) if s.disk_total), 0)
-        if disk and total:
-            observed |= {"filesystem-full", "filesystem-headroom"}
-            issues += filesystem_issues(key, "filesystem", key, disk, total, now=moment)
-    return issues, observed
+        if len(samples) >= MIN_HEADROOM_SAMPLES:
+            filesystem(key, ("filesystem", key), samples)
+    return issues, judged
 
 
 async def reconcile_capacity_findings(
     session: AsyncSession, *, now: datetime | None = None
 ) -> tuple[CategoryResult, list[CategoryIssue]]:
     when = now or datetime.now(UTC)
-    issues, observed = await evaluate(session, now=when)
-    result = await reconcile_category_findings(
-        session, FindingKind.CAPACITY, issues, observed, when=when
-    )
+    issues, judged = await evaluate(session, now=when)
+    result = CategoryResult(observed=sorted(judged))
+    for category in result.observed:
+        part = await reconcile_category_findings(
+            session,
+            FindingKind.CAPACITY,
+            [i for i in issues if i.category == category],
+            {category},
+            when=when,
+            observed_targets=judged[category],
+        )
+        for activity, fingerprints in part.fingerprints.items():
+            getattr(result, activity).extend(getattr(part, activity))
+            result.fingerprints[activity].extend(fingerprints)
     return result, issues
 
 

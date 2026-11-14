@@ -58,7 +58,9 @@ def make_pve(
     """One node; a guest whose config can be read and set, with a pending view."""
     cfg = dict(config or {"cores": 2, "memory": 12288})
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: PLR0911
+        if "/tasks/" in request.url.path:
+            return httpx.Response(200, json={"data": {"status": "stopped", "exitstatus": "OK"}})
         requests.append(request)
         path = request.url.path
         if path.endswith("/cluster/resources"):

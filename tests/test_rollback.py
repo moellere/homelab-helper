@@ -34,8 +34,13 @@ def make_adapter(
     status: str = "running",
     status_code: int = 200,
     snapshot_code: int = 200,
+    task_exit: str = "OK",
 ) -> ProxmoxAdapter:
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: PLR0911
+        if "/tasks/" in request.url.path:
+            return httpx.Response(
+                200, json={"data": {"status": "stopped", "exitstatus": task_exit}}
+            )
         requests.append(request)
         path = request.url.path
         if path.endswith("/status/current"):
@@ -236,6 +241,22 @@ async def test_capture_failure_is_recorded_not_raised() -> None:
     plan = await capture_rollback(failing, manifest, v)
     assert plan.capture_error is not None
     assert "snapshot creation failed" in plan.capture_error
+    await failing.aclose()
+
+
+async def test_snapshot_task_that_fails_is_a_capture_error() -> None:
+    """A snapshot the API queued and then could not take is not a rollback point."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests)
+    manifest = make_manifest(strategy="snapshot")
+    v = await verify_rollback(adapter, manifest)
+    await adapter.aclose()
+
+    failing = make_adapter(requests, task_exit="snapshot feature is not available")
+    plan = await capture_rollback(failing, manifest, v)
+    assert plan.capture_error is not None
+    assert "snapshot feature is not available" in plan.capture_error
+    assert "snapshot" not in plan.state
     await failing.aclose()
 
 

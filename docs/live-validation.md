@@ -312,6 +312,7 @@ the throwaway guest from Part 2 still around (or a second one).
 
 ```bash
 export HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE=notify.mobile_app_<your phone>   # from HA's notify services
+export HOMELAB_HELPER_APPROVAL_DEVICE_IDS=<device id>    # whose tap counts; see trust-gradient.md, "Asking on your phone"
 export HOMELAB_HELPER_APPROVAL_TIMEOUT_S=300
 uv run helper config                 # Home Assistant URL/token must be configured too
 ```

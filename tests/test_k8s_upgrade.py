@@ -133,6 +133,8 @@ def test_a_narrower_blast_radius_is_refused() -> None:
         {"control_plane": CP, "version": "1.38"},
         {"control_plane": CP, "version": "1.38.0", "image": "ghcr.io/x/kubelet:v1.38.0"},
         {"control_plane": "", "version": "1.38.0"},
+        {"control_plane": f"{CP},10.0.6.14", "version": "1.38.0"},
+        {"control_plane": "--nodes=10.0.6.14", "version": "1.38.0"},
     ],
 )
 def test_bad_targets_are_refused(target: dict[str, Any]) -> None:

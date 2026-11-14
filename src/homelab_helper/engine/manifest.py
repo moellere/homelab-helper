@@ -40,6 +40,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from homelab_helper.adapters.talos import NODE_PATTERN as TALOS_NODE_PATTERN
 from homelab_helper.db.enums import TrustDomain
 
 VM_KIND_DOMAIN: dict[str, TrustDomain] = {
@@ -186,8 +187,8 @@ class TalosTarget(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    node: str = Field(min_length=1)
-    """The node as ``talosctl -n`` knows it (address or name)."""
+    node: str = Field(pattern=TALOS_NODE_PATTERN)
+    """The node as ``talosctl -n`` knows it: one address or name, never a list."""
     version: str = Field(pattern=TALOS_VERSION_PATTERN)
 
 
@@ -200,8 +201,8 @@ class K8sUpgradeTarget(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    control_plane: str = Field(min_length=1)
-    """A control-plane node as ``talosctl -n`` knows it."""
+    control_plane: str = Field(pattern=TALOS_NODE_PATTERN)
+    """One control-plane node as ``talosctl -n`` knows it."""
     version: str = Field(pattern=K8S_VERSION_PATTERN)
 
 
@@ -605,6 +606,7 @@ __all__ = [
     "POWER_ACTION_KINDS",
     "TALOS_ACTION_KINDS",
     "TALOS_DOMAIN",
+    "TALOS_NODE_PATTERN",
     "TALOS_VERSION_PATTERN",
     "VM_KIND_DOMAIN",
     "WORKLOAD_ACTION_KINDS",

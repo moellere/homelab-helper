@@ -67,7 +67,7 @@ from homelab_helper.engine.manifest import (
     build_node_artifact,
     build_talos_artifact,
 )
-from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context
+from homelab_helper.engine.trust import decide, load_trust_context
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -216,14 +216,7 @@ async def _would_refuse(session: AsyncSession, proposal: ProposalLog) -> str | N
     only to stop at a cell nobody granted. Informational: the run re-decides each
     step when it executes."""
     manifest = parse_manifest(proposal)
-    request = ActionRequest(
-        domain=manifest.domain,
-        action_kind=manifest.action_kind,
-        blast_radius=manifest.blast_radius,
-        hostnames=manifest.hostnames,
-        rollback_verified=False,
-        provenance=proposal.proposed_by,
-    )
+    request = manifest.request(proposal.proposed_by)
     level = decide(request, await load_trust_context(session, request)).level
     if level in (AutonomyLevel.BLOCK, AutonomyLevel.PROPOSE):
         return f"would be refused today: {manifest.cell_key} is at {level.value} — grant it first"

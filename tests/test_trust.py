@@ -49,6 +49,7 @@ def _action(**overrides) -> ActionRequest:
         "action_kind": "restart",
         "blast_radius": "single-host",
         "hostnames": ("node0",),
+        "target_hosts": ("node0",),
         "rollback_verified": True,
     }
     defaults.update(overrides)
@@ -249,6 +250,34 @@ def test_window_scope_must_match() -> None:
     assert decision.level == AutonomyLevel.CONFIRM
 
 
+def test_window_ignores_a_host_the_proposal_only_lists() -> None:
+    """A host window covers actions *on* that host, not ones that mention it."""
+    decision = decide(
+        _action(hostnames=("node1", "node0"), target_hosts=("node1",)),
+        _context(
+            cell_level=AutonomyLevel.AUTONOMOUS,
+            cell_granted=True,
+            boundaries=(BoundaryView("node1", AutonomyLevel.CONFIRM, absolute=False),),
+            windows=(_window({"hosts": ["node0"]}),),
+        ),
+    )
+    assert decision.level == AutonomyLevel.CONFIRM
+    assert decision.window_id is None
+
+
+def test_window_matches_a_target_given_by_address() -> None:
+    decision = decide(
+        _action(hostnames=("10.0.6.13",), target_hosts=("10.0.6.13",), rollback_verified=False),
+        _context(
+            cell_level=AutonomyLevel.AUTONOMOUS,
+            cell_granted=True,
+            windows=(_window({"hosts": ["talos-cp1"]}),),
+            target_aliases=("talos-cp1",),
+        ),
+    )
+    assert decision.level == AutonomyLevel.AUTONOMOUS
+
+
 def test_window_matches_by_exact_cell() -> None:
     decision = decide(
         _action(rollback_verified=False),
@@ -385,6 +414,36 @@ async def test_context_loads_boundary_and_window(sessionmaker) -> None:
     assert len(context.boundaries) == 1
     assert context.boundaries[0].hostname == "node0"
     assert len(context.windows) == 1
+
+
+async def test_context_loads_the_targets_boundary_whatever_else_is_listed(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        host = Host(hostname="node0")
+        s.add(host)
+        await s.flush()
+        s.add(
+            TrustBoundary(host_id=host.id, max_agent_authority=AutonomyLevel.PROPOSE, absolute=True)
+        )
+    async with sessionmaker() as s:
+        context = await load_trust_context(s, _action(hostnames=("elsewhere",)))
+    assert [b.hostname for b in context.boundaries] == ["node0"]
+
+
+async def test_context_resolves_an_address_target_to_its_host(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        host = Host(hostname="talos-cp1", primary_ip="10.0.6.13")
+        s.add(host)
+        await s.flush()
+        s.add(
+            TrustBoundary(host_id=host.id, max_agent_authority=AutonomyLevel.PROPOSE, absolute=True)
+        )
+    action = _action(hostnames=("10.0.6.13",), target_hosts=("10.0.6.13",))
+    async with sessionmaker() as s:
+        context = await load_trust_context(s, action)
+    assert [b.hostname for b in context.boundaries] == ["talos-cp1"]
+    assert context.target_aliases == ("talos-cp1",)
 
 
 def test_operator_identity_env_wins(monkeypatch: pytest.MonkeyPatch) -> None:

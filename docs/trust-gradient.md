@@ -138,6 +138,11 @@ helper window revoke <window-id>
 helper window kill                     # the kill switch: every open window, now
 ```
 
+A `--host` window covers actions whose *target* is that host: a guest on it, the
+node itself, either end of a migration. A proposal that merely lists the host
+as affected gets no lift from it, and Kubernetes workload, Argo CD and DNS
+actions have no target host — scope a window for those by `--cell` or `--domain`.
+
 The kill switch also halts any in-flight autonomous action at its next
 checkpoint. If you are unsure what is running, run it first and ask questions
 after.

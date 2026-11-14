@@ -155,6 +155,12 @@ the executor validates before it runs — has a fixed envelope:
  "rollback": {"verified": false, "strategy": null}}
 ```
 
+`hostnames` lists hosts the action affects *in addition to* the ones its target
+names. The gate always applies the boundaries of the target's own hosts (the
+node, both nodes of a migration, the control plane); the list can add hosts to
+that check and cannot replace them, and an elevation window scoped to a host
+covers only actions whose target is that host.
+
 The shipped action kinds and their target fields are stable: `start` `stop`
 `shutdown` `restart` `migrate` `cpu-type` `resize` (a Proxmox guest),
 `workload-restart` `workload-scale` (a Kubernetes workload), `argocd-sync`,

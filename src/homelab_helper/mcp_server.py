@@ -181,7 +181,7 @@ from homelab_helper.engine.suggestions import (
 )
 from homelab_helper.engine.talos_probe import TalosProbeRequest
 from homelab_helper.engine.talos_probe import probe_talos as _probe_talos
-from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context, open_windows
+from homelab_helper.engine.trust import decide, load_trust_context, open_windows
 from homelab_helper.engine.usage import GUEST_FIELDS as USAGE_GUEST_FIELDS
 from homelab_helper.engine.usage import NODE_EXTRA as USAGE_NODE_EXTRA
 from homelab_helper.engine.usage import NODE_FIELDS as USAGE_NODE_FIELDS
@@ -2066,14 +2066,7 @@ async def pending_actions() -> list[dict[str, Any]]:
                     entry["error"] = str(exc)
                     out.append(entry)
                     continue
-                action = ActionRequest(
-                    domain=manifest.domain,
-                    action_kind=manifest.action_kind,
-                    blast_radius=manifest.blast_radius,
-                    hostnames=manifest.hostnames,
-                    rollback_verified=False,
-                    provenance=proposal.proposed_by,
-                )
+                action = manifest.request(proposal.proposed_by)
                 decision = decide(action, await load_trust_context(session, action))
                 entry.update(
                     {
@@ -2117,14 +2110,7 @@ def _proposal_dict(p: ProposalLog) -> dict[str, Any]:
 
 async def _pessimistic_preview(session: AsyncSession, proposal: ProposalLog) -> dict[str, Any]:
     manifest = parse_manifest(proposal)
-    action = ActionRequest(
-        domain=manifest.domain,
-        action_kind=manifest.action_kind,
-        blast_radius=manifest.blast_radius,
-        hostnames=manifest.hostnames,
-        rollback_verified=False,
-        provenance=proposal.proposed_by,
-    )
+    action = manifest.request(proposal.proposed_by)
     decision = decide(action, await load_trust_context(session, action))
     return {
         "cell": manifest.cell_key,

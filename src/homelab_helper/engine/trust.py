@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from homelab_helper.db.enums import AutonomyLevel, TrustDomain
 from homelab_helper.db.models import (
@@ -98,6 +98,11 @@ class ActionRequest:
     action_kind: str
     blast_radius: str
     hostnames: tuple[str, ...] = ()
+    """Every host whose boundary applies: the target's own, plus any the
+    proposal says are affected. A wider list can only clamp harder."""
+    target_hosts: tuple[str, ...] = ()
+    """The hosts the validated target names. A window's host scope matches
+    these alone — a host a proposal merely lists must not earn it a lift."""
     rollback_verified: bool = False
     provenance: str = "framework"
 
@@ -134,12 +139,12 @@ class WindowView:
     def is_open(self, at: datetime) -> bool:
         return self.revoked_at is None and as_utc(at) < as_utc(self.expires_at)
 
-    def covers(self, action: ActionRequest) -> bool:
-        """Scope match: by domain, by any affected host, or by exact cell."""
+    def covers(self, action: ActionRequest, aliases: tuple[str, ...] = ()) -> bool:
+        """Scope match: by domain, by a host the target names, or by exact cell."""
         if action.domain.value in (self.scope.get("domains") or []):
             return True
         scope_hosts = set(self.scope.get("hosts") or [])
-        if scope_hosts.intersection(action.hostnames):
+        if scope_hosts.intersection((*action.target_hosts, *aliases)):
             return True
         return action.cell_key in (self.scope.get("cells") or [])
 
@@ -156,6 +161,8 @@ class TrustContext:
     domain_absolute: bool
     boundaries: tuple[BoundaryView, ...] = ()
     windows: tuple[WindowView, ...] = ()
+    target_aliases: tuple[str, ...] = ()
+    """Inventory hostnames of target hosts the manifest gives by address."""
     now: datetime = field(default_factory=lambda: datetime.now(UTC))
     override: bool = False
     """A per-action owner override. Never loaded from the DB — the caller sets
@@ -184,7 +191,7 @@ def _matching_window(action: ActionRequest, context: TrustContext) -> WindowView
     if context.domain_absolute:
         return None
     for window in context.windows:
-        if window.is_open(context.now) and window.covers(action):
+        if window.is_open(context.now) and window.covers(action, context.target_aliases):
             return window
     return None
 
@@ -307,14 +314,23 @@ async def load_trust_context(session: AsyncSession, action: ActionRequest) -> Tr
         )
     ).scalar_one_or_none()
 
+    # The target's hosts are looked up whatever the proposal lists, and by
+    # address as well as name: a Talos target is an address.
+    names = {*action.hostnames, *action.target_hosts}
     boundaries: list[BoundaryView] = []
-    if action.hostnames:
+    target_aliases: list[str] = []
+    if names:
         hosts = (
-            (await session.execute(select(Host).where(Host.hostname.in_(action.hostnames))))
+            (
+                await session.execute(
+                    select(Host).where(or_(Host.hostname.in_(names), Host.primary_ip.in_(names)))
+                )
+            )
             .scalars()
             .all()
         )
         host_ids = {h.id: h.hostname for h in hosts}
+        target_aliases = sorted(h.hostname for h in hosts if h.primary_ip in action.target_hosts)
         rows = (
             (
                 await session.execute(
@@ -353,6 +369,7 @@ async def load_trust_context(session: AsyncSession, action: ActionRequest) -> Tr
         domain_absolute=domain_absolute,
         boundaries=tuple(boundaries),
         windows=tuple(windows),
+        target_aliases=tuple(target_aliases),
     )
 
 

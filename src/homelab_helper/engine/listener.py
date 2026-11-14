@@ -51,7 +51,7 @@ from homelab_helper.engine.executor import (
     parse_manifest,
     record_approval,
 )
-from homelab_helper.engine.trust import ActionRequest, Decision, decide, load_trust_context
+from homelab_helper.engine.trust import Decision, decide, load_trust_context
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -107,14 +107,7 @@ async def _ask_state(session: AsyncSession, proposal: ProposalLog, now: datetime
 
 
 async def _pessimistic(session: AsyncSession, proposal: ProposalLog, m: ActionManifest) -> Decision:
-    action = ActionRequest(
-        domain=m.domain,
-        action_kind=m.action_kind,
-        blast_radius=m.blast_radius,
-        hostnames=m.hostnames,
-        rollback_verified=False,
-        provenance=proposal.proposed_by,
-    )
+    action = m.request(proposal.proposed_by)
     return decide(action, await load_trust_context(session, action))
 
 

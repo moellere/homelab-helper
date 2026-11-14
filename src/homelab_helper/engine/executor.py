@@ -159,6 +159,7 @@ class ActionManifest:
     rollback_verified: bool
     rollback_strategy: str | None
     action_raw: dict[str, Any]
+    target_hosts: tuple[str, ...] = ()
     node: str | None = None
     vmid: int | None = None
     vm_kind: str | None = None
@@ -182,6 +183,18 @@ class ActionManifest:
     talos_version: str | None = None
     control_plane: str | None = None
     k8s_version: str | None = None
+
+    def request(self, provenance: str, *, rollback_verified: bool = False) -> ActionRequest:
+        """This action as the gate sees it — pessimistic unless told otherwise."""
+        return ActionRequest(
+            domain=self.domain,
+            action_kind=self.action_kind,
+            blast_radius=self.blast_radius,
+            hostnames=self.hostnames,
+            target_hosts=self.target_hosts,
+            rollback_verified=rollback_verified,
+            provenance=provenance,
+        )
 
     @property
     def cell_key(self) -> str:
@@ -339,6 +352,16 @@ def _target_parser(target: dict[str, Any]) -> _TargetParser:
     return _parse_workload_target
 
 
+def _gate_hosts(action: dict[str, Any], target_hosts: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """The hosts the gate judges. The target's own always count; the artifact's
+    ``hostnames`` can add to them and never stand in for them, or naming some
+    other host would step around the target's boundary."""
+    claimed = action.get("hostnames") or []
+    if not isinstance(claimed, list) or not all(isinstance(h, str) and h for h in claimed):
+        raise ManifestError("action.hostnames must be a list of host names when present")
+    return tuple(dict.fromkeys((*target_hosts, *claimed)))
+
+
 def _parse_node_target(
     action: dict[str, Any], target: dict[str, Any], domain: TrustDomain, common: dict[str, Any]
 ) -> ActionManifest:
@@ -360,7 +383,9 @@ def _parse_node_target(
             f"declared domain {domain.value!r} does not match a hypervisor node "
             f"(which is {NODE_DOMAIN.value!r}) — refusing"
         )
-    return ActionManifest(**common, hostnames=tuple(action.get("hostnames") or (node,)), node=node)
+    return ActionManifest(
+        **common, hostnames=_gate_hosts(action, (node,)), target_hosts=(node,), node=node
+    )
 
 
 def _parse_talos_target(
@@ -389,7 +414,8 @@ def _parse_talos_target(
         )
     return ActionManifest(
         **common,
-        hostnames=tuple(action.get("hostnames") or (node,)),
+        hostnames=_gate_hosts(action, (node,)),
+        target_hosts=(node,),
         node=node,
         talos_version=version,
     )
@@ -427,7 +453,8 @@ def _parse_k8s_upgrade_target(
         )
     return ActionManifest(
         **common,
-        hostnames=tuple(action.get("hostnames") or (control_plane,)),
+        hostnames=_gate_hosts(action, (control_plane,)),
+        target_hosts=(control_plane,),
         control_plane=control_plane,
         k8s_version=version,
     )
@@ -449,7 +476,7 @@ def _parse_argocd_target(
     revision = target.get("revision")
     return ActionManifest(
         **common,
-        hostnames=tuple(action.get("hostnames") or ()),
+        hostnames=_gate_hosts(action),
         application=application,
         revision=revision if isinstance(revision, str) and revision else None,
         prune=bool(target.get("prune", False)),
@@ -480,7 +507,7 @@ def _parse_dns_target(
     controller = target.get("controller")
     return ActionManifest(
         **common,
-        hostnames=tuple(action.get("hostnames") or ()),
+        hostnames=_gate_hosts(action),
         dns_hostname=hostname,
         dns_value=value,
         record_type=record_type,
@@ -548,9 +575,12 @@ def _parse_guest_target(
             raise ManifestError("target.cpu_type is required for cpu-type")
     cores, memory_mib = _parse_resize_fields(action_kind, target, vm_kind)
     online = target.get("online")
+    # A migration lands on a second node, and that node's boundary applies too.
+    target_hosts = (node, str(target_node)) if action_kind == "migrate" else (node,)
     return ActionManifest(
         **common,
-        hostnames=tuple(action.get("hostnames") or (node,)),
+        hostnames=_gate_hosts(action, target_hosts),
+        target_hosts=target_hosts,
         node=node,
         vmid=vmid,
         vm_kind=vm_kind,
@@ -587,7 +617,7 @@ def _parse_workload_target(
         raise ManifestError("target.replicas must be a non-negative integer for workload-scale")
     return ActionManifest(
         **common,
-        hostnames=tuple(action.get("hostnames") or ()),
+        hostnames=_gate_hosts(action),
         namespace=namespace,
         workload_kind=kind,
         workload_name=name,
@@ -1130,14 +1160,7 @@ async def execute_proposal(
     manifest = parse_manifest(proposal)
 
     def _request(rollback_verified: bool) -> ActionRequest:
-        return ActionRequest(
-            domain=manifest.domain,
-            action_kind=manifest.action_kind,
-            blast_radius=manifest.blast_radius,
-            hostnames=manifest.hostnames,
-            rollback_verified=rollback_verified,
-            provenance=proposal.proposed_by,
-        )
+        return manifest.request(proposal.proposed_by, rollback_verified=rollback_verified)
 
     # Decide pessimistically first, assuming no rollback. Verification can only
     # ever *raise* the outcome (it removes the AUTONOMOUS→CONFIRM degrade and

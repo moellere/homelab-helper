@@ -18,7 +18,7 @@ from sqlalchemy import select
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfig
 from homelab_helper.db.base import Base
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
-from homelab_helper.db.models import ExecutionReceipt, ProposalLog
+from homelab_helper.db.models import ExecutionReceipt, Host, ProposalLog
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.escalation import PROMOTION_STREAK
 from homelab_helper.engine.executor import (
@@ -29,7 +29,13 @@ from homelab_helper.engine.executor import (
     rollback_receipt,
 )
 from homelab_helper.engine.rollback import RollbackError
-from homelab_helper.engine.trust import grant_cell, kill_switch, open_window, seed_domains
+from homelab_helper.engine.trust import (
+    grant_cell,
+    kill_switch,
+    open_window,
+    seed_domains,
+    set_boundary,
+)
 
 _CONFIG = ProxmoxConfig(url="https://pve.test:8006", token_id="t@pam!x", token_secret="s")
 
@@ -127,6 +133,27 @@ async def make_proposal(session, artifact: dict) -> ProposalLog:
 # ---------------------------------------------------------------------------
 
 
+async def test_listed_hostnames_add_to_the_target_and_never_replace_it(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        artifact = make_artifact()
+        artifact["action"]["hostnames"] = ["elsewhere"]
+        m = parse_manifest(await make_proposal(s, artifact))
+        assert m.hostnames == ("pve1", "elsewhere")
+        assert m.target_hosts == ("pve1",)
+        request = m.request("agent:planner")
+        assert request.hostnames == ("pve1", "elsewhere")
+        assert request.target_hosts == ("pve1",)
+
+
+async def test_hostnames_that_are_not_a_list_of_names_are_refused(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        for bad in ("pve1", [7], [""]):
+            artifact = make_artifact()
+            artifact["action"]["hostnames"] = bad
+            with pytest.raises(ManifestError, match="hostnames"):
+                parse_manifest(await make_proposal(s, artifact))
+
+
 async def test_parse_manifest_happy_path(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         p = await make_proposal(s, make_artifact())
@@ -204,6 +231,38 @@ async def test_block_decision_never_reaches_adapter(sessionmaker) -> None:
         p = await make_proposal(s, make_artifact())
         with pytest.raises(ExecutionRefused, match="block"):
             await execute_proposal(s, p, adapter, actor="enoch")
+        assert requests == []
+    await adapter.aclose()
+
+
+async def test_naming_another_host_does_not_step_around_the_targets_boundary(
+    sessionmaker,
+) -> None:
+    """The artifact lists a host under an open window; the guest is on pve1, whose
+    absolute boundary still decides — and nothing reaches the adapter."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests)
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.AUTONOMOUS,
+            actor="enoch",
+        )
+        pve1 = Host(hostname="pve1")
+        s.add(pve1)
+        await s.flush()
+        await set_boundary(s, pve1, AutonomyLevel.PROPOSE, absolute=True, actor="enoch")
+        await open_window(s, reason="pve9 work", minutes=30, actor="enoch", hosts=["pve9"])
+        artifact = make_artifact(rollback_verified=True)
+        artifact["action"]["hostnames"] = ["pve9"]
+        p = await make_proposal(s, artifact)
+        with pytest.raises(ExecutionRefused, match="propose") as refused:
+            await execute_proposal(s, p, adapter, actor="enoch")
+        assert any("absolute boundary on pve1" in r for r in refused.value.decision.reasons)
         assert requests == []
     await adapter.aclose()
 

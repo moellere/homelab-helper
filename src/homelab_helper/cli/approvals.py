@@ -24,7 +24,7 @@ from homelab_helper.db.models import ProposalLog, TrustHistory
 from homelab_helper.db.session import make_engine, make_sessionmaker
 from homelab_helper.engine.approval import ApprovalConfigError, HomeAssistantApprovalConfig
 from homelab_helper.engine.executor import ManifestError, parse_manifest
-from homelab_helper.engine.trust import ActionRequest, decide, load_trust_context
+from homelab_helper.engine.trust import decide, load_trust_context
 
 approvals_app = typer.Typer(
     name="approvals",
@@ -66,14 +66,7 @@ async def _pending_rows(session: Any) -> list[tuple[str, str, str, str]]:
         except ManifestError as exc:
             out.append((str(p.id)[:8], "invalid manifest", str(exc)[:60], ""))
             continue
-        action = ActionRequest(
-            domain=m.domain,
-            action_kind=m.action_kind,
-            blast_radius=m.blast_radius,
-            hostnames=m.hostnames,
-            rollback_verified=False,
-            provenance=p.proposed_by,
-        )
+        action = m.request(p.proposed_by)
         decision = decide(action, await load_trust_context(session, action))
         would = {
             "confirm": "asks you (tap)",

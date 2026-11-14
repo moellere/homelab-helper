@@ -14,6 +14,7 @@ from homelab_helper.adapters.proxmox import (
     ProxmoxAdapter,
     ProxmoxAPIError,
     ProxmoxConfig,
+    ProxmoxTaskError,
     parse_cluster_status,
     parse_vm_resource,
 )
@@ -120,3 +121,67 @@ async def test_health_check_ok_and_failure() -> None:
         good, err = await adapter.health_check()
         assert good is False
         assert err is not None
+
+
+_UPID = "UPID:pve1:0000ABCD:00112233:65000000:vzreboot:101:root@pam:"
+
+
+def _task_adapter(statuses: list[dict[str, str] | Exception]) -> ProxmoxAdapter:
+    """A guest whose power POST returns a task; each status read pops the next answer."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/tasks/" in request.url.path:
+            assert request.url.path.endswith(f"/nodes/pve1/tasks/{_UPID}/status")
+            answer = statuses.pop(0) if len(statuses) > 1 else statuses[0]
+            if isinstance(answer, Exception):
+                raise answer
+            return httpx.Response(200, json={"data": answer})
+        return httpx.Response(200, json={"data": _UPID})
+
+    adapter = _adapter(handler)
+    adapter.task_poll_s = 0
+    return adapter
+
+
+async def test_write_returns_only_once_its_task_has_succeeded() -> None:
+    statuses: list[dict[str, str] | Exception] = [
+        {"status": "running"},
+        httpx.ConnectError("blip"),
+        {"status": "stopped", "exitstatus": "OK"},
+    ]
+    adapter = _task_adapter(statuses)
+    assert await adapter.vm_power("pve1", 101, "lxc", "reboot") == _UPID
+    assert len(statuses) == 1, "every earlier answer was read before the write returned"
+    await adapter.aclose()
+
+
+async def test_task_finished_with_warnings_still_counts_as_done() -> None:
+    adapter = _task_adapter([{"status": "stopped", "exitstatus": "WARNINGS: 1"}])
+    assert await adapter.migrate_guest("pve1", 101, "qemu", "pve2") == _UPID
+    await adapter.aclose()
+
+
+async def test_task_that_ends_in_an_error_raises() -> None:
+    adapter = _task_adapter([{"status": "stopped", "exitstatus": "migration aborted"}])
+    with pytest.raises(ProxmoxTaskError, match="migration aborted") as exc:
+        await adapter.migrate_guest("pve1", 101, "qemu", "pve2")
+    assert exc.value.upid == _UPID
+    assert isinstance(exc.value, ProxmoxAPIError), "existing handlers must catch it"
+    await adapter.aclose()
+
+
+async def test_task_still_running_at_the_deadline_raises() -> None:
+    adapter = _task_adapter([{"status": "running"}])
+    with pytest.raises(ProxmoxTaskError, match="still running"):
+        await adapter.wait_for_task("pve1", _UPID, timeout_s=0)
+    await adapter.aclose()
+
+
+async def test_a_result_that_is_no_task_id_is_returned_untouched() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "/tasks/" not in request.url.path
+        return httpx.Response(200, json={"data": None})
+
+    adapter = _adapter(handler)
+    assert await adapter.create_snapshot("pve1", 101, "lxc", "pre") is None
+    await adapter.aclose()

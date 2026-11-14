@@ -56,6 +56,8 @@ def make_proxmox(requests: list[httpx.Request], *, online_nodes=("pve1", "pve2")
     """A two-node cluster with one running guest; migrate moves nothing but is recorded."""
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if "/tasks/" in request.url.path:
+            return httpx.Response(200, json={"data": {"status": "stopped", "exitstatus": "OK"}})
         requests.append(request)
         path = request.url.path
         if path.endswith("/cluster/status"):
@@ -609,6 +611,8 @@ def make_proxmox_with_config(requests: list[httpx.Request], *, cpu: str | None =
     """A guest whose config can be read and set; records every request."""
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if "/tasks/" in request.url.path:
+            return httpx.Response(200, json={"data": {"status": "stopped", "exitstatus": "OK"}})
         requests.append(request)
         path = request.url.path
         if path.endswith("/config") and request.method == "GET":

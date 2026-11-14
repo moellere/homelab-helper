@@ -107,6 +107,13 @@ needed — drops the cell to `PROPOSE` and puts it on probation, where it banks
 no credit at all. `helper exec reject` on a proposal breaks the clean streak
 without demoting.
 
+**What counts as a run that worked.** Proxmox answers a power action, a
+snapshot or a migration with a task id before the work is done. The executor
+waits for that task and writes `succeeded` only when it ended cleanly; a task
+that ends in an error, or is still running at its deadline (5 minutes for
+power, 15 for a snapshot, an hour for a migration), is a `failed` receipt
+that names the task, and it counts against the cell like any other failure.
+
 **Pinned below autonomy.** An action with no inverse — `node-update` is the
 first, `node-reboot` the second — can never reach `AUTONOMOUS`: its rollback verifier always reports
 *unverified, and why*, and the escalation rules do not count it as reversible.

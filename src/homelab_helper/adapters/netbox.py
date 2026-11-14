@@ -41,6 +41,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -338,16 +339,19 @@ class NetBoxAdapter:
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         url: str | None = path
-        first_params = dict(params or {})
+        page_params: dict[str, Any] | None = dict(params or {})
         while url is not None:
-            payload = await self._request("GET", url, params=first_params)
-            first_params = {}  # NetBox echoes the cursor in `next`
+            payload = await self._request("GET", url, params=page_params)
+            # ``next`` carries its own query; httpx drops it if handed any params, even {}.
+            page_params = None
             results.extend(payload.get("results", []))
             next_url = payload.get("next")
             if next_url is None:
                 break
-            # NetBox returns an absolute URL in ``next``; strip the base prefix.
-            url = _strip_base(next_url, self.config.url)
+            # ``next`` is an absolute URL built from what NetBox believes its own
+            # address is; only its path and query are followed, so the token is
+            # never sent to a host the configuration did not name.
+            url = _next_path(str(next_url), self.config.url)
         return results
 
     # ------------------------------------------------------------------ health
@@ -773,11 +777,13 @@ def _extract_detail(response: httpx.Response) -> str:
     return str(payload)[:200]
 
 
-def _strip_base(url: str, base: str) -> str:
-    base = base.rstrip("/")
-    if url.startswith(base):
-        return url[len(base) :] or "/"
-    return url
+def _next_path(url: str, base: str) -> str:
+    parts = urlsplit(url)
+    path = parts.path or "/"
+    prefix = urlsplit(base).path.rstrip("/")
+    if prefix and path.startswith(f"{prefix}/"):
+        path = path[len(prefix) :]
+    return f"{path}?{parts.query}" if parts.query else path
 
 
 __all__ = [

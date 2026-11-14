@@ -164,7 +164,7 @@ covers only actions whose target is that host.
 The shipped action kinds and their target fields are stable: `start` `stop`
 `shutdown` `restart` `migrate` `cpu-type` `resize` (a Proxmox guest),
 `workload-restart` `workload-scale` (a Kubernetes workload), `argocd-sync`,
-`dns-record`, `node-update`, `node-reboot`, `talos-upgrade` (a Talos node and a release tag), `k8s-upgrade` (the Kubernetes control plane via one Talos control-plane node and a version). New kinds are added; the authoring schema in
+`dns-record`, `node-update`, `node-reboot`, `talos-upgrade` (one Talos node, by name or address, and a release tag), `k8s-upgrade` (the Kubernetes control plane via one Talos control-plane node and a version). New kinds are added; the authoring schema in
 `engine/manifest.py` and the executor's `parse_manifest` are held in agreement
 by a test. Two things are deliberately **not** promised: that a manifest
 written by a newer release is accepted by an older executor (it is rejected,

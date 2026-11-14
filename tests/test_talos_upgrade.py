@@ -128,9 +128,15 @@ def test_the_manifest_names_a_release_and_nothing_else() -> None:
         {"node": NODE, "version": "1.14.2"},
         {"node": NODE, "version": "v1.14"},
         {"node": NODE, "version": "latest"},
+        {"node": f"{NODE},10.0.6.14", "version": NEW},
+        {"node": "--talosconfig=/tmp/other", "version": NEW},
+        {"node": f"{NODE} -e 10.0.6.14", "version": NEW},
+        {"node": f"{NODE}\n", "version": NEW},
     ],
 )
-def test_an_image_or_a_non_release_version_is_refused(target: dict[str, Any]) -> None:
+def test_an_image_a_non_release_version_or_more_than_one_node_is_refused(
+    target: dict[str, Any],
+) -> None:
     raw = build_talos_artifact(node=NODE, version=NEW)
     raw["action"]["target"] = target
     with pytest.raises(ManifestError):

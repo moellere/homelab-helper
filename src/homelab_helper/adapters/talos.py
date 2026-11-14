@@ -138,6 +138,11 @@ def parse_version_server(stdout: str) -> dict[str, str]:
     return out
 
 
+NODE_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9.:-]*[A-Za-z0-9])?$"
+"""One host name or address. ``talosctl -n`` reads a comma as a list of nodes
+and a leading dash as a flag, so neither may reach it."""
+
+
 class TalosAdapter:
     """Adapter that drives ``talosctl`` against the machine API.
 
@@ -186,6 +191,8 @@ class TalosAdapter:
         )
 
     def _base_args(self, node: str) -> list[str]:
+        if not re.fullmatch(NODE_PATTERN, node):
+            raise TalosError(f"{node!r} is not a single node name or address")
         args: list[str] = []
         if self._talosconfig:
             args += ["--talosconfig", self._talosconfig]

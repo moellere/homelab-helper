@@ -84,6 +84,7 @@ from homelab_helper.engine.manifest import (
     NODE_DOMAIN,
     TALOS_ACTION_KINDS,
     TALOS_DOMAIN,
+    TALOS_NODE_PATTERN,
     TALOS_VERSION_PATTERN,
     VM_KIND_DOMAIN,
     WORKLOAD_ACTION_KINDS,
@@ -397,8 +398,8 @@ def _parse_talos_target(
         raise ManifestError(f"{common['action_kind']!r} is not a Talos action")
     node = target.get("node")
     version = target.get("version")
-    if not node or not isinstance(node, str):
-        raise ManifestError("target.node is required")
+    if not isinstance(node, str) or not re.fullmatch(TALOS_NODE_PATTERN, node):
+        raise ManifestError("target.node must be one node name or address")
     if not isinstance(version, str) or not re.fullmatch(TALOS_VERSION_PATTERN, version):
         raise ManifestError("target.version must be a release tag like v1.14.2")
     unexpected = sorted(set(target) - {"node", "version"})
@@ -431,8 +432,8 @@ def _parse_k8s_upgrade_target(
         raise ManifestError(f"{common['action_kind']!r} is not a Kubernetes upgrade action")
     control_plane = target.get("control_plane")
     version = target.get("version")
-    if not control_plane or not isinstance(control_plane, str):
-        raise ManifestError("target.control_plane is required")
+    if not isinstance(control_plane, str) or not re.fullmatch(TALOS_NODE_PATTERN, control_plane):
+        raise ManifestError("target.control_plane must be one node name or address")
     if not isinstance(version, str) or not re.fullmatch(K8S_VERSION_PATTERN, version):
         raise ManifestError("target.version must be a Kubernetes version like 1.37.2")
     unexpected = sorted(set(target) - {"control_plane", "version"})

@@ -157,6 +157,18 @@ async def test_install_image_and_machine_ready_read_their_resources() -> None:
     assert seen[1] == ["-n", "10.0.0.1", "get", "machinestatus", "-o", "json"]
 
 
+@pytest.mark.parametrize("node", ["10.0.0.1,10.0.0.2", "--talosconfig=/t/other", "a b", ""])
+async def test_a_node_that_is_not_one_name_or_address_never_reaches_talosctl(node: str) -> None:
+    async def runner(args, timeout_s):  # noqa: ANN001, ARG001
+        raise AssertionError("talosctl must not run")
+
+    adapter = TalosAdapter(runner=runner)
+    with pytest.raises(TalosError, match="single node"):
+        await adapter.upgrade_node(node, "factory.talos.dev/installer/abc:v1.14.2")
+    with pytest.raises(TalosError, match="single node"):
+        await adapter.version(node)
+
+
 async def test_upgrade_and_rollback_build_the_exact_argv() -> None:
     seen: list[list[str]] = []
 

@@ -97,6 +97,7 @@ from homelab_helper.engine.notify import ExecutionNotice, Notifier, notify_after
 from homelab_helper.engine.rollback import (
     RollbackError,
     RollbackPlan,
+    RollbackVerification,
     capture_rollback,
     restore,
     verify_rollback,
@@ -1195,14 +1196,17 @@ async def execute_proposal(
     # Authorized in some form, so it is worth asking the target whether this is
     # undoable. Read-only, and deliberately not the manifest's to assert: a
     # proposal may *request* a rollback strategy but may not certify one.
-    verification = await verify_rollback(
-        adapter,
-        manifest,
-        k8s=k8s_adapter,
-        argocd=argocd_adapter,
-        unifi=unifi_adapter,
-        talos=talos_adapter,
-    )
+    async def _verify() -> RollbackVerification:
+        return await verify_rollback(
+            adapter,
+            manifest,
+            k8s=k8s_adapter,
+            argocd=argocd_adapter,
+            unifi=unifi_adapter,
+            talos=talos_adapter,
+        )
+
+    verification = await _verify()
     action = _request(verification.verified)
     decision = decide(action, context)
 
@@ -1224,6 +1228,11 @@ async def execute_proposal(
         approval = await _confirm(
             session, confirm_cb, manifest, decision, proposal=proposal, actor=actor
         )
+        # A person may take minutes to answer and the target does not hold
+        # still meanwhile. The state restore returns to is the one in place at
+        # dispatch, so it is read again now; the decision is already made and
+        # consented to, and this read does not revisit it.
+        verification = await _verify()
 
     # The kill switch's checkpoint. A window can be revoked between the
     # decision and the dispatch — including by an operator watching this run

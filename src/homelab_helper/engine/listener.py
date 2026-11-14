@@ -65,8 +65,9 @@ MAX_ASKS = 3
 LISTENER_LOCK_KEY = 0x484C4C53
 """Postgres advisory-lock key held for the length of one listener pass."""
 
-AdaptersFor = Callable[[ActionManifest], Awaitable["tuple[Any, Any, Any, Any, Any] | str"]]
-"""Resolve ``(proxmox, k8s, argocd, unifi, ssh)`` for one manifest, or a message naming what is missing."""
+Adapters = tuple[Any, Any, Any, Any, Any, Any]
+AdaptersFor = Callable[[ActionManifest], Awaitable["Adapters | str"]]
+"""Resolve ``(proxmox, k8s, argocd, unifi, ssh, talos)`` for one manifest, or a message naming what is missing."""
 
 
 @dataclass
@@ -142,7 +143,7 @@ async def ask_pending(
     ][:limit]
 
     now = datetime.now(UTC)
-    ready: list[tuple[ProposalLog, ActionManifest, Decision, tuple[Any, Any, Any, Any, Any]]] = []
+    ready: list[tuple[ProposalLog, ActionManifest, Decision, Adapters]] = []
     for proposal in candidates:
         pid = str(proposal.id)
         if await _ask_state(session, proposal, now) != "ask":
@@ -195,7 +196,7 @@ async def ask_pending(
                 notifier=notifier,
             )
     finally:
-        for _p, _m, _d, (proxmox, _k8s, argocd, unifi, _ssh) in ready:
+        for _p, _m, _d, (proxmox, _k8s, argocd, unifi, _ssh, _talos) in ready:
             for a in (proxmox, argocd, unifi):
                 close = getattr(a, "aclose", None)
                 if close is not None:
@@ -207,7 +208,7 @@ async def _settle(
     session: AsyncSession,
     proposal: ProposalLog,
     manifest: ActionManifest,
-    adapters: tuple[Any, Any, Any, Any, Any],
+    adapters: Adapters,
     answer: ApprovalResult,
     result: ListenerResult,
     *,
@@ -223,7 +224,7 @@ async def _settle(
         why = answer.summary if not answer.approved else f"now {proposal.outcome.value}"
         result.declined.append(f"{pid[:8]}: {why} — not executed")
         return
-    proxmox, k8s, argocd, unifi, ssh = adapters
+    proxmox, k8s, argocd, unifi, ssh, talos = adapters
     consulted: list[bool] = []
 
     async def _confirm(m: ActionManifest, d: Decision) -> ApprovalResult:
@@ -242,6 +243,7 @@ async def _settle(
             argocd_adapter=argocd,
             unifi_adapter=unifi,
             ssh_adapter=ssh,
+            talos_adapter=talos,
             notifier=notifier,
         )
     except ExecutionRefused as exc:

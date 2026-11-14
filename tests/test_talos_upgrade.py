@@ -20,8 +20,10 @@ from homelab_helper.adapters.talos import TalosError
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog
 from homelab_helper.db.session import session_scope
+from homelab_helper.engine.approval import ApprovalResult
 from homelab_helper.engine.escalation import REVERSIBLE_ACTION_KINDS, is_promotable
 from homelab_helper.engine.executor import execute_proposal, parse_manifest, rollback_receipt
+from homelab_helper.engine.listener import ask_pending
 from homelab_helper.engine.manifest import ManifestError, build_talos_artifact, validate_artifact
 from homelab_helper.engine.rollback import PRIOR_IMAGE, RollbackError, select_strategy
 from homelab_helper.engine.trust import grant_cell, seed_domains
@@ -319,3 +321,62 @@ async def test_rollback_boots_the_prior_release_and_waits_for_it(
         assert undo_talos.rollbacks == [NODE]
         assert f"back to {OLD}" in undone.detail
         assert receipt.rolled_back_at is not None
+
+
+async def test_the_prior_release_is_the_one_running_when_the_answer_comes(
+    sessionmaker_,  # noqa: F811
+    fast_clock,
+) -> None:
+    older = "v1.14.0"
+    talos = _FakeTalos([older])
+
+    async def _slow_yes(manifest: Any, decision: Any) -> bool:
+        # Someone else moves the node while the question is open.
+        talos._versions = [OLD, OLD, OLD, NEW]
+        return True
+
+    async with session_scope(sessionmaker_) as s:
+        await seeded(s, AutonomyLevel.CONFIRM)
+        p = proposal_for()
+        s.add(p)
+        await s.flush()
+        result = await execute_proposal(
+            s,
+            p,
+            _NoProxmox(),
+            actor="enoch",
+            confirm_cb=_slow_yes,
+            talos_adapter=talos,  # type: ignore[arg-type]
+        )
+        assert result.outcome == "succeeded", result.error
+        receipt = (
+            await s.execute(select(ExecutionReceipt).where(ExecutionReceipt.proposal_id == p.id))
+        ).scalar_one()
+        assert receipt.rollback_state["prior"]["prior_tag"] == OLD, "not the pre-wait reading"
+
+
+class _Phone:
+    name = "fake"
+
+    async def request(self, manifest: Any, decision: Any, **_: Any) -> ApprovalResult:
+        return ApprovalResult(approved=True, channel=self.name, responder="test-phone")
+
+
+async def test_an_upgrade_approved_through_the_listener_reaches_the_node(
+    sessionmaker_,  # noqa: F811
+    fast_clock,
+) -> None:
+    talos = _FakeTalos([OLD, OLD, OLD, OLD, NEW])
+
+    async def adapters_for(manifest: Any) -> Any:
+        return None, None, None, None, None, talos
+
+    async with session_scope(sessionmaker_) as s:
+        await seeded(s, AutonomyLevel.CONFIRM)
+        s.add(proposal_for())
+        await s.flush()
+        r = await ask_pending(s, channel=_Phone(), adapters_for=adapters_for)  # type: ignore[arg-type]
+        assert r.refused == []
+        assert len(r.executed) == 1
+        assert "host-os/talos-upgrade/single-host -> succeeded" in r.executed[0]
+    assert talos.upgrades == [(NODE, "factory.talos.dev/installer/ce4c9805:v1.14.2")]

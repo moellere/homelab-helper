@@ -281,4 +281,5 @@ def test_exec_run_yes_flag_preconsents(exec_db: str, monkeypatch: pytest.MonkeyP
     result = runner.invoke(app, ["exec", "run", exec_db[:8], "--yes"])
     assert result.exit_code == 0, result.output
     assert "pre-consented" in result.output
-    assert len(requests) == 2
+    # probe, the re-read once consent is in, then the write
+    assert [r.method for r in requests] == ["GET", "GET", "POST"]

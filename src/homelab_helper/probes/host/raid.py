@@ -16,7 +16,9 @@ Sources:
 
 A host with no md driver loaded (no ``/proc/mdstat``) reports zero arrays — an
 observation in its own right, so a degraded-array finding resolves once the
-array is gone. Only an SSH failure yields no observation at all.
+array is gone. That is the only way to zero arrays without reading the file: a
+read that fails, or returns something that is not mdstat, yields no observation
+at all, like an SSH failure, so it cannot resolve a degraded-array finding.
 
 Health is judged by the reconciler, not here: the probe reports ``degraded``
 and ``sync_action`` and the reconciler turns them into ``storage-health``
@@ -26,12 +28,15 @@ findings (``engine/raid_health.py``).
 from __future__ import annotations
 
 import re
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
 from homelab_helper.db.enums import IntentTargetType, PrivilegeLevel
 from homelab_helper.probes.base import ObservationData, Probe, ProbeContext, ProbeResult
+
+if TYPE_CHECKING:
+    from homelab_helper.adapters.kernel_ssh import CommandResult
 
 _HEADER = re.compile(r"^(md[\w/]+)\s*:\s*(.*)$")
 _MEMBER = re.compile(r"^([\w./-]+)\[(\d+)\]((?:\([A-Z]\))*)$")
@@ -40,6 +45,8 @@ _BLOCKS = re.compile(r"^\s*(\d+)\s+blocks")
 _SYNC = re.compile(r"\b(recovery|resync|reshape|check|repair)\s*=\s*([\d.]+)%")
 _DELAYED = re.compile(r"\b(resync|recovery)\s*=\s*(DELAYED|PENDING)")
 _ROLE = {"F": "faulty", "S": "spare", "W": "write-mostly", "R": "replacement"}
+_NO_MDSTAT = "homelab-helper:no-mdstat"
+_READ_MDSTAT = f"if [ -e /proc/mdstat ]; then cat /proc/mdstat; else echo {_NO_MDSTAT}; fi"
 _LEVELS = ("raid0", "raid1", "raid4", "raid5", "raid6", "raid10", "linear", "multipath")
 
 
@@ -127,6 +134,21 @@ def array_summary(array: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class _MdstatUnreadable(Exception):
+    """The read failed or returned something else: no observation, never zero arrays."""
+
+
+def _arrays_read(mdstat: CommandResult) -> list[dict[str, Any]]:
+    if not mdstat.ok:
+        detail = mdstat.stderr.strip()[:200] or "no output"
+        raise _MdstatUnreadable(f"reading /proc/mdstat failed (exit {mdstat.exit_code}): {detail}")
+    if mdstat.stdout.strip() == _NO_MDSTAT:
+        return []
+    if "Personalities" not in mdstat.stdout:
+        raise _MdstatUnreadable("/proc/mdstat output was not recognisable")
+    return parse_mdstat(mdstat.stdout)
+
+
 class HostRaidOutput(BaseModel):
     arrays: list[dict[str, Any]]
     array_count: int
@@ -174,14 +196,14 @@ class HostRaidProbe(Probe):
                 password=target.ssh_password,
                 port=target.ssh_port,
             ) as ssh:
-                mdstat = await ssh.run("cat /proc/mdstat")
-                arrays = parse_mdstat(mdstat.stdout) if mdstat.ok else []
+                arrays = _arrays_read(await ssh.run(_READ_MDSTAT))
                 for array in arrays:
                     detail = await ssh.run(f"{sudo}mdadm --detail /dev/{array['name']}")
                     if detail.ok:
                         array["uuid"] = parse_mdadm_uuid(detail.stdout)
         except Exception as exc:
-            return ProbeResult(success=False, error=f"ssh failure: {exc}")
+            error = str(exc) if isinstance(exc, _MdstatUnreadable) else f"ssh failure: {exc}"
+            return ProbeResult(success=False, error=error)
 
         summary = [array_summary(a) for a in arrays]
         structured = HostRaidOutput(arrays=arrays, array_count=len(arrays), summary=summary)

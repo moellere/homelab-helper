@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 from sqlalchemy import select
 
 from homelab_helper.adapters.kernel_ssh import CommandResult
@@ -132,14 +133,17 @@ def test_raid_issues_degraded_rebuilding_inactive_but_not_a_scrub() -> None:
 
 
 class _FakeSSH:
-    def __init__(self, outputs: dict[str, tuple[int, str]]) -> None:
+    def __init__(self, outputs: dict[str, tuple[int, str]], stderr: str = "") -> None:
         self.outputs = outputs
+        self.stderr = stderr
         self.commands: list[str] = []
 
     async def run(self, command: str, **_: Any) -> CommandResult:
         self.commands.append(command)
         code, out = next((v for k, v in self.outputs.items() if k in command), (1, ""))
-        return CommandResult(command=command, stdout=out, stderr="", exit_code=code)
+        return CommandResult(
+            command=command, stdout=out, stderr=self.stderr if code else "", exit_code=code
+        )
 
 
 class _FakeAdapter:
@@ -180,10 +184,32 @@ async def test_raid_probe_emits_arrays_with_uuid_when_sudo_allows() -> None:
 
 
 async def test_raid_probe_reports_zero_arrays_without_the_md_driver() -> None:
-    result = await HostRaidProbe().run(_ctx(_FakeSSH({}), user="root"))
+    ssh = _FakeSSH({"/proc/mdstat": (0, "homelab-helper:no-mdstat\n")})
+    result = await HostRaidProbe().run(_ctx(ssh, user="root"))
     assert result.success
     obs = {o.key: o.value for o in result.observations}
     assert obs["host.raid.arrays"] == []  # an observation: lets a stale finding resolve
+
+
+@pytest.mark.parametrize(
+    ("code", "stdout"),
+    [
+        (1, ""),  # cat failed: permission, I/O error
+        (124, ""),  # the read timed out
+        (255, MDSTAT),  # the session died mid-read; partial output is not a reading
+        (0, ""),  # empty output
+        (0, "bash: warning: something else entirely\n"),
+    ],
+)
+async def test_a_failed_mdstat_read_is_no_observation_not_zero_arrays(
+    code: int, stdout: str
+) -> None:
+    ssh = _FakeSSH({"/proc/mdstat": (code, stdout)}, stderr="cat: /proc/mdstat: Input/output error")
+    result = await HostRaidProbe().run(_ctx(ssh))
+    assert not result.success
+    assert result.observations == []
+    assert "mdstat" in (result.error or "")
+    assert not any("mdadm" in c for c in ssh.commands)
 
 
 EXPORTFS = """/srv/nfs/media	192.168.1.0/24(sync,wdelay,hide,no_subtree_check,sec=sys,rw,secure,root_squash)

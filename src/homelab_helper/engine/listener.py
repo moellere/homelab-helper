@@ -96,7 +96,7 @@ async def _ask_state(session: AsyncSession, proposal: ProposalLog, now: datetime
     )
     if not events:
         return "ask"
-    if any((e.detail or {}).get("responder") or (e.detail or {}).get("approved") for e in events):
+    if any((e.detail or {}).get("responder") for e in events):
         return "answered"
     if len(events) >= MAX_ASKS:
         return "waiting"

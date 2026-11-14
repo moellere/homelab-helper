@@ -116,7 +116,7 @@ verb (all are prefixed `HOMELAB_HELPER_`):
 | Kubernetes | `KUBECONFIG`, `KUBE_CONTEXT` |
 | OpenMediaVault | `OMV_URL`, `OMV_USERNAME`, `OMV_PASSWORD`, `OMV_VERIFY_SSL` |
 | Home Assistant | `HASS_URL`, `HASS_TOKEN` (a long-lived access token; a non-admin user is enough), `HASS_VERIFY_SSL` |
-| Approval channel (Phase 7) | `APPROVAL_NOTIFY_SERVICE` (an HA `notify.*` service that reaches your phone, e.g. `notify.mobile_app_pixel`), `APPROVAL_TIMEOUT_S` (default 300); uses the Home Assistant URL/token above |
+| Approval channel (Phase 7) | `APPROVAL_NOTIFY_SERVICE` (an HA `notify.*` service that reaches your phone, e.g. `notify.mobile_app_pixel`), `APPROVAL_DEVICE_IDS` (required: the companion-app device id(s) whose Approve counts), `APPROVAL_USER_IDS` (optional: the HA user id(s) an answer must be fired as), `APPROVAL_TIMEOUT_S` (default 300); uses the Home Assistant URL/token above. See [whose tap counts](docs/trust-gradient.md#asking-on-your-phone) |
 | MikroTik | `MIKROTIK_URL`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD` (a read-only user with the `rest-api` policy), `MIKROTIK_VERIFY_SSL`, `MIKROTIK_NAME` |
 | Service identity | `SERVICE_ALIASES` — YAML mapping hostnames to service names when the leftmost-label default is wrong (see `fixtures/service-aliases.example.yaml`) |
 | NetBox | `NETBOX_URL`, `NETBOX_TOKEN`, `NETBOX_VERIFY_SSL` |

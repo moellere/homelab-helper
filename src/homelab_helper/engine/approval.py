@@ -6,7 +6,16 @@ there is no terminal and no human in the loop by default, so the executor
 consults an :class:`ApprovalChannel` instead: it delivers the question
 somewhere the operator is (first implementation: a Home Assistant actionable
 notification with Approve / Deny buttons) and waits for the answer to come
-back over a path the agent cannot write to (HA's websocket event bus).
+back over HA's websocket event bus.
+
+That bus is writable by anything holding a Home Assistant token, so a button
+id alone proves nothing. An event is the operator's answer only when it names
+a device on ``HOMELAB_HELPER_APPROVAL_DEVICE_IDS`` and, when
+``HOMELAB_HELPER_APPROVAL_USER_IDS`` is set, was fired as one of those Home
+Assistant users. The user comes from the event's context, which HA sets from
+the credential that fired it; the device id is event data, which a token
+holder who has learned it can copy. Everything else on the bus is ignored, and
+an approval nobody is named for is not an approval.
 
 What a channel is **not**: it never grants, elevates, overrides, rolls back or
 opens a window. It answers exactly the question the CLI prompt would have
@@ -43,6 +52,10 @@ log = logging.getLogger(__name__)
 APPROVE_PREFIX = "HELPER_APPROVE_"
 DENY_PREFIX = "HELPER_DENY_"
 DEFAULT_TIMEOUT_S = 900
+DEVICE_IDS_VAR = "HOMELAB_HELPER_APPROVAL_DEVICE_IDS"
+USER_IDS_VAR = "HOMELAB_HELPER_APPROVAL_USER_IDS"
+CONTEXT_USER_KEY = "context_user_id"
+"""Where the listener puts the event context's ``user_id`` beside the event data."""
 APPROVAL_CHANNEL = "homelab-helper approvals"
 """A dedicated Android channel: high importance is fixed when a channel is first
 created, so approvals get their own instead of sharing the run-notice channel."""
@@ -65,6 +78,13 @@ class ApprovalResult:
     channel: str
     responder: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.approved and not self.responder:
+            object.__setattr__(self, "approved", False)
+            object.__setattr__(
+                self, "detail", {**self.detail, "reason": "approval named no responder"}
+            )
 
     @property
     def summary(self) -> str:
@@ -97,6 +117,10 @@ class HomeAssistantApprovalConfig:
     notify_service: str
     verify_ssl: bool = True
     timeout_s: int = DEFAULT_TIMEOUT_S
+    device_ids: frozenset[str] = frozenset()
+    """Mobile-app device ids whose taps count; empty means no tap does."""
+    user_ids: frozenset[str] = frozenset()
+    """Home Assistant user ids an answer must be fired as; empty skips the check."""
 
     @classmethod
     def from_env(cls) -> HomeAssistantApprovalConfig:
@@ -123,7 +147,13 @@ class HomeAssistantApprovalConfig:
             verify_ssl=os.environ.get("HOMELAB_HELPER_HASS_VERIFY_SSL", "true").lower()
             not in {"0", "false", "no"},
             timeout_s=int(os.environ.get("HOMELAB_HELPER_APPROVAL_TIMEOUT_S", DEFAULT_TIMEOUT_S)),
+            device_ids=_id_set(DEVICE_IDS_VAR),
+            user_ids=_id_set(USER_IDS_VAR),
         )
+
+
+def _id_set(var: str) -> frozenset[str]:
+    return frozenset(v.strip() for v in os.environ.get(var, "").split(",") if v.strip())
 
 
 class HomeAssistantApprovalChannel:
@@ -132,7 +162,8 @@ class HomeAssistantApprovalChannel:
     ``sender`` and ``listener`` are injectable so tests never need a Home
     Assistant: the sender posts the notification, the listener returns the
     ``mobile_app_notification_action`` event data whose ``action`` matches
-    one of the two button ids (or ``None`` on timeout).
+    one of the two button ids (or ``None`` on timeout). Whatever the listener
+    returns is held to the allowlists again in :meth:`request`.
     """
 
     name = "home-assistant"
@@ -197,13 +228,28 @@ class HomeAssistantApprovalChannel:
                 channel=self.name,
                 detail={"reason": f"no answer within {self.config.timeout_s}s"},
             )
-        responder = event.get("device_id") or event.get("device_name")
+        refusal = self.refusal(event)
+        if refusal is not None:
+            return ApprovalResult(approved=False, channel=self.name, detail={"reason": refusal})
         return ApprovalResult(
             approved=event.get("action") == approve_id,
             channel=self.name,
-            responder=str(responder) if responder else None,
-            detail={k: v for k, v in event.items() if k in ("action", "device_id", "device_name")},
+            responder=str(event["device_id"]),
+            detail={
+                k: v
+                for k, v in event.items()
+                if k in ("action", "device_id", "device_name", CONTEXT_USER_KEY)
+            },
         )
+
+    def refusal(self, event: dict[str, Any]) -> str | None:
+        """Why this event is not the operator's answer, or ``None`` when it is."""
+        device = event.get("device_id")
+        if not device or str(device) not in self.config.device_ids:
+            return f"answer from device {device or '(none)'}, which is not in {DEVICE_IDS_VAR}"
+        if self.config.user_ids and event.get(CONTEXT_USER_KEY) not in self.config.user_ids:
+            return f"answer fired as a Home Assistant user that is not in {USER_IDS_VAR}"
+        return None
 
     async def _clear(self, tag: str) -> None:
         """Remove an answered or expired prompt from the phone; best effort."""
@@ -261,9 +307,17 @@ class HomeAssistantApprovalChannel:
                     msg = json.loads(raw)
                     if msg.get("type") != "event":
                         continue
-                    data = (msg.get("event") or {}).get("data") or {}
-                    if data.get("action") in (approve_id, deny_id):
-                        return dict(data)
+                    event = msg.get("event") or {}
+                    data = event.get("data") or {}
+                    if data.get("action") not in (approve_id, deny_id):
+                        continue
+                    user = (event.get("context") or {}).get("user_id")
+                    answer = {**data, CONTEXT_USER_KEY: user}
+                    refusal = self.refusal(answer)
+                    if refusal is None:
+                        return answer
+                    # Not the operator: keep waiting, so a forged event cannot end the ask.
+                    log.warning("ignored %s: %s", data.get("action"), refusal)
             return None
 
         try:
@@ -295,7 +349,13 @@ def approval_message(manifest: ActionManifest, why: str | None) -> str:
 
 def approval_channel_from_env() -> HomeAssistantApprovalChannel:
     """The configured channel, or :class:`ApprovalConfigError` naming what is missing."""
-    return HomeAssistantApprovalChannel(HomeAssistantApprovalConfig.from_env())
+    config = HomeAssistantApprovalConfig.from_env()
+    if not config.device_ids:
+        raise ApprovalConfigError(
+            f"approval channel needs {DEVICE_IDS_VAR}: the mobile-app device id(s) "
+            "whose Approve counts (see docs/trust-gradient.md, 'Asking on your phone')"
+        )
+    return HomeAssistantApprovalChannel(config)
 
 
 __all__ = [
@@ -303,6 +363,8 @@ __all__ = [
     "APPROVE_PREFIX",
     "DEFAULT_TIMEOUT_S",
     "DENY_PREFIX",
+    "DEVICE_IDS_VAR",
+    "USER_IDS_VAR",
     "ApprovalChannel",
     "ApprovalConfigError",
     "ApprovalError",

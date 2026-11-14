@@ -85,11 +85,37 @@ execution, receipt, rollback — while a human is still the last step.
 ### Asking on your phone
 
 With a Home Assistant notify service configured
-(`HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE=notify.mobile_app_<phone>`), a
+(`HOMELAB_HELPER_APPROVAL_NOTIFY_SERVICE=notify.mobile_app_<phone>`) and your
+phone on the allowlist (`HOMELAB_HELPER_APPROVAL_DEVICE_IDS`), a
 `CONFIRM` action triggered by an agent or the daemon arrives as a notification
 with Approve and Deny. Your tap is recorded as an approval event on the same
 history the CLI writes to. Deny, or no answer within the timeout, executes
 nothing and leaves the proposal pending for the CLI path.
+
+**Whose tap counts.** The answer comes back as an event on Home Assistant's
+bus, and anything holding a Home Assistant token can fire an event with the
+same button id. So the id alone is never an approval:
+
+- `HOMELAB_HELPER_APPROVAL_DEVICE_IDS` (required, comma-separated) lists the
+  companion-app device ids whose answer counts. Without it the channel reports
+  itself unconfigured and nothing is asked. An answer from any other device, or
+  one that names no device, is ignored and the prompt keeps waiting.
+- `HOMELAB_HELPER_APPROVAL_USER_IDS` (optional, comma-separated) lists the
+  Home Assistant user ids an answer must be fired as. Home Assistant stamps
+  that on the event from the credential that fired it, so it cannot be set by
+  the sender.
+
+The device id is event data: a process that holds a token and has learned the
+id can copy it. The user check is the one that holds against that, and only
+when helper's token belongs to a *different* Home Assistant user than the one
+your phone is signed in as. Give helper its own non-admin user, list your own
+user id, and a forged event fired with helper's token is refused.
+
+To find the ids: in Home Assistant open Developer tools → Events, listen to
+`mobile_app_notification_action`, and tap a button on any actionable
+notification. `data.device_id` is the device and `context.user_id` the user.
+If you approved things before this setting existed, the device id is the
+responder column of `helper approvals show`.
 
 ```bash
 helper approvals show      # channel status, what would ask you, who answered what

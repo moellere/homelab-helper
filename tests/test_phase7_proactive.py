@@ -464,6 +464,32 @@ async def test_an_expired_prompt_is_asked_again_later_but_not_forever(sessionmak
     assert len(channel.asked) == MAX_ASKS
 
 
+async def test_an_approval_that_names_nobody_runs_nothing_and_is_not_final(sessionmaker) -> None:
+    class _Nobody(_Channel):
+        async def request(self, manifest, decision, *, proposal_id, title=None, why=None):
+            self.asked.append(proposal_id)
+            return ApprovalResult(approved=True, channel="fake")
+
+    calls: list[list[str]] = []
+
+    async def adapters_for(manifest):
+        return _proxmox_fake([]), _k8s_fake(calls), None, None, None
+
+    channel = _Nobody(answer=True)
+    async with session_scope(sessionmaker) as s:
+        await _one_pending_restart(s, AutonomyLevel.CONFIRM)
+        first = await ask_pending(s, channel=channel, adapters_for=adapters_for)
+        assert first.executed == []
+        assert len(first.declined) == 1
+        (event,) = await _approvals(s)
+        assert event.detail["approved"] is False
+        event.at = event.at - REASK_AFTER - timedelta(minutes=1)
+        await s.flush()
+        again = await ask_pending(s, channel=channel, adapters_for=adapters_for)
+        assert len(again.asked) == 1  # nobody answered, so it is asked again
+    assert not [c for c in calls if "restart" in c]
+
+
 async def _one_pending_restart(s, level: AutonomyLevel) -> None:
     await seed_domains(s)
     await grant_cell(

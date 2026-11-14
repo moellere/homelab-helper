@@ -51,12 +51,17 @@ def make_adapter(
     power_status: int = 200,
     status_code: int = 200,
     track_power: bool = False,
+    task_exit: str = "OK",
 ) -> ProxmoxAdapter:
     """A fake guest. With ``track_power``, power actions move its reported state,
     so a rollback has something real to restore."""
     guest = {"status": "running"}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if "/tasks/" in request.url.path:
+            return httpx.Response(
+                200, json={"data": {"status": "stopped", "exitstatus": task_exit}}
+            )
         requests.append(request)
         path = request.url.path
         if path.endswith("/status/current"):
@@ -425,6 +430,34 @@ async def test_failed_dispatch_writes_failed_receipt_and_keeps_pending(sessionma
         assert receipt.outcome == "failed"
         assert receipt.rollback_state["prior"]["status"] == "running"
         assert p.outcome is ProposalOutcome.PENDING, "failed dispatch stays retryable"
+    await adapter.aclose()
+
+
+async def test_task_that_fails_after_the_api_accepted_it_is_a_failed_receipt(sessionmaker) -> None:
+    """The POST returning a task id says the work was queued, not that it worked."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests, task_exit="command 'lxc-stop' failed: exit code 1")
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "restart",
+            "single-host",
+            AutonomyLevel.AUTONOMOUS,
+            actor="enoch",
+        )
+        p = await make_proposal(s, make_artifact(rollback_verified=True))
+        result = await execute_proposal(s, p, adapter, actor="enoch")
+        assert result.outcome == "failed"
+        assert result.error is not None
+        assert "UPID:pve1:0000:reboot" in result.error
+        assert "exit code 1" in result.error
+        receipt = (await s.execute(select(ExecutionReceipt))).scalar_one()
+        assert receipt.outcome == "failed"
+        assert result.escalation is not None
+        assert result.escalation.demoted, "a failed task counts against the cell"
+        assert p.outcome is ProposalOutcome.PENDING
     await adapter.aclose()
 
 

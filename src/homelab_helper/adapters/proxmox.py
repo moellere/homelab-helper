@@ -8,6 +8,11 @@ hypervisor's view against kernel-probe ground truth and propose it into NetBox.
 the "writes" section exist solely for ``engine/executor.py``, which routes
 every call through ``engine.trust.decide()`` first. Nothing else may call them.
 
+Proxmox answers a write with a task id (UPID) before the work is done, so a
+write here returns only once that task has stopped, and raises
+:class:`ProxmoxTaskError` when it ended in anything but success or was still
+running at its deadline. An accepted request is not a completed action.
+
 Auth is an API token (no ticket/cookie dance): the ``Authorization:
 PVEAPIToken=<id>=<secret>`` header. Proxmox ships a self-signed cert, so
 ``verify_ssl`` defaults to ``False`` (override per-instance once you've pinned a
@@ -25,7 +30,9 @@ Tests inject an ``httpx.AsyncClient`` with ``MockTransport`` — no live cluster
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +42,12 @@ from homelab_helper.secrets import secret_from_env
 
 _HTTP_ERROR_THRESHOLD = 400
 _FALSEY = {"0", "false", "no"}
+
+TASK_POLL_S = 2.0
+POWER_TASK_TIMEOUT_S = 300
+SNAPSHOT_TASK_TIMEOUT_S = 900
+MIGRATE_TASK_TIMEOUT_S = 3600
+_TASK_OK_PREFIXES = ("OK", "WARNINGS")
 
 
 class ProxmoxConfigError(RuntimeError):
@@ -48,6 +61,16 @@ class ProxmoxAPIError(RuntimeError):
         super().__init__(f"Proxmox {method} {path} -> {status_code}: {detail}")
         self.status_code = status_code
         self.detail = detail
+
+
+class ProxmoxTaskError(ProxmoxAPIError):
+    """A task the API accepted ended in an error, or outlived its deadline."""
+
+    def __init__(self, upid: str, detail: str) -> None:
+        RuntimeError.__init__(self, f"Proxmox task {upid} {detail}")
+        self.status_code = 0
+        self.detail = detail
+        self.upid = upid
 
 
 @dataclass(frozen=True)
@@ -129,6 +152,7 @@ class ProxmoxAdapter:
         self.config = config or ProxmoxConfig(url="http://injected", token_id="x", token_secret="x")
         self._client = client
         self._owns_client = client is None
+        self.task_poll_s = TASK_POLL_S
 
     @classmethod
     def from_env(cls) -> ProxmoxAdapter:
@@ -176,6 +200,37 @@ class ProxmoxAdapter:
         # Proxmox wraps the real payload under "data".
         return payload.get("data") if isinstance(payload, dict) else payload
 
+    async def task_status(self, node: str, upid: str) -> dict[str, Any]:
+        """One task's state: ``status`` (running|stopped) and, once stopped, ``exitstatus``."""
+        status = await self._request("GET", f"/nodes/{node}/tasks/{upid}/status")
+        return status if isinstance(status, dict) else {}
+
+    async def wait_for_task(self, node: str, upid: Any, *, timeout_s: float) -> Any:
+        """Block until the task behind ``upid`` stops; return the UPID if it succeeded.
+
+        Raises :class:`ProxmoxTaskError` for a task that ended in an error or is
+        still running after ``timeout_s``. A status read that fails in transit
+        is retried until the deadline; a value that is no UPID is returned as-is.
+        """
+        if not isinstance(upid, str) or not upid.startswith("UPID:"):
+            return upid
+        started = time.monotonic()
+        while True:
+            try:
+                status = await self.task_status(node, upid)
+            except httpx.TransportError:
+                status = {}
+            if status.get("status") == "stopped":
+                exitstatus = str(status.get("exitstatus") or "")
+                if exitstatus.startswith(_TASK_OK_PREFIXES):
+                    return upid
+                raise ProxmoxTaskError(upid, f"ended with {exitstatus or 'no exit status'}")
+            if time.monotonic() - started >= timeout_s:
+                raise ProxmoxTaskError(
+                    upid, f"was still running after {timeout_s:.0f}s; its outcome is unknown"
+                )
+            await asyncio.sleep(self.task_poll_s)
+
     # ----------------------------------------------------------------- writes
     #
     # The ONLY write surface at L2, and it exists solely for the executor:
@@ -190,14 +245,15 @@ class ProxmoxAdapter:
     async def vm_power(self, node: str, vmid: int, kind: str, action: str) -> Any:
         """Dispatch one power action (start|stop|shutdown|reboot) to a guest.
 
-        ``kind`` is "qemu" or "lxc". Returns the Proxmox task UPID. Executor
-        use only — see the block comment above.
+        ``kind`` is "qemu" or "lxc". Returns the Proxmox task UPID once the task
+        has succeeded. Executor use only — see the block comment above.
         """
         if kind not in {"qemu", "lxc"}:
             raise ValueError(f"kind must be qemu or lxc, not {kind!r}")
         if action not in {"start", "stop", "shutdown", "reboot"}:
             raise ValueError(f"unsupported power action {action!r}")
-        return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/status/{action}")
+        upid = await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/status/{action}")
+        return await self.wait_for_task(node, upid, timeout_s=POWER_TASK_TIMEOUT_S)
 
     async def list_snapshots(self, node: str, vmid: int, kind: str) -> list[dict[str, Any]]:
         """Existing snapshots for one guest. Read-only — also the support probe:
@@ -208,15 +264,17 @@ class ProxmoxAdapter:
         self, node: str, vmid: int, kind: str, name: str, *, description: str = ""
     ) -> Any:
         """Take a named snapshot. Executor-only — see the block comment above."""
-        return await self._request(
+        upid = await self._request(
             "POST",
             f"/nodes/{node}/{kind}/{vmid}/snapshot",
             params={"snapname": name, "description": description},
         )
+        return await self.wait_for_task(node, upid, timeout_s=SNAPSHOT_TASK_TIMEOUT_S)
 
     async def rollback_snapshot(self, node: str, vmid: int, kind: str, name: str) -> Any:
         """Restore a guest to a named snapshot. Executor-only."""
-        return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/snapshot/{name}/rollback")
+        upid = await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/snapshot/{name}/rollback")
+        return await self.wait_for_task(node, upid, timeout_s=SNAPSHOT_TASK_TIMEOUT_S)
 
     async def vm_config(
         self, node: str, vmid: int, kind: str, *, pending: bool = False
@@ -250,7 +308,7 @@ class ProxmoxAdapter:
 
         ``online`` keeps a running QEMU guest up during the move; an LXC guest
         cannot live-migrate, so the same flag asks Proxmox to restart it on the
-        target (``restart=1``). Returns the Proxmox task UPID.
+        target (``restart=1``). Returns the Proxmox task UPID once the move is done.
         """
         if kind not in {"qemu", "lxc"}:
             raise ValueError(f"kind must be qemu or lxc, not {kind!r}")
@@ -259,7 +317,8 @@ class ProxmoxAdapter:
         params: dict[str, Any] = {"target": target_node}
         if online:
             params["online" if kind == "qemu" else "restart"] = 1
-        return await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/migrate", params=params)
+        upid = await self._request("POST", f"/nodes/{node}/{kind}/{vmid}/migrate", params=params)
+        return await self.wait_for_task(node, upid, timeout_s=MIGRATE_TASK_TIMEOUT_S)
 
     # ------------------------------------------------------------------ reads
 
@@ -358,6 +417,7 @@ __all__ = [
     "ProxmoxAdapter",
     "ProxmoxConfig",
     "ProxmoxConfigError",
+    "ProxmoxTaskError",
     "parse_cluster_status",
     "parse_vm_resource",
 ]

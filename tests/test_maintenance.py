@@ -52,7 +52,9 @@ def make_proxmox(
     nodes: list[dict[str, Any]],
     fail_migrate_vmid: int | None = None,
 ) -> ProxmoxAdapter:
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: PLR0911
+        if "/tasks/" in request.url.path:
+            return httpx.Response(200, json={"data": {"status": "stopped", "exitstatus": "OK"}})
         requests.append(request)
         path = request.url.path
         if path.endswith("/cluster/status"):

@@ -40,6 +40,8 @@ _ARTIFACT = {
 
 def _mock_adapter(requests: list[httpx.Request]) -> ProxmoxAdapter:
     def handler(request: httpx.Request) -> httpx.Response:
+        if "/tasks/" in request.url.path:
+            return httpx.Response(200, json={"data": {"status": "stopped", "exitstatus": "OK"}})
         requests.append(request)
         if request.url.path.endswith("/status/current"):
             return httpx.Response(200, json={"data": {"status": "running", "name": "web01"}})

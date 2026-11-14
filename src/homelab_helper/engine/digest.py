@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from homelab_helper.db.base import now as utc_now
 from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus, ProposalOutcome
 from homelab_helper.db.models import (
     DigestRun,
@@ -154,9 +155,21 @@ class Digest:
         }
 
 
+COVERED: frozenset[str] = frozenset({"sent", "page"})
+"""Deliveries that closed their window: it reached the operator, or it was quiet
+and there was nothing to say. ``failed`` and ``unconfigured`` did neither."""
+
+
 async def last_digest(session: AsyncSession) -> DigestRun | None:
+    """The last run that closed its window. One that never reached the operator
+    does not move the next window, or the changes it held would go unreported."""
     rows = (
-        await session.execute(select(DigestRun).order_by(DigestRun.window_end.desc()).limit(1))
+        await session.execute(
+            select(DigestRun)
+            .where(DigestRun.delivery.in_(COVERED))
+            .order_by(DigestRun.window_end.desc())
+            .limit(1)
+        )
     ).scalars()
     return rows.one_or_none()
 
@@ -453,7 +466,28 @@ def render_notification(digest: Digest) -> tuple[str, str]:
 async def record_digest(
     session: AsyncSession, digest: Digest, *, delivery: str, detail: str | None = None
 ) -> DigestRun:
-    """Persist the window so the next digest starts where this one stopped."""
+    """Persist the window so the next digest starts where this one stopped.
+
+    An undelivered run is retried on every pass until it goes out, so a retry
+    rewrites the newest row while that row is undelivered too: an outage is one
+    row with its latest attempt, not one per tick.
+    """
+    if delivery not in COVERED:
+        newest = (
+            await session.execute(
+                select(DigestRun).order_by(DigestRun.generated_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+        if newest is not None and newest.delivery not in COVERED:
+            newest.generated_at = utc_now()
+            newest.window_start = digest.window.start
+            newest.window_end = digest.window.end
+            newest.counts = digest.counts()
+            newest.delivery = delivery
+            newest.delivery_detail = detail
+            newest.quiet = digest.quiet
+            await session.flush()
+            return newest
     run = DigestRun(
         window_start=digest.window.start,
         window_end=digest.window.end,
@@ -468,6 +502,7 @@ async def record_digest(
 
 
 __all__ = [
+    "COVERED",
     "DEFAULT_WINDOW_DAYS",
     "AuthorityLine",
     "Digest",

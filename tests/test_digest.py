@@ -406,6 +406,49 @@ async def test_record_digest_stores_counts_and_delivery(sessionmaker) -> None:
         assert stored.window_end is not None
 
 
+@pytest.mark.parametrize("delivery", ["failed", "unconfigured"])
+async def test_an_undelivered_digest_does_not_move_the_window(sessionmaker, delivery) -> None:
+    async with session_scope(sessionmaker) as s:
+        first = await record_digest(
+            s, await build_digest(s, now=NOW - timedelta(days=7)), delivery="sent"
+        )
+        await receipt(s, executed_at=NOW - timedelta(days=1))
+        lost = await build_digest(s, now=NOW)
+        await record_digest(s, lost, delivery=delivery, detail="connection refused")
+
+        assert (await last_digest(s)).id == first.id
+        retry = await build_digest(s, now=NOW + timedelta(minutes=15))
+        assert retry.window.start == lost.window.start, "the week is still owed"
+        assert retry.executed_ok == 1
+
+
+async def test_a_quiet_window_is_closed_without_a_send(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        run = await record_digest(s, await build_digest(s, now=NOW), delivery="page")
+        assert (await last_digest(s)).id == run.id
+
+
+async def test_an_outage_is_one_row_however_many_times_it_is_retried(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        for tick in range(3):
+            at = NOW + timedelta(minutes=15 * tick)
+            await record_digest(
+                s, await build_digest(s, now=at), delivery="failed", detail=f"try {tick}"
+            )
+        sent = await record_digest(
+            s, await build_digest(s, now=NOW + timedelta(hours=1)), delivery="sent"
+        )
+        await record_digest(
+            s, await build_digest(s, now=NOW + timedelta(days=7)), delivery="failed"
+        )
+
+        runs = (await s.execute(select(DigestRun).order_by(DigestRun.generated_at))).scalars().all()
+        assert [r.delivery for r in runs] == ["failed", "sent", "failed"]
+        assert runs[0].delivery_detail == "try 2"
+        assert runs[0].window_end.replace(tzinfo=UTC) == NOW + timedelta(minutes=30)
+        assert runs[1].id == sent.id
+
+
 def test_digest_never_imports_the_llm_package() -> None:
     """P8-AC6: an LLM may narrate a digest; it never chooses the contents."""
     code = (

@@ -136,13 +136,12 @@ def test_send_records_the_window(digest_db: str) -> None:
 
 
 @pytest.mark.sqlite_only
-def test_a_second_send_covers_only_the_new_window(digest_db: str) -> None:
+def test_a_send_that_went_nowhere_still_owes_its_window(digest_db: str) -> None:
     runner.invoke(app, ["digest", "send"])
     runner.invoke(app, ["digest", "send"])
     runs = _runs(digest_db)
-    assert len(runs) == 2
-    assert runs[1]["window_start"] == runs[0]["window_end"]
-    assert json.loads(runs[1]["counts"])["opened"] == 0, "the finding was already reported"
+    assert len(runs) == 1, "a retry rewrites the undelivered row"
+    assert json.loads(runs[0]["counts"])["opened"] == 1, "the finding is still unreported"
 
 
 def test_dry_run_neither_sends_nor_records(digest_db: str) -> None:

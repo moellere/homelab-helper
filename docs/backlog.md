@@ -948,6 +948,9 @@ See `roadmap.md` Phase 8. Slices land in this order.
     next one starts where the last stopped — no change reported twice, none
     lost in a gap. `--days` overrides; `show` deliberately does not record, or
     reading the page would eat a week of changes.
+  - A send that **failed or had no channel configured does not close its
+    window**: the next pass builds from the last digest that went out (or was
+    quiet) and tries again, and the retries share one history row.
   - A **quiet window is recorded but not sent** (`--quiet-ok` to override),
     and standing open findings do not make a window busy — otherwise one known
     LOW finding buzzes the phone every week, which is the stream this slice

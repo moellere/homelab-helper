@@ -171,7 +171,8 @@ async def run_schedule_pass(
 
 async def run_digest_pass(days: int | None, quiet_ok: bool) -> dict[str, Any]:
     """Deliver a digest if one is due. The window is the digest's own business:
-    a daemon restart cannot re-send, because the last run moved the window."""
+    a daemon restart cannot re-send, because the last run moved the window. A
+    send that failed did not move it, so the next pass tries again."""
     engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)

@@ -94,6 +94,7 @@ from homelab_helper.engine.virt_reconcile import (
 from homelab_helper.probes.base import AdapterRegistry, ProbeTarget
 from homelab_helper.probes.network.fingerprint import NetworkFingerprintProbe
 from homelab_helper.probes.network.subnet_scan import NetworkSubnetScanProbe
+from homelab_helper.secrets import SecretError, redact, secret_from_env
 
 if TYPE_CHECKING:
     import uuid
@@ -264,7 +265,11 @@ def discover_host(
         )
         raise typer.Exit(code=2)
 
-    ssh_password = os.environ.get(ssh_password_env) if ssh_password_env else None
+    try:
+        ssh_password = secret_from_env(ssh_password_env) if ssh_password_env else None
+    except SecretError as exc:
+        console.print(f"[red]error:[/red] {ssh_password_env}: {exc}")
+        raise typer.Exit(code=2) from exc
     if ssh_password_env and not ssh_password:
         console.print(f"[yellow]warning:[/yellow] env var {ssh_password_env} is empty")
 
@@ -282,7 +287,7 @@ def discover_host(
         if outcome.success:
             console.print(f"  [green]ok[/green] - {outcome.observations} observation(s)")
         else:
-            console.print(f"  [red]failed[/red] - {outcome.error}")
+            console.print(f"  [red]failed[/red] - {redact(outcome.error or '')}")
 
     async def _go() -> int:
         engine = make_engine(_database_url())
@@ -304,7 +309,8 @@ def discover_host(
                 )
                 if result.session_error:
                     console.print(
-                        f"[red]could not establish SSH session:[/red] {result.session_error}"
+                        "[red]could not establish SSH session:[/red] "
+                        f"{redact(result.session_error)}"
                     )
                 if result.reconcile is not None:
                     _report_reconcile(result.reconcile)

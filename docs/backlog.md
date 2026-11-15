@@ -45,6 +45,7 @@ The rest of Phase 1, and all of Phase 6, is below.
 - [ ] **Reconciler** (`engine/reconciler.py`) — the keystone; everything below leans on it.
   - [x] Plug-rule architecture (`HostProjectionRule` registry) — extensible by appending entries; future probes don't change the reconciler core
   - [x] `host.identity.*` slice → `Host.capabilities` projection + freshness markers (`discovery_last_run`, `last_verified`)
+  - [x] `last_verified` moves only when the run reached the host: a refused login, or a login where every probe failed, still replays stored observations but keeps the last real sighting
   - [x] Latest-observation-per-key precedence (single-source; multi-source lands with non-SSH probes)
   - [x] Host-field idempotency: re-run is a no-op (returns empty deltas)
   - [x] CLI wiring: `helper discover host` invokes the reconciler after the probe batch

@@ -382,11 +382,15 @@ class Reconciler:
         self,
         session: AsyncSession,
         host_id: uuid.UUID,
+        *,
+        verified: bool = True,
     ) -> ReconcileResult:
         """Re-derive Host state from the latest observations for ``host_id``.
 
         Reads only the keys this reconciler knows about. Unknown keys are
-        ignored — they're someone else's slice.
+        ignored — they're someone else's slice. ``verified=False`` says the run
+        behind this call never reached the host: stored observations are still
+        projected, and ``last_verified`` keeps the last time one did.
         """
         host = await session.get(Host, host_id)
         if host is None:
@@ -476,7 +480,8 @@ class Reconciler:
         if latest or lineage_seen:
             now_ts = datetime.now(UTC)
             host.discovery_last_run = now_ts
-            host.last_verified = now_ts
+            if verified:
+                host.last_verified = now_ts
 
         summaries = (dimm_summary, storage_summary, nic_summary)
         await session.flush()

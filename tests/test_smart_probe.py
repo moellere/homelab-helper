@@ -80,9 +80,12 @@ class _FakeSSH:
     def __init__(self, *, scan: str, devices: dict[str, str]) -> None:
         self._scan = scan
         self._devices = devices
+        self.commands: list[str] = []
 
     async def run(self, command: str, **_: Any):  # noqa: ANN003
         from homelab_helper.adapters.kernel_ssh import CommandResult
+
+        self.commands.append(command)
 
         if "--scan" in command:
             out = self._scan
@@ -134,3 +137,10 @@ async def test_probe_skips_cleanly_when_smartctl_absent() -> None:
     result = await HostSmartProbe().run(_ctx(adapter))
     assert result.success
     assert result.observations == []
+
+
+async def test_a_device_name_from_the_host_is_one_shell_word() -> None:
+    scan = json.dumps({"devices": [{"name": "/dev/sda; touch /tmp/owned"}]})
+    ssh = _FakeSSH(scan=scan, devices={})
+    await HostSmartProbe().run(_ctx(_FakeAdapter(ssh)))
+    assert ssh.commands[-1] == "smartctl -a -j '/dev/sda; touch /tmp/owned'"

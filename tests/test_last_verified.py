@@ -15,6 +15,7 @@ from homelab_helper.db.enums import IntentTargetType, PrivilegeLevel
 from homelab_helper.db.models import Host
 from homelab_helper.db.session import session_scope
 from homelab_helper.engine.host_probe import HostProbeRequest, probe_host
+from homelab_helper.engine.talos_probe import TalosProbeRequest, probe_talos
 from homelab_helper.probes.base import ObservationData, Probe, ProbeContext, ProbeResult
 from tests.test_host_probe_credentials import _FakeSSH
 from tests.test_node_update import sessionmaker_  # noqa: F401 - fixture
@@ -95,4 +96,32 @@ async def test_a_login_where_every_probe_failed_is_no_sighting(sessionmaker_) ->
     async with session_scope(sessionmaker_) as s:
         await _seen_once(s)
         host = await _run(s, [_FailingProbe])
+        assert _verified(host) == _SEEN
+
+
+class _TalosAPI:
+    def __init__(self, *, up: bool) -> None:
+        self._up = up
+
+    async def health_check(self, _node: str) -> tuple[bool, str | None]:
+        return (True, None) if self._up else (False, "connection refused")
+
+
+async def _run_talos(session: Any, *, up: bool) -> Host:
+    await probe_talos(
+        session,
+        TalosProbeRequest(name="cp9", node="192.0.2.9"),
+        probe_classes=[_KernelProbe],
+        adapter=_TalosAPI(up=up),  # type: ignore[arg-type]
+    )
+    return (await session.execute(select(Host).where(Host.hostname == "cp9"))).scalar_one()
+
+
+async def test_an_unreachable_talos_node_keeps_its_last_sighting(sessionmaker_) -> None:  # noqa: F811
+    async with session_scope(sessionmaker_) as s:
+        host = await _run_talos(s, up=True)
+        assert host.last_verified is not None
+        host.last_verified = _SEEN
+        await s.flush()
+        host = await _run_talos(s, up=False)
         assert _verified(host) == _SEEN

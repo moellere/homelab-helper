@@ -65,8 +65,9 @@ async def probe_talos(
     """Run the talos probe batch against one node, then reconcile.
 
     An unreachable machine API is reported as ``session_error`` and counted as
-    a failure; reconciliation still runs so the Host row's freshness markers
-    reflect the attempt, exactly as the SSH path does.
+    a failure; reconciliation still runs so ``discovery_last_run`` reflects the
+    attempt, and ``last_verified`` moves only if a probe answered, exactly as
+    the SSH path does.
     """
     classes = (
         probe_classes if probe_classes is not None else select_talos_probes(request.probe_names)
@@ -110,7 +111,8 @@ async def probe_talos(
                 on_probe(outcome)
         mark_kernel_probed(host, result.observations)
 
-    result.reconcile = await Reconciler().reconcile_host(session, host.id)
+    reached = result.session_error is None and any(o.success for o in result.probes)
+    result.reconcile = await Reconciler().reconcile_host(session, host.id, verified=reached)
     return result
 
 

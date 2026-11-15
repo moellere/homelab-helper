@@ -461,3 +461,16 @@ def test_daemon_once_runs_the_schedule_job_and_cli_shows_it(tmp_path, monkeypatc
     assert "host.fast" in result.output
     assert "15m" in result.output
     assert "never" in result.output
+
+
+async def test_failure_history_is_read_from_a_recent_window_only(
+    tmp_path, sessionmaker, fakes
+) -> None:
+    """Three failures from long ago, with nothing since, are not today's verdict."""
+    schedule = load_schedule(_write(tmp_path, SCHEDULE))
+    async with session_scope(sessionmaker) as s:
+        await _record_runs(s, [False] * mod.PROBE_FAILING_AFTER)
+        for run in (await s.execute(select(DiscoveryRun))).scalars():
+            run.started_at -= timedelta(days=60)
+        await s.flush()
+        assert (await reconcile_probe_failures(s, schedule)).counts()["opened"] == 0

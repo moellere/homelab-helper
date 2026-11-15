@@ -1126,6 +1126,18 @@ from 1.0.0 is the operator-time list under 9.1.
   not run (a schedule that does not load, a discovery source that errored).
   AC #6 met: two probes on different cadences from one daemon, an assertion on
   its own schedule (`tests/test_schedule.py`).
+- [x] **Probe history has a horizon** — `engine/retention.py`, run with the
+  hourly usage job. Observations older than `HOMELAB_HELPER_OBSERVATION_DAYS`
+  and discovery runs older than `HOMELAB_HELPER_RUN_DAYS` (default 120 each,
+  `0` turns that half off) are deleted, except the newest observation per
+  target, key and confidence tier and the newest run per host and probe: a
+  host that stopped reporting keeps its last known facts, and the schedule
+  keeps its cadence anchor. The observation horizon never drops below the 90
+  days of `host.smart` history disk health reads. Findings are not pruned.
+  Alongside it, the reads that loaded whole histories now ask the database
+  for what they use: the reconciler's winning observation per key is ranked
+  in SQL, `probe-failing` reads a recent window of runs, and MCP
+  `list_findings` filters in the query and returns at most `limit` (200).
 - [x] **8.3/8.4 follow-up (10/09/2026)** — `discover usage` died on every run
   after 8.5 added storage pools (`rollup` looked up a memory field a pool's RRD
   does not have, and dropped every pool point for lacking `cpu`); pools now

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -90,3 +91,17 @@ async def test_health_check_ok_and_failure() -> None:
     good, err = await K8sAdapter(runner=bad).health_check()
     assert good is False
     assert err is not None
+
+
+async def test_a_kubectl_that_times_out_is_killed(tmp_path) -> None:
+    pidfile = tmp_path / "pid"
+    fake = tmp_path / "kubectl"
+    fake.write_text(f"#!/bin/sh\necho $$ > {pidfile}\nexec sleep 30\n")
+    fake.chmod(0o755)
+    adapter = K8sAdapter(kubectl_path=str(fake))
+
+    with pytest.raises(KubeError, match="timed out"):
+        await adapter._subprocess_runner(["get", "nodes"], 1)
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)

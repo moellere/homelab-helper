@@ -172,12 +172,17 @@ class K8sAdapter:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+        except OSError as exc:
+            raise KubeError(f"could not launch {self._bin!r}: {exc}") from exc
+        try:
             async with asyncio.timeout(timeout):
                 out, err = await proc.communicate()
         except TimeoutError as exc:
+            # Against a hung API server every timeout would otherwise leave a
+            # kubectl behind, one per call, for as long as the caller lives.
+            proc.kill()
+            await proc.wait()
             raise KubeError(f"kubectl timed out after {timeout}s: {' '.join(args)}") from exc
-        except OSError as exc:
-            raise KubeError(f"could not launch {self._bin!r}: {exc}") from exc
         code = proc.returncode if proc.returncode is not None else -1
         return code, out.decode(errors="replace"), err.decode(errors="replace")
 

@@ -158,5 +158,38 @@ class ProbeRunner:
         await session.flush()
         return run_row, result
 
+    async def record_unreached(
+        self,
+        probe: Probe,
+        target: ProbeTarget,
+        session: AsyncSession,
+        *,
+        host_id: _uuid.UUID | None,
+        error: str,
+        triggered_by: str = "manual",
+    ) -> DiscoveryRun:
+        """Persist a failed run for a probe whose target could not be reached.
+
+        Without a row the probe has no history to judge: a host that is down
+        never looks like a failing probe, and is retried on every pass.
+        """
+        probe_row = await self._resolve_probe_row(session, probe)
+        run_row = DiscoveryRun(
+            host_id=host_id,
+            target_spec=target.primary_ip or target.hostname or target.network_cidr,
+            probe_id=probe_row.id,
+            probe_name=probe.name,
+            probe_version=probe.version,
+            privilege_level=probe.required_privilege,
+            triggered_by=triggered_by,
+            ended_at=datetime.now(UTC),
+            success=False,
+            error=error,
+            observation_count=0,
+        )
+        session.add(run_row)
+        await session.flush()
+        return run_row
+
 
 __all__ = ["ProbeRunner"]

@@ -1119,7 +1119,11 @@ from 1.0.0 is the operator-time list under 9.1.
   honours a 15-minute RAID cadence and a daily SMART cadence from the same
   file. Interval syntax only (`90s 15m 6h 1d 1w`); cron is refused, not
   guessed. An assertion's own `schedule` column wins over the file. A target
-  with nothing due costs no connection; an unreachable target fails alone.
+  with nothing due costs no connection; an unreachable target fails alone,
+  and each probe it could not run is recorded as a failed `DiscoveryRun`, so a
+  host that is down is retried on its cadence and becomes a `probe-failing`
+  finding like any other. `daemon run --once` exits non-zero when a job could
+  not run (a schedule that does not load, a discovery source that errored).
   AC #6 met: two probes on different cadences from one daemon, an assertion on
   its own schedule (`tests/test_schedule.py`).
 - [x] **8.3/8.4 follow-up (10/09/2026)** — `discover usage` died on every run

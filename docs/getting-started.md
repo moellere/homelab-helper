@@ -213,6 +213,7 @@ helper chat "what's wrong with my lab?"
 
 ```bash
 helper daemon run --once    # discovery → playbooks → listener, one pass; cron-friendly
+                            # (exits non-zero if a job could not run)
 helper daemon run           # the same on cadences, until Ctrl-C
 ```
 

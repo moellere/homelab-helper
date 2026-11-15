@@ -200,6 +200,11 @@ async def run_digest_pass(days: int | None, quiet_ok: bool) -> dict[str, Any]:
         await engine.dispose()
 
 
+def _job_errored(result: dict[str, Any]) -> bool:
+    """The job as a whole could not run, or one of a discovery pass's sources could not."""
+    return "error" in result or any(isinstance(v, dict) and "error" in v for v in result.values())
+
+
 def _report(job: str, result: dict[str, Any]) -> None:
     summary = ", ".join(
         f"{k}={escape(str(v))}" for k, v in result.items() if v not in ([], 0, None, {}, "")
@@ -255,20 +260,27 @@ def daemon_run(
         else [s.strip() for s in sources.split(",") if s.strip()]
     )
 
+    errored: list[str] = []
+
     async def _pass(job: str) -> None:
         try:
             if job == "discovery":
-                _report(job, await run_discovery_pass(source_list))
+                result = await run_discovery_pass(source_list)
             elif job == "playbooks":
-                _report(job, await run_playbook_pass())
+                result = await run_playbook_pass()
             elif job == "listen":
-                _report(job, await run_listen_pass())
+                result = await run_listen_pass()
             elif job == "digest":
-                _report(job, await run_digest_pass(None, quiet_ok=False))
-            elif job == "schedule":
-                _report(job, await run_schedule_pass(schedule_path, probes=True, assertions=True))
+                result = await run_digest_pass(None, quiet_ok=False)
+            else:
+                result = await run_schedule_pass(schedule_path, probes=True, assertions=True)
         except Exception as exc:
+            errored.append(job)
             console.print(f"[dim]{_stamp()}[/dim] [red]{job} failed:[/red] {escape(str(exc))}")
+            return
+        if _job_errored(result):
+            errored.append(job)
+        _report(job, result)
 
     jobs: list[tuple[str, int]] = []
     if source_list:
@@ -313,6 +325,12 @@ def daemon_run(
         console.print("[yellow]nothing enabled[/yellow]")
         raise typer.Exit(code=1)
     asyncio.run(_once() if once else _forever())
+    if once and errored:
+        # cron and a CronJob read the exit status; a pass that could not run
+        # (a schedule file that does not parse, a source that is down) must
+        # not look like a pass that had nothing to do.
+        console.print(f"[red]errors in:[/red] {', '.join(errored)}")
+        raise typer.Exit(code=1)
 
 
 __all__ = [

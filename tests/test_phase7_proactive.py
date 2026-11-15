@@ -740,6 +740,15 @@ def test_daemon_once_runs_each_job(tmp_path, monkeypatch) -> None:
     assert result.exit_code == 0
     assert seen[-1] == "playbooks"
 
+    async def one_source_down(sources):
+        return {"k8s": {"nodes_seen": 0}, "argocd": {"source": "argocd", "error": "timed out"}}
+
+    monkeypatch.setattr(mod, "run_discovery_pass", one_source_down)
+    result = CliRunner().invoke(app, ["daemon", "run", "--once", "--sources", "k8s,argocd"])
+    assert result.exit_code == 1
+    assert "errors in: discovery" in result.output
+    assert seen[-2:] == ["playbooks", "listen"]  # the other jobs still ran
+
 
 def test_daemon_default_sources_are_the_configured_ones(tmp_path, monkeypatch) -> None:
     """Phase 9.2: no --sources means what `helper config` says is configured —

@@ -79,17 +79,21 @@ async def probe_talos(
     result = HostProbeResult(hostname=host.hostname, host_id=str(host.id))
     api_node = request.node or host.primary_ip or host.hostname or request.name
 
+    target = ProbeTarget(
+        kind="talos",
+        host_id=str(host.id),
+        hostname=host.hostname,
+        primary_ip=host.primary_ip or api_node,
+    )
     ok, err = await talos_adapter.health_check(api_node)
     if not ok:
         result.session_error = f"talos node {api_node} unreachable: {err}"
         result.failures += 1
+        for cls in classes:
+            await runner.record_unreached(
+                cls(), target, session, host_id=host.id, error=result.session_error
+            )
     else:
-        target = ProbeTarget(
-            kind="talos",
-            host_id=str(host.id),
-            hostname=host.hostname,
-            primary_ip=host.primary_ip or api_node,
-        )
         for cls in classes:
             probe = cls()
             _run_row, probe_result = await runner.run(

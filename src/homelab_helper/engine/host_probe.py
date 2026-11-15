@@ -224,7 +224,10 @@ async def probe_host(
             host.credentials_ref = f"ssh:{request.ssh_user}:{request.ssh_key_path or ''}"
 
     mark_kernel_probed(host, result.observations)
-    result.reconcile = await Reconciler().reconcile_host(session, host.id)
+    # A refused login, or a login where every probe failed, saw nothing: the
+    # reconcile below replays stored observations and must not date them today.
+    reached = result.session_error is None and any(o.success for o in result.probes)
+    result.reconcile = await Reconciler().reconcile_host(session, host.id, verified=reached)
     return result
 
 

@@ -19,7 +19,13 @@ from homelab_helper.probes.base import ObservationData, Probe, ProbeContext, Pro
 from tests.test_host_probe_credentials import _FakeSSH
 from tests.test_node_update import sessionmaker_  # noqa: F401 - fixture
 
-_SEEN = datetime(2026, 1, 2, tzinfo=UTC).replace(tzinfo=None)
+_SEEN = datetime(2026, 1, 2, tzinfo=UTC)
+
+
+def _verified(host: Host) -> datetime:
+    """SQLite hands the column back naive, Postgres aware; compare as UTC."""
+    assert host.last_verified is not None
+    return host.last_verified.replace(tzinfo=UTC)
 
 
 class _KernelProbe(Probe):
@@ -74,14 +80,14 @@ async def test_a_probe_that_answered_stamps_the_host(sessionmaker_) -> None:  # 
     async with session_scope(sessionmaker_) as s:
         await _seen_once(s)
         host = await _run(s, [_FailingProbe, _KernelProbe])
-        assert host.last_verified > _SEEN
+        assert _verified(host) > _SEEN
 
 
 async def test_a_refused_login_leaves_the_last_sighting_alone(sessionmaker_) -> None:  # noqa: F811
     async with session_scope(sessionmaker_) as s:
         await _seen_once(s)
         host = await _run(s, [_KernelProbe], refused=True)
-        assert host.last_verified == _SEEN
+        assert _verified(host) == _SEEN
         assert host.capabilities["kernel"] == "6.8.0"
 
 
@@ -89,4 +95,4 @@ async def test_a_login_where_every_probe_failed_is_no_sighting(sessionmaker_) ->
     async with session_scope(sessionmaker_) as s:
         await _seen_once(s)
         host = await _run(s, [_FailingProbe])
-        assert host.last_verified == _SEEN
+        assert _verified(host) == _SEEN

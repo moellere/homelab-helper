@@ -88,12 +88,12 @@ assertions:
   - name: myhost.os_is_supported
     host: myhost
     description: myhost should be running a supported Linux distribution
-    rationale: The probe set assumes systemd-era Linux; unsupported OSes silently miss observations
+    rationale: The probes assume a Linux they know (a systemd-era distribution, or Talos through its own probes); others silently miss observations
     severity_on_fail: low
     verifier_spec:
       key: host.identity.os_id
       predicate: regex
-      value: "^(ubuntu|debian|fedora|rocky|alma|centos|nixos|opensuse|arch)$"
+      value: "^(ubuntu|debian|raspbian|fedora|rocky|alma|centos|nixos|opensuse|arch|talos)$"
 
   - name: myhost.cpu_cores_at_least_2
     host: myhost

@@ -187,6 +187,12 @@ def build_output(lscpu_flat: dict[str, str], cpuinfo_flat: dict[str, str]) -> Ho
     threads_per_core = parse_int_or_none(lscpu_flat.get("Thread(s) per core"))
     cpus = parse_int_or_none(lscpu_flat.get("CPU(s)"))
     cores = cores_per_socket * sockets if (cores_per_socket and sockets) else None
+    if cores is None:
+        # ARM boards have no sockets: lscpu prints "Socket(s): -" and counts
+        # cores per cluster instead (a Pi 4 is one cluster of four).
+        per_cluster = parse_int_or_none(lscpu_flat.get("Core(s) per cluster"))
+        clusters = parse_int_or_none(lscpu_flat.get("Cluster(s)"))
+        cores = per_cluster * clusters if (per_cluster and clusters) else None
     threads = cpus
 
     flag_blob = lscpu_flat.get("Flags") or cpuinfo_flat.get("flags") or ""

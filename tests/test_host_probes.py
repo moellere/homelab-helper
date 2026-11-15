@@ -100,6 +100,24 @@ def test_build_output_combines_lscpu_and_cpuinfo() -> None:
     assert set(out.interesting_flags) >= {"avx", "avx2", "vmx", "aes"}
 
 
+def test_build_output_counts_cores_per_cluster_on_a_socketless_arm_board() -> None:
+    lscpu = {
+        "Architecture": "aarch64",
+        "Vendor ID": "ARM",
+        "Model name": "Cortex-A72",
+        "Thread(s) per core": "1",
+        "Core(s) per cluster": "4",
+        "Socket(s)": "-",
+        "Cluster(s)": "1",
+        "CPU(s)": "4",
+        "Flags": "fp asimd evtstrm crc32 cpuid",
+    }
+    out = build_output(lscpu, {})
+    assert out.cores == 4
+    assert out.sockets is None
+    assert out.threads == 4
+
+
 def test_parse_meminfo_converts_kb_to_bytes() -> None:
     raw = "MemTotal:       16363716 kB\nMemFree:         5000000 kB\nHugePages_Total:       0\nHugepagesize:       2048 kB\n"
     info = parse_meminfo(raw)

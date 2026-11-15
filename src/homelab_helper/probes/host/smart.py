@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shlex
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -176,7 +177,7 @@ class HostSmartProbe(Probe):
                 for name in names:
                     # smartctl uses a bitmask exit status (non-zero even on a
                     # readable healthy drive), so parse stdout regardless of code.
-                    res = await ssh.run(f"{sudo}smartctl -a -j {name}")
+                    res = await ssh.run(f"{sudo}smartctl -a -j {shlex.quote(name)}")
                     dev = parse_smart_device(res.stdout)
                     if dev is not None:
                         devices.append(dev)

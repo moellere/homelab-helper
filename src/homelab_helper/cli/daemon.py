@@ -31,7 +31,12 @@ from rich.console import Console
 from rich.markup import escape
 
 from homelab_helper.config import config_status, database_url
-from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.db.session import (
+    advisory_lock,
+    make_engine,
+    make_sessionmaker,
+    session_scope,
+)
 from homelab_helper.engine.approval import (
     ApprovalConfigError,
     HomeAssistantApprovalConfig,
@@ -41,7 +46,15 @@ from homelab_helper.engine.digest import build_digest, record_digest, render_not
 from homelab_helper.engine.listener import Adapters, ask_pending, listener_lock
 from homelab_helper.engine.notify import notifier_from_env, send_digest
 from homelab_helper.engine.playbooks import run_playbooks
-from homelab_helper.engine.schedule import SCHEDULE_ENV_VAR, ScheduleError, load_schedule, run_due
+from homelab_helper.engine.schedule import (
+    SCHEDULE_ASSERTIONS_LOCK_KEY,
+    SCHEDULE_ENV_VAR,
+    SCHEDULE_PROBES_LOCK_KEY,
+    ScheduleError,
+    ScheduleRun,
+    load_schedule,
+    run_due,
+)
 
 if TYPE_CHECKING:
     from homelab_helper.engine.executor import ActionManifest
@@ -153,18 +166,47 @@ async def run_schedule_pass(
         schedule = load_schedule(schedule_path)
     except ScheduleError as exc:
         return {"error": str(exc)}
+    # Each half runs only where the file asks for it, and under its own lock:
+    # two daemons on one database (one probing, one asserting) never contend,
+    # and two passes of the same half never overlap.
+    halves = [
+        ("probes", probes and bool(schedule.hosts or schedule.talos), SCHEDULE_PROBES_LOCK_KEY),
+        ("assertions", assertions and bool(schedule.assertions), SCHEDULE_ASSERTIONS_LOCK_KEY),
+    ]
+    total = ScheduleRun()
+    skipped: list[str] = []
     engine = make_engine(database_url())
     try:
-        async with session_scope(make_sessionmaker(engine)) as session:
-            r = await run_due(session, schedule, probes=probes, assertions=assertions)
-            return {
-                "probes_run": r.probes_run,
-                "probe_failures": r.probe_failures,
-                "probe_findings": r.probe_findings,
-                "assertions_run": r.assertions_run,
-                "not_due": r.not_due,
-                "errors": r.errors,
-            }
+        sessionmaker = make_sessionmaker(engine)
+        for half, wanted, key in halves:
+            if not wanted:
+                continue
+            async with advisory_lock(engine, key) as held:
+                if not held:
+                    skipped.append(f"{half}: another pass is still running")
+                    continue
+                async with session_scope(sessionmaker) as session:
+                    r = await run_due(
+                        session,
+                        schedule,
+                        probes=half == "probes",
+                        assertions=half == "assertions",
+                    )
+            total.probes_run += r.probes_run
+            total.probe_failures += r.probe_failures
+            total.probe_findings |= r.probe_findings
+            total.assertions_run += r.assertions_run
+            total.not_due += r.not_due
+            total.errors += r.errors
+        return {
+            "probes_run": total.probes_run,
+            "probe_failures": total.probe_failures,
+            "probe_findings": total.probe_findings,
+            "assertions_run": total.assertions_run,
+            "not_due": total.not_due,
+            "errors": total.errors,
+            "skipped": skipped,
+        }
     finally:
         await engine.dispose()
 

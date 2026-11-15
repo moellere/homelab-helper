@@ -33,16 +33,16 @@ override. The listener is a trigger, like the MCP tool, not an authority.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome
 from homelab_helper.db.models import ProposalLog, TrustHistory
+from homelab_helper.db.session import advisory_lock
 from homelab_helper.engine.executor import (
     ActionManifest,
     ExecutionRefused,
@@ -54,6 +54,8 @@ from homelab_helper.engine.executor import (
 from homelab_helper.engine.trust import Decision, decide, load_trust_context
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
     from homelab_helper.engine.approval import ApprovalChannel, ApprovalResult
@@ -261,30 +263,9 @@ async def _settle(
     result.executed.append(f"{pid[:8]} {manifest.cell_key} -> {outcome.outcome}{note}")
 
 
-@asynccontextmanager
-async def listener_lock(engine: AsyncEngine) -> AsyncIterator[bool]:
-    """Hold the listener's advisory lock for one pass; yields ``False`` if another pass has it.
-
-    Postgres only: off Postgres (the single-user SQLite default) it yields ``True``.
-    """
-    if engine.dialect.name != "postgresql":
-        yield True
-        return
-    async with engine.connect() as conn:
-        held = bool(
-            (
-                await conn.execute(
-                    text("SELECT pg_try_advisory_lock(:k)"), {"k": LISTENER_LOCK_KEY}
-                )
-            ).scalar()
-        )
-        await conn.commit()
-        try:
-            yield held
-        finally:
-            if held:
-                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": LISTENER_LOCK_KEY})
-                await conn.commit()
+def listener_lock(engine: AsyncEngine) -> AbstractAsyncContextManager[bool]:
+    """The listener's advisory lock for one pass; yields ``False`` if another pass has it."""
+    return advisory_lock(engine, LISTENER_LOCK_KEY)
 
 
 def _why(proposal: ProposalLog) -> str | None:

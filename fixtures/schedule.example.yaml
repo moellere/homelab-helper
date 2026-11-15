@@ -34,6 +34,9 @@ talos:
     probes:
       talos.host: 2h
 
+# Assertions run only from a file that has this block. Two daemons on one
+# database (say, one with SSH keys probing hosts and one in a cluster) should
+# name assertions in exactly one file; leave the block out of the other.
 assertions:
   default: 6h
   ceph-replication-link-speed: 1d   # an assertion's own `schedule` column still wins

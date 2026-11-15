@@ -233,6 +233,86 @@ async def test_an_assertion_runs_on_its_own_schedule(tmp_path, sessionmaker, fak
         assert sorted(d.assertion.name for d in due) == ["hourly", "nightly", "pinned"]
 
 
+HOSTS_ONLY = SCHEDULE.replace("assertions: {default: 1h, nightly: 1d}\n", "")
+
+
+async def _one_assertion(s: Any) -> None:
+    host = Host(hostname="nas0", primary_ip="10.0.0.9", capabilities={"cpu_cores": 8})
+    s.add(host)
+    await s.flush()
+    s.add(
+        ConfigurationAssertion(
+            name="hourly",
+            scope=AssertionScope.HOST,
+            scope_target=str(host.id),
+            description="hourly",
+            kind=AssertionKind.OBSERVATION_PREDICATE,
+            verifier_spec={"key": "host.cpu.cores", "value": 8},
+            severity_on_fail=FindingSeverity.LOW,
+        )
+    )
+    await s.flush()
+
+
+async def test_a_file_without_an_assertions_block_runs_no_assertions(
+    tmp_path, sessionmaker, fakes
+) -> None:
+    assert "assertions:" not in HOSTS_ONLY.split("hosts:")[1]
+    schedule = load_schedule(_write(tmp_path, HOSTS_ONLY))
+    async with session_scope(sessionmaker) as s:
+        await _one_assertion(s)
+        r = await run_due(s, schedule, ssh_adapter=_FakeSSH())
+        assert r.probes_run == ["nas0: host.fast, host.slow"]
+        assert r.assertions_run == []
+        assert (await s.execute(select(func.count()).select_from(AssertionRun))).scalar_one() == 0
+
+
+async def _schedule_pass_db(tmp_path, monkeypatch) -> Any:
+    url = f"sqlite+aiosqlite:///{tmp_path / 'pass.db'}"  # conftest redirects this on Postgres
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
+    eng = make_engine(url)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with session_scope(make_sessionmaker(eng)) as s:
+        await _one_assertion(s)
+    return eng
+
+
+async def test_the_daemon_pass_runs_each_half_the_file_asks_for(
+    tmp_path, fakes, monkeypatch
+) -> None:
+    from homelab_helper.cli.daemon import run_schedule_pass
+
+    eng = await _schedule_pass_db(tmp_path, monkeypatch)
+    await eng.dispose()
+    asserting = _write(tmp_path, "assertions: {default: 1h}\n")
+    out = await run_schedule_pass(str(asserting), probes=True, assertions=True)
+    assert [a.split(":")[0] for a in out["assertions_run"]] == ["hourly"]
+    assert out["probes_run"] == []
+    assert out["skipped"] == []
+
+
+@pytest.mark.postgres_only
+async def test_a_half_another_pass_holds_is_skipped_not_repeated(
+    tmp_path, fakes, monkeypatch
+) -> None:
+    from homelab_helper.cli.daemon import run_schedule_pass
+    from homelab_helper.db.session import advisory_lock
+
+    eng = await _schedule_pass_db(tmp_path, monkeypatch)
+    asserting = _write(tmp_path, "assertions: {default: 1h}\n")
+    try:
+        async with advisory_lock(eng, mod.SCHEDULE_ASSERTIONS_LOCK_KEY) as held:
+            assert held
+            out = await run_schedule_pass(str(asserting), probes=True, assertions=True)
+        assert out["assertions_run"] == []
+        assert out["skipped"] == ["assertions: another pass is still running"]
+        out = await run_schedule_pass(str(asserting), probes=True, assertions=True)
+        assert [a.split(":")[0] for a in out["assertions_run"]] == ["hourly"]
+    finally:
+        await eng.dispose()
+
+
 async def test_an_unreachable_target_fails_alone(
     tmp_path, sessionmaker, fakes, monkeypatch
 ) -> None:

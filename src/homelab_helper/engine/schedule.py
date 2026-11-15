@@ -60,6 +60,10 @@ if TYPE_CHECKING:
 
 SCHEDULE_ENV_VAR = "HOMELAB_HELPER_SCHEDULE"
 DEFAULT_INTERVAL = "6h"
+SCHEDULE_PROBES_LOCK_KEY = 0x484C5350
+SCHEDULE_ASSERTIONS_LOCK_KEY = 0x484C5341
+"""Advisory-lock keys: one pass at a time per half, so two daemons sharing a
+database never run the same probe batch or the same assertion twice at once."""
 PROBE_FAILING_AFTER = 3
 """Consecutive failed runs of one probe on one host before it becomes a finding."""
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -378,6 +382,10 @@ async def run_due(
 ) -> ScheduleRun:
     """Run whatever is due: one probe batch per target, then each due assertion.
 
+    Each half runs only where the file asks for it: probes for the targets it
+    lists, assertions only when it has an ``assertions:`` block. A daemon whose
+    file lists hosts alone leaves assertions to the daemon whose file names them.
+
     A target with nothing due costs no connection. Probe failures are reported
     per probe (the batch still reconciles what succeeded, as ``discover host``
     does); an unreachable target is an error for that target only.
@@ -440,7 +448,7 @@ async def run_due(
                     result.probe_failures.append(f"{target}/{p.probe}: {p.error}")
         counts = (await reconcile_probe_failures(session, schedule)).counts()
         result.probe_findings = {k: v for k, v in counts.items() if v}
-    if assertions:
+    if assertions and schedule.assertions:
         from homelab_helper.engine.assertions import AssertionEngine as _Engine  # noqa: PLC0415
 
         engine = assertion_engine or _Engine()
@@ -458,7 +466,9 @@ async def run_due(
 __all__ = [
     "DEFAULT_INTERVAL",
     "PROBE_FAILING_AFTER",
+    "SCHEDULE_ASSERTIONS_LOCK_KEY",
     "SCHEDULE_ENV_VAR",
+    "SCHEDULE_PROBES_LOCK_KEY",
     "DueAssertion",
     "DueProbe",
     "HostSpec",

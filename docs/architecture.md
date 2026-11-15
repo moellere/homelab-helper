@@ -454,7 +454,7 @@ Reconciler detects: harness expected to write value X based on observation, but 
 
 ### Probe failures
 
-Per-probe error logged in DiscoveryRun. Other probes in the same run continue. Three consecutive failed runs of a scheduled probe open a `probe-failing` finding against that host/probe pair, and its next success resolves it (`engine/schedule.py`). Probe failure rate is itself a health metric for the harness.
+Per-probe error logged in DiscoveryRun. Other probes in the same run continue. Three consecutive failed runs of a scheduled probe open a `probe-failing` finding against that host/probe pair, and its next success resolves it (`engine/schedule.py`). A target that cannot be reached at all records a failed run for every probe it was due, so a host that is down reaches the same finding. Probe failure rate is itself a health metric for the harness.
 
 ### helper-agent loses connection to server
 

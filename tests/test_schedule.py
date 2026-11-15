@@ -256,6 +256,46 @@ async def test_an_unreachable_target_fails_alone(
     assert r.errors == ["nas1: connection refused"]
 
 
+class _RefusingSSH:
+    def shared_session(self, *_: Any, **__: Any):
+        class _Ctx:
+            async def __aenter__(self):
+                raise OSError("connection refused")
+
+            async def __aexit__(self, *exc: Any) -> bool:
+                return False
+
+        return _Ctx()
+
+
+async def test_a_host_that_is_down_becomes_a_probe_failing_finding(
+    tmp_path, sessionmaker, fakes
+) -> None:
+    T0 = datetime.now(UTC)
+    schedule = load_schedule(_write(tmp_path, SCHEDULE))
+    async with session_scope(sessionmaker) as s:
+        for tick in range(mod.PROBE_FAILING_AFTER):
+            r = await run_due(
+                s,
+                schedule,
+                now=T0 + timedelta(minutes=16 * tick),
+                ssh_adapter=_RefusingSSH(),
+                assertions=False,
+            )
+            assert r.errors == ["nas0: connection refused"]
+        # The first pass recorded both probes, so host.slow (6h) was not retried.
+        runs = (await s.execute(select(DiscoveryRun.probe_name, DiscoveryRun.success))).all()
+        assert sorted(runs) == [("host.fast", False)] * 3 + [("host.slow", False)]
+        assert r.probe_findings == {"opened": 1}
+        [row] = await _probe_findings(s)
+        assert "connection refused" in row.description
+
+        back = await run_due(
+            s, schedule, now=T0 + timedelta(hours=1), ssh_adapter=_FakeSSH(), assertions=False
+        )
+        assert back.probe_findings == {"resolved": 1}
+
+
 async def _record_runs(s: Any, outcomes: list[bool], *, hostname: str = "nas0") -> None:
     """Add runs of host.fast, oldest first, ending now."""
     host = (await s.execute(select(Host).where(Host.hostname == hostname))).scalar_one_or_none()
@@ -389,6 +429,24 @@ def test_daemon_once_runs_the_schedule_job_and_cli_shows_it(tmp_path, monkeypatc
     assert result.exit_code == 0, result.output
     assert seen == ["schedule:schedule.yaml:True:True"]
     assert "nas0: host.fast" in result.output
+
+    # A pass that could not run at all is a failed invocation, not a quiet one.
+    async def broken_schedule(schedule_path, *, probes, assertions):
+        return {"error": "hosts[0]: unknown probe 'host.nope'"}
+
+    monkeypatch.setattr(dmod, "run_schedule_pass", broken_schedule)
+    result = CliRunner().invoke(
+        app,
+        [
+            *"daemon run --once --no-ask --no-playbooks".split(),
+            "--sources",
+            "",
+            "--schedule",
+            str(path),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "errors in: schedule" in result.output
 
     # Without a file and without the env var the job is simply absent.
     monkeypatch.delenv("HOMELAB_HELPER_SCHEDULE", raising=False)

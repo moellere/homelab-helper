@@ -217,6 +217,14 @@ async def probe_host(
     except Exception as exc:
         result.session_error = str(exc)
         result.failures += 1
+        # Each probe that never got to run is recorded as a failed run, so a
+        # host that is down builds the same history as a probe that is broken.
+        ran = {o.probe for o in result.probes}
+        for cls in classes:
+            if cls.name not in ran:
+                await runner.record_unreached(
+                    cls(), target, session, host_id=host.id, error=f"ssh session failed: {exc}"
+                )
     else:
         if request.ssh_password is None:
             # The login that just worked is the one node actions will use;

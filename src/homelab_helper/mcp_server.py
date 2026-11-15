@@ -64,6 +64,7 @@ from homelab_helper.config import config_status as _config_status
 from homelab_helper.db.enums import (
     DiscoverySource,
     FindingKind,
+    FindingSeverity,
     FindingStatus,
     ProposalOutcome,
     ResolutionScope,
@@ -160,6 +161,7 @@ from homelab_helper.engine.playbooks import PLAYBOOKS, run_playbooks
 from homelab_helper.engine.printwarden import reconcile_printwarden
 from homelab_helper.engine.rebalance import plan_rebalance as _plan_rebalance
 from homelab_helper.engine.reconfigure import analyze_surplus as _analyze_surplus
+from homelab_helper.engine.retention import prune_history
 from homelab_helper.engine.retire import is_retired, retired_host_ids
 from homelab_helper.engine.retire import retire_host as _retire_host
 from homelab_helper.engine.rightsizing import evaluate as evaluate_rightsizing
@@ -371,26 +373,37 @@ async def get_host(hostname: str) -> dict[str, Any]:
 
 @server.tool()
 async def list_findings(
-    status: str | None = None, kind: str | None = None, severity: str | None = None
+    status: str | None = None,
+    kind: str | None = None,
+    severity: str | None = None,
+    limit: int = 200,
 ) -> list[dict[str, Any]]:
-    """List findings, optionally filtered by status (open/acknowledged/resolved/
-    suppressed), kind (e.g. stray-config, drift-candidate), or severity."""
+    """List findings, most recently seen first, optionally filtered by status
+    (open/acknowledged/resolved/suppressed), kind (e.g. stray-config,
+    drift-candidate), or severity. Returns at most `limit` (default 200)."""
+    try:
+        wanted = [
+            column == enum(value)
+            for column, enum, value in (
+                (ReconciliationFinding.status, FindingStatus, status),
+                (ReconciliationFinding.kind, FindingKind, kind),
+                (ReconciliationFinding.severity, FindingSeverity, severity),
+            )
+            if value
+        ]
+    except ValueError:
+        return []  # a value no finding can have
     engine = make_engine(database_url())
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
-            stmt = select(ReconciliationFinding).order_by(ReconciliationFinding.last_seen.desc())
-            rows = (await session.execute(stmt)).scalars().all()
-            out = []
-            for f in rows:
-                if status and f.status.value != status:
-                    continue
-                if kind and f.kind.value != kind:
-                    continue
-                if severity and f.severity.value != severity:
-                    continue
-                out.append(_finding_dict(f))
-            return out
+            stmt = (
+                select(ReconciliationFinding)
+                .where(*wanted)
+                .order_by(ReconciliationFinding.last_seen.desc())
+                .limit(max(1, limit))
+            )
+            return [_finding_dict(f) for f in (await session.execute(stmt)).scalars()]
     finally:
         await engine.dispose()
 
@@ -1236,7 +1249,7 @@ async def _discover_usage(session: AsyncSession) -> dict[str, Any]:
             updated += w.updated
         with_data += any_data
     workloads = await _discover_workload_usage(session)
-    pruned = await prune_usage(session)
+    pruned = await prune_usage(session) | await prune_history(session)
     return {
         "subjects": len(subjects) + workloads.get("subjects", 0),
         "with_data": with_data + workloads.get("subjects", 0),

@@ -62,6 +62,8 @@ SCHEDULE_ENV_VAR = "HOMELAB_HELPER_SCHEDULE"
 DEFAULT_INTERVAL = "6h"
 PROBE_FAILING_AFTER = 3
 """Consecutive failed runs of one probe on one host before it becomes a finding."""
+PROBE_FAILING_WINDOW = timedelta(days=7)
+"""How far back failure history is read, at least; slower probes look further."""
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 _INTERVAL = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
 
@@ -303,6 +305,9 @@ async def reconcile_probe_failures(session: AsyncSession, schedule: Schedule) ->
     """
     plan = await plan_probes(session, schedule)
     pairs = {(d.target, d.probe) for d in plan}
+    # Only as far back as the slowest probe needs to show its last few runs.
+    slowest = max((d.interval for d in plan), default=timedelta(0))
+    since = datetime.now(UTC) - max(PROBE_FAILING_WINDOW, slowest * PROBE_FAILING_AFTER * 2)
     ranked = (
         select(
             Host.hostname.label("hostname"),
@@ -318,7 +323,10 @@ async def reconcile_probe_failures(session: AsyncSession, schedule: Schedule) ->
             .label("rank"),
         )
         .join(Host, Host.id == DiscoveryRun.host_id)
-        .where(Host.hostname.in_({target for target, _ in pairs}))
+        .where(
+            Host.hostname.in_({target for target, _ in pairs}),
+            DiscoveryRun.started_at >= since,
+        )
         .subquery()
     )
     rows = (

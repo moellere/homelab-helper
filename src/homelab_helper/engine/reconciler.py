@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 
 from homelab_helper.db.enums import (
     Architecture,
@@ -507,17 +507,35 @@ class Reconciler:
         a tiebreaker. So a fresh management-plane reading never clobbers a
         kernel-probe fact; it only fills keys the kernel never reported.
         """
-        stmt = select(Observation).where(
-            Observation.target_type == IntentTargetType.HOST,
-            Observation.target_id == str(host_id),
-            Observation.key.in_(keys),
+        # Ranked in the database: one row per key comes back, however long the
+        # history behind it is.
+        tier = case(
+            *((Observation.confidence == c, rank) for c, rank in _CONFIDENCE_RANK.items()),
+            else_=0,
         )
-        best: dict[str, Observation] = {}
-        for obs in (await session.execute(stmt)).scalars().all():
-            current = best.get(obs.key)
-            if current is None or _obs_precedence(obs) > _obs_precedence(current):
-                best[obs.key] = obs
-        return best
+        ranked = (
+            select(
+                Observation.id,
+                func.row_number()
+                .over(
+                    partition_by=Observation.key,
+                    order_by=(tier.desc(), Observation.recorded_at.desc(), Observation.id.desc()),
+                )
+                .label("rank"),
+            )
+            .where(
+                Observation.target_type == IntentTargetType.HOST,
+                Observation.target_id == str(host_id),
+                Observation.key.in_(keys),
+            )
+            .subquery()
+        )
+        stmt = (
+            select(Observation)
+            .join(ranked, ranked.c.id == Observation.id)
+            .where(ranked.c.rank == 1)
+        )
+        return {obs.key: obs for obs in (await session.execute(stmt)).scalars()}
 
     async def _latest_per_key(
         self,

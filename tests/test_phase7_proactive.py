@@ -372,6 +372,24 @@ async def test_listener_never_reasks_a_denied_proposal(sessionmaker) -> None:
     assert len(channel.asked) == 1
 
 
+async def test_proposals_that_will_not_be_asked_do_not_use_up_the_pass(sessionmaker) -> None:
+    channel = _Channel(answer=False)
+
+    async def adapters_for(manifest):
+        return _proxmox_fake([]), _k8s_fake([]), None, None, None, None
+
+    async with session_scope(sessionmaker) as s:
+        await _two_pending_restarts(s)
+        first = await ask_pending(s, channel=channel, adapters_for=adapters_for, limit=1)
+        assert len(first.asked) == 1
+        # The oldest is answered and stays pending; the newer one still gets its turn.
+        second = await ask_pending(s, channel=channel, adapters_for=adapters_for, limit=1)
+        assert len(second.asked) == 1
+        assert second.already_asked == 1
+        answered = {a.proposal_id for a in await _approvals(s)}
+        assert len(answered) == 2
+
+
 async def _two_pending_restarts(s) -> None:
     await seed_domains(s)
     await grant_cell(

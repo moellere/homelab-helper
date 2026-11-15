@@ -28,6 +28,7 @@ findings (``engine/raid_health.py``).
 from __future__ import annotations
 
 import re
+import shlex
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
@@ -198,7 +199,8 @@ class HostRaidProbe(Probe):
             ) as ssh:
                 arrays = _arrays_read(await ssh.run(_READ_MDSTAT))
                 for array in arrays:
-                    detail = await ssh.run(f"{sudo}mdadm --detail /dev/{array['name']}")
+                    device = shlex.quote(f"/dev/{array['name']}")
+                    detail = await ssh.run(f"{sudo}mdadm --detail {device}")
                     if detail.ok:
                         array["uuid"] = parse_mdadm_uuid(detail.stdout)
         except Exception as exc:

@@ -140,11 +140,15 @@ async def ask_pending(
         for p in rows
         if (p.artifact or {}).get("kind") == "action"
         and any(p.proposed_by.startswith(src) for src in sources)
-    ][:limit]
+    ]
 
+    # ``limit`` bounds the prompts sent, not the rows looked at: proposals that
+    # will never be asked (answered, or at PROPOSE) must not use up the pass.
     now = datetime.now(UTC)
     ready: list[tuple[ProposalLog, ActionManifest, Decision, Adapters]] = []
     for proposal in candidates:
+        if len(ready) >= limit:
+            break
         pid = str(proposal.id)
         if await _ask_state(session, proposal, now) != "ask":
             result.already_asked += 1

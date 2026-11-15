@@ -56,6 +56,7 @@ src/homelab_helper/
 │                   maintenance (10.4: drain → update → reboot → return as gated steps;
 │                   11.3: the Talos plane, node by node, health-gated),
 │                   schedule (9.6: per-probe/assertion cadences from a YAML file),
+│                   retention (horizon for observations and discovery runs),
 │                   suggestions (8.7 idle capability, missing blocks),
 │                   cluster_nodes (9.2: the one rule for "is this host a
 │                   placement target"; rebalance/surplus/bottlenecks read it),

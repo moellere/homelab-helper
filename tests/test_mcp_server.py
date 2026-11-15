@@ -912,3 +912,9 @@ async def test_propose_argocd_sync_wants_cluster_radius_to_prune_or_pin(seeded_d
     assert drafted["cell"] == "containers/argocd-sync/cluster"
     plain = await propose_argocd_sync("app-homepage", "sync")
     assert plain["cell"] == "containers/argocd-sync/single-service"
+
+
+async def test_list_findings_filters_in_the_query_and_honours_the_limit(seeded_db: str) -> None:
+    assert len(await list_findings(status="open", kind="stray-config", limit=1)) == 1
+    assert await list_findings(severity="no-such-severity") == []
+    assert await list_findings(status="open", severity="critical") == []

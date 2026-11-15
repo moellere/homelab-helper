@@ -222,7 +222,7 @@ release that works on one and not the other does not ship.
 | Assertion library | `helper assert load` | `version: 1` | Same. |
 | Network topology | `HOMELAB_HELPER_NETWORK_TOPOLOGY` | not yet | Keys are only added until the format gains a `version`. |
 | Service aliases | `HOMELAB_HELPER_SERVICE_ALIASES` | not yet | Same. |
-| Probe/assertion schedule | `HOMELAB_HELPER_SCHEDULE` / `helper daemon run --schedule` | not yet | Same. Interval syntax (`90s 15m 6h 1d 1w`) is the contract; cron syntax is refused rather than guessed. |
+| Probe/assertion schedule | `HOMELAB_HELPER_SCHEDULE` / `helper daemon run --schedule` | not yet | Same. Interval syntax (`90s 15m 6h 1d 1w`) is the contract; cron syntax is refused rather than guessed. Assertions run only from a file with an `assertions:` block. |
 | Workload library | `HOMELAB_HELPER_WORKLOAD_LIBRARY` | not yet | Same; the bundled library is data, and entries may be added, corrected or removed in any release. |
 
 ## NetBox custom fields

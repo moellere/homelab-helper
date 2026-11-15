@@ -1124,6 +1124,10 @@ from 1.0.0 is the operator-time list under 9.1.
   host that is down is retried on its cadence and becomes a `probe-failing`
   finding like any other. `daemon run --once` exits non-zero when a job could
   not run (a schedule that does not load, a discovery source that errored).
+  Each half runs only where the file asks for it: assertions need an
+  `assertions:` block, so a probes-only daemon leaves them to the daemon whose
+  file names them. Each half holds its own Postgres advisory lock, so two
+  passes never run the same probe batch or assertion at once.
   AC #6 met: two probes on different cadences from one daemon, an assertion on
   its own schedule (`tests/test_schedule.py`).
 - [x] **Probe history has a horizon** — `engine/retention.py`, run with the

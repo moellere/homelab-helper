@@ -486,7 +486,8 @@ One discovery interval for everything was the shortcut; "continuous" means each
 probe on its own cadence. Declare them in a YAML file (copy
 `fixtures/schedule.example.yaml`, point `HOMELAB_HELPER_SCHEDULE` at it): a RAID
 check every 15 minutes, SMART once a day, everything else at a default, and an
-interval per assertion. `helper daemon run` then runs whatever is due, and
+interval per assertion (assertions run only from a file that has an
+`assertions:` block). `helper daemon run` then runs whatever is due, and
 `helper schedule` shows what runs when. Nothing new is stored — a probe is due
 when its last recorded run is older than its interval — so the same file works
 from a 15-minute cron tick (`--once`) and from the long-lived daemon alike.

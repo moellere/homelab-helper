@@ -11,6 +11,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
@@ -48,4 +49,26 @@ async def session_scope(
             raise
 
 
-__all__ = ["make_engine", "make_sessionmaker", "session_scope"]
+@asynccontextmanager
+async def advisory_lock(engine: AsyncEngine, key: int) -> AsyncIterator[bool]:
+    """Hold a Postgres advisory lock for one pass; yields ``False`` if another pass has it.
+
+    Postgres only: off Postgres (the single-user SQLite default) it yields ``True``.
+    """
+    if engine.dialect.name != "postgresql":
+        yield True
+        return
+    async with engine.connect() as conn:
+        held = bool(
+            (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": key})).scalar()
+        )
+        await conn.commit()
+        try:
+            yield held
+        finally:
+            if held:
+                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+                await conn.commit()
+
+
+__all__ = ["advisory_lock", "make_engine", "make_sessionmaker", "session_scope"]

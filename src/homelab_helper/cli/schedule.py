@@ -70,7 +70,10 @@ def schedule_show(
         try:
             async with make_sessionmaker(engine)() as session:
                 probes = await plan_probes(session, schedule, now=now)
-                assertions = await plan_assertions(session, schedule, now=now)
+                # No `assertions:` block means this file's daemon leaves them alone.
+                assertions = (
+                    await plan_assertions(session, schedule, now=now) if schedule.assertions else []
+                )
         finally:
             await engine.dispose()
         table = Table(title="probe cadences")
@@ -99,6 +102,10 @@ def schedule_show(
             )
             shown += 1
         console.print(atable)
+        if not schedule.assertions:
+            console.print(
+                "[dim]no `assertions:` block: a daemon on this file runs no assertions[/dim]"
+            )
         console.print(
             f"{shown} row(s); {len(probes)} probe slot(s), {len(assertions)} assertion(s) scheduled"
         )

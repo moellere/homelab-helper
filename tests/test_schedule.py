@@ -438,7 +438,7 @@ def test_daemon_once_runs_the_schedule_job_and_cli_shows_it(tmp_path, monkeypatc
     result = CliRunner().invoke(
         app,
         [
-            *"daemon run --once --no-ask --no-playbooks".split(),
+            *["daemon", "run", "--once", "--no-ask", "--no-playbooks"],
             "--sources",
             "",
             "--schedule",

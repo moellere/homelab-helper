@@ -12,10 +12,13 @@ the finding lifecycle on top of it, mirroring :class:`AssertionEngine`:
 - An Application observed this run as ``Synced`` + ``Healthy`` resolves its
   finding if one was open.
 
-Scope discipline (invariant #1 — absence must never auto-resolve): resolution is
-driven only by apps Argo CD *reports* as healthy this run. An app that vanished
-from Argo CD entirely is not "resolved" — its finding is left untouched, exactly
-as the assertion engine leaves deleted assertions' findings alone.
+Scope discipline (invariant #1 — absence of an *observation* must never
+auto-resolve): an app Argo CD reports as ``Synced`` + ``Healthy`` resolves its
+finding, and so does an app missing from a complete listing — the listing is
+the observation, the same way the reconciler closes findings in a category it
+observed this run. An **empty** listing observes nothing (a token that lost its
+project access looks the same as a deleted fleet), so it resolves nothing. A
+gone app that comes back drifted reopens its finding as any recurrence does.
 
 Severity ladder: ``Degraded`` / ``Missing`` health → HIGH (the workload isn't
 running as declared); a plain ``OutOfSync`` while still healthy → MEDIUM (config
@@ -49,6 +52,8 @@ class ArgoCDDriftResult:
     reopened: list[str] = field(default_factory=list)
     updated: list[str] = field(default_factory=list)
     resolved: list[str] = field(default_factory=list)
+    gone: list[str] = field(default_factory=list)
+    """Apps resolved because the listing no longer has them (also in ``resolved``)."""
 
     @property
     def drifted(self) -> int:
@@ -168,8 +173,47 @@ async def reconcile_argocd_drift(
             existing.resolved_at = now_ts
             result.resolved.append(name)
 
+    if applications:
+        await _resolve_gone(session, applications, now_ts, result)
     await session.flush()
     return result
+
+
+async def _resolve_gone(
+    session: AsyncSession,
+    applications: list[dict[str, Any]],
+    now_ts: datetime,
+    result: ArgoCDDriftResult,
+) -> None:
+    """Resolve open drift findings whose app is not in this (non-empty) listing."""
+    listed = {str(a.get("name") or "") for a in applications}
+    rows = (
+        await session.execute(
+            select(ReconciliationFinding).where(
+                ReconciliationFinding.kind == FindingKind.DRIFT_CANDIDATE,
+                ReconciliationFinding.status.in_([FindingStatus.OPEN, FindingStatus.ACKNOWLEDGED]),
+            )
+        )
+    ).scalars()
+    for finding in rows:
+        name = next(
+            (
+                str(a.get("target_id"))
+                for a in finding.affected or []
+                if a.get("target_type") == _TARGET_TYPE
+            ),
+            None,
+        )
+        # Only this module's own findings: the fingerprint must be the app's.
+        if name is None or name in listed or finding.fingerprint != _drift_fingerprint(name):
+            continue
+        finding.status = FindingStatus.RESOLVED
+        finding.resolved_at = now_ts
+        finding.description = (
+            f"{finding.description} Resolved: the app is no longer in Argo CD."
+        ).strip()
+        result.resolved.append(name)
+        result.gone.append(name)
 
 
 __all__ = ["ArgoCDDriftResult", "reconcile_argocd_drift"]

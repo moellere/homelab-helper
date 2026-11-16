@@ -234,8 +234,9 @@ The rest of Phase 1, and all of Phase 6, is below.
   `DRIFT_CANDIDATE` findings via the deterministic fingerprint (`argocd-app` /
   `<name>` / `argocd-drift`) + reopen-on-recurrence machinery, mirroring the
   AssertionEngine lifecycle. `Degraded`/`Missing` → HIGH, `OutOfSync`+healthy →
-  MEDIUM. Invariant #1 respected: only apps Argo CD *reports* as healthy resolve;
-  a vanished app's finding is left open. `helper diff git-vs-cluster` prints the
+  MEDIUM. Invariant #1 respected: an app resolves when Argo CD reports it
+  healthy, or when a non-empty listing no longer has it (the listing is the
+  observation; an empty one resolves nothing). `helper diff git-vs-cluster` prints the
   drift table and, with `--persist [--dry-run]`, records the findings so they
   surface in `helper findings` / `helper audit`.
 - [x] **Stray-config detection** (`engine/stray_config.py`, wired into `helper

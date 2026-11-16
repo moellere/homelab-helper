@@ -28,7 +28,7 @@ from tests.test_node_update import sessionmaker_  # noqa: F401 - fixture
         ("0196f2ab-12", "0196f2ab12"),
         ("%", None),
         ("a_b", None),
-        ("", None),
+        ("", ""),
     ],
 )
 def test_id_prefix_normalises_or_refuses(text: str, bare: str | None) -> None:

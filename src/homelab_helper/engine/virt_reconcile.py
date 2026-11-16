@@ -16,6 +16,7 @@ without ``VM.Audit`` lists nothing). Both keep every row and say why.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -82,6 +83,10 @@ def disk_storages(config: dict[str, Any]) -> list[str]:
     return sorted(names)
 
 
+PROXMOX_CONCURRENCY = 8
+"""Guest config reads in flight at once: a cluster's guests in a few round trips, not one each."""
+
+
 async def annotate_guest_storage(adapter: ProxmoxAdapter, vms: list[dict[str, Any]]) -> None:
     """Add ``storages`` and ``shared_storage`` to each discovered guest in place.
 
@@ -95,17 +100,22 @@ async def annotate_guest_storage(adapter: ProxmoxAdapter, vms: list[dict[str, An
         name = str(row.get("storage") or "")
         if name:
             shared[name] = shared.get(name, False) or bool(row.get("shared"))
-    for vm in vms:
+    gate = asyncio.Semaphore(PROXMOX_CONCURRENCY)
+
+    async def annotate(vm: dict[str, Any]) -> None:
         node, vmid, kind = vm.get("node"), vm.get("vmid"), vm.get("type") or "qemu"
         if not node or vmid is None:
-            continue
+            return
         try:
-            config = await adapter.vm_config(str(node), int(vmid), str(kind))
+            async with gate:
+                config = await adapter.vm_config(str(node), int(vmid), str(kind))
         except Exception:
-            continue
+            return
         storages = disk_storages(config)
         vm["storages"] = storages
         vm["shared_storage"] = all(shared.get(s, False) for s in storages) if storages else None
+
+    await asyncio.gather(*(annotate(vm) for vm in vms))
 
 
 def _vm_attributes(vm: dict[str, Any], current: dict[str, Any] | None) -> dict[str, Any]:
@@ -296,6 +306,7 @@ async def _remove_absent(
 
 __all__ = [
     "LEGACY_STANDALONE",
+    "PROXMOX_CONCURRENCY",
     "VirtReconcileResult",
     "annotate_guest_storage",
     "disk_storages",

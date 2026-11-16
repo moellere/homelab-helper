@@ -42,6 +42,8 @@ from sqlalchemy import delete, select
 from homelab_helper.db.models import UsageSample
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 HOUR = "hour"
@@ -329,23 +331,52 @@ async def summarize(
     names that moment when it falls inside the window; ``samples_in_window``
     is the count before the cut.
     """
-    since = (now or datetime.now(UTC)).replace(tzinfo=None) - window
-    rows = (
-        (
-            await session.execute(
-                select(UsageSample)
-                .where(
-                    UsageSample.subject_type == subject_type,
-                    UsageSample.subject_key == subject_key,
-                    UsageSample.resolution == resolution,
-                    UsageSample.ts >= since,
-                )
-                .order_by(UsageSample.ts)
-            )
-        )
-        .scalars()
-        .all()
+    many = await summarize_many(
+        session,
+        subject_type=subject_type,
+        subject_keys=[subject_key],
+        window=window,
+        resolution=resolution,
+        now=now,
     )
+    return many[subject_key]
+
+
+async def summarize_many(
+    session: AsyncSession,
+    *,
+    subject_type: str,
+    subject_keys: Iterable[str] | None = None,
+    window: timedelta = timedelta(days=30),
+    resolution: str = HOUR,
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """``summarize`` for many subjects of one type from a single query.
+
+    ``subject_keys=None`` means every subject of the type with samples in the
+    window. Every key asked for is in the result, with ``samples: 0`` when it
+    has none.
+    """
+    since = (now or datetime.now(UTC)).replace(tzinfo=None) - window
+    wanted = None if subject_keys is None else list(dict.fromkeys(subject_keys))
+    stmt = select(UsageSample).where(
+        UsageSample.subject_type == subject_type,
+        UsageSample.resolution == resolution,
+        UsageSample.ts >= since,
+    )
+    if wanted is not None:
+        if not wanted:
+            return {}
+        stmt = stmt.where(UsageSample.subject_key.in_(wanted))
+    grouped: dict[str, list[UsageSample]] = {k: [] for k in wanted or []}
+    for row in (
+        await session.execute(stmt.order_by(UsageSample.subject_key, UsageSample.ts))
+    ).scalars():
+        grouped.setdefault(row.subject_key, []).append(row)
+    return {key: _summary(key, rows, resolution) for key, rows in grouped.items()}
+
+
+def _summary(subject_key: str, rows: list[UsageSample], resolution: str) -> dict[str, Any]:
     if not rows:
         return {"subject": subject_key, "samples": 0}
     in_window = len(rows)
@@ -399,5 +430,6 @@ __all__ = [
     "retention",
     "rollup",
     "summarize",
+    "summarize_many",
     "workload_bucket",
 ]

@@ -43,7 +43,7 @@ from homelab_helper.engine.category_findings import (
     CategoryResult,
     reconcile_category_findings,
 )
-from homelab_helper.engine.usage import HOUR, summarize
+from homelab_helper.engine.usage import HOUR, summarize_many
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -235,13 +235,18 @@ async def evaluate(
     evaluated: set[tuple[str, str]] = set()
     skipped: list[str] = []
     days = max(1, round(window.total_seconds() / 86400))
-    for vm, cluster in rows:
-        if vm.status != "running":
-            continue
+    running = [(vm, cluster) for vm, cluster in rows if vm.status == "running"]
+    summaries = await summarize_many(
+        session,
+        subject_type="guest",
+        subject_keys=[f"{cluster.name}/{vm.vmid}" for vm, cluster in running],
+        window=window,
+        resolution=HOUR,
+        now=now,
+    )
+    for vm, cluster in running:
         key = f"{cluster.name}/{vm.vmid}"
-        s = await summarize(
-            session, subject_type="guest", subject_key=key, window=window, resolution=HOUR, now=now
-        )
+        s = summaries[key]
         if (s.get("samples") or 0) < MIN_SAMPLES:
             changed = s.get("allocation_changed_at")
             if changed:

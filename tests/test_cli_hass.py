@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-import homelab_helper.cli.discover as cli_discover
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
 from homelab_helper.cli.main import app
 from homelab_helper.db.base import Base
@@ -73,7 +73,7 @@ async def _rows(url: str) -> tuple[list[Service], list[ServiceEndpoint]]:
 
 
 def test_discover_hass_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_discover, "_load_hass_adapter", lambda: _hass(_handler))
+    monkeypatch.setattr(factories, "hass", lambda: _hass(_handler))
     result = runner.invoke(app, ["discover", "hass"])
     assert result.exit_code == 0, result.stdout
     assert "2026.8.3" in result.stdout
@@ -85,7 +85,7 @@ def test_discover_hass_unreachable_exits_nonzero(monkeypatch: pytest.MonkeyPatch
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"message": "Unauthorized"})
 
-    monkeypatch.setattr(cli_discover, "_load_hass_adapter", lambda: _hass(down))
+    monkeypatch.setattr(factories, "hass", lambda: _hass(down))
     result = runner.invoke(app, ["discover", "hass"])
     assert result.exit_code == 1
     assert "unreachable" in result.stdout
@@ -95,7 +95,7 @@ def test_discover_hass_persist_upserts_service_and_endpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     url = _db(tmp_path, monkeypatch)
-    monkeypatch.setattr(cli_discover, "_load_hass_adapter", lambda: _hass(_handler))
+    monkeypatch.setattr(factories, "hass", lambda: _hass(_handler))
 
     first = runner.invoke(app, ["discover", "hass", "--persist"])
     assert first.exit_code == 0, first.stdout

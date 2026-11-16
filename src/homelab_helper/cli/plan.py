@@ -11,15 +11,15 @@ from __future__ import annotations
 
 import asyncio
 from difflib import get_close_matches
+from typing import Any
 
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from homelab_helper import mcp_server
 from homelab_helper.config import database_url
-from homelab_helper.db.session import make_engine, make_sessionmaker
+from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.cluster_nodes import PLACEMENT_TARGET_RULE
 from homelab_helper.engine.network_path import (
     TOPOLOGY_ENV_VAR,
@@ -33,6 +33,7 @@ from homelab_helper.engine.placement import (
 )
 from homelab_helper.engine.rebalance import RebalanceReport, plan_rebalance
 from homelab_helper.engine.reconfigure import SurplusReport, analyze_surplus
+from homelab_helper.engine.rightsizing import rightsizing_report
 from homelab_helper.engine.workloads import (
     WorkloadLibraryError,
     WorkloadProfile,
@@ -345,13 +346,22 @@ def plan_surplus(
 __all__ = ["plan_app"]
 
 
+async def _rightsizing(days: int, persist: bool) -> dict[str, Any]:
+    engine = make_engine(database_url())
+    try:
+        async with session_scope(make_sessionmaker(engine)) as session:
+            return await rightsizing_report(session, days=days, persist=persist)
+    finally:
+        await engine.dispose()
+
+
 @plan_app.command(name="rightsize")
 def plan_rightsize(
     days: int = typer.Option(30, "--days", help="History window in days."),
     persist: bool = typer.Option(False, "--persist", help="Record as rightsizing findings."),
 ) -> None:
     """Cores and memory recommendations from usage history (Phase 8.4). Changes nothing."""
-    result = asyncio.run(mcp_server.rightsizing(days=days, persist=persist))
+    result = asyncio.run(_rightsizing(days, persist))
     recs = result["recommendations"]
     table = Table(title=f"rightsizing, last {days} days")
     for col in ("severity", "check", "recommendation", "evidence"):

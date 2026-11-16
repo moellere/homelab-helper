@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-import homelab_helper.cli.diff as cli_diff
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfig
 from homelab_helper.cli.main import app
 from homelab_helper.db.base import Base
@@ -90,7 +90,7 @@ def _empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def test_diff_lists_drift(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_diff, "_load_argocd_adapter", lambda: _argocd(_handler))
+    monkeypatch.setattr(factories, "argocd", lambda: _argocd(_handler))
     result = runner.invoke(app, ["diff", "git-vs-cluster"])
     assert result.exit_code == 0
     assert "2 application(s)" in result.stdout
@@ -99,7 +99,7 @@ def test_diff_lists_drift(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_diff_no_drift_message(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_diff, "_load_argocd_adapter", lambda: _argocd(_healthy_handler))
+    monkeypatch.setattr(factories, "argocd", lambda: _argocd(_healthy_handler))
     result = runner.invoke(app, ["diff", "git-vs-cluster"])
     assert result.exit_code == 0
     assert "no drift" in result.stdout.lower()
@@ -107,7 +107,7 @@ def test_diff_no_drift_message(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_diff_persist_opens_findings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _empty_db(tmp_path, monkeypatch)
-    monkeypatch.setattr(cli_diff, "_load_argocd_adapter", lambda: _argocd(_handler))
+    monkeypatch.setattr(factories, "argocd", lambda: _argocd(_handler))
     result = runner.invoke(app, ["diff", "git-vs-cluster", "--persist"])
     assert result.exit_code == 0
     assert "1 opened" in result.stdout
@@ -119,7 +119,7 @@ def test_diff_persist_opens_findings(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 def test_diff_dry_run_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _empty_db(tmp_path, monkeypatch)
-    monkeypatch.setattr(cli_diff, "_load_argocd_adapter", lambda: _argocd(_handler))
+    monkeypatch.setattr(factories, "argocd", lambda: _argocd(_handler))
     result = runner.invoke(app, ["diff", "git-vs-cluster", "--persist", "--dry-run"])
     assert result.exit_code == 0
     assert "dry-run" in result.stdout.lower()
@@ -132,7 +132,7 @@ def test_diff_unreachable_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text="forbidden")
 
-    monkeypatch.setattr(cli_diff, "_load_argocd_adapter", lambda: _argocd(down))
+    monkeypatch.setattr(factories, "argocd", lambda: _argocd(down))
     result = runner.invoke(app, ["diff", "git-vs-cluster"])
     assert result.exit_code == 1
     assert "unreachable" in result.stdout.lower()

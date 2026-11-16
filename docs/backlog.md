@@ -1137,6 +1137,15 @@ from 1.0.0 is the operator-time list under 9.1.
   endpoint shares one engine for the life of the server.
   AC #6 met: two probes on different cadences from one daemon, an assertion on
   its own schedule (`tests/test_schedule.py`).
+- [x] **Discovery out of the MCP server (#147)** — the per-source runners and
+  their registry live in `engine/discoverers.py`, adapter factories in
+  `adapters/factories.py` (with `for_action`, the adapters one manifest
+  needs). The CLI, the daemon and the MCP server call the same functions, so
+  `helper --help` no longer imports the MCP stack, and two drifts are closed:
+  `helper discover argocd --persist [--dry-run]` reconciles drift-candidate
+  findings as the MCP tool does, and the shared Proxmox runner checks the API
+  is reachable before reading. Splitting the remaining tool registrations by
+  domain is still open.
 - [x] **Probe history has a horizon** — `engine/retention.py`, run with the
   hourly usage job. Observations older than `HOMELAB_HELPER_OBSERVATION_DAYS`
   and discovery runs older than `HOMELAB_HELPER_RUN_DAYS` (default 120 each,

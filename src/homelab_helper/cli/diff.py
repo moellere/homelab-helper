@@ -16,7 +16,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from homelab_helper.adapters.argocd import ArgoCDAdapter, application_is_drifted
+from homelab_helper.adapters import factories
+from homelab_helper.adapters.argocd import application_is_drifted
 from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
@@ -30,11 +31,6 @@ diff_app = typer.Typer(
 console = Console()
 
 
-def _load_argocd_adapter() -> ArgoCDAdapter:
-    """Factory (monkeypatched in tests) — builds an Argo CD adapter from env."""
-    return ArgoCDAdapter.from_env()
-
-
 @diff_app.command(name="git-vs-cluster")
 def diff_git_vs_cluster(
     persist: bool = typer.Option(
@@ -45,7 +41,7 @@ def diff_git_vs_cluster(
     """Report Argo CD git-vs-cluster drift; optionally record it as findings."""
 
     async def _go() -> int:
-        adapter = _load_argocd_adapter()
+        adapter = factories.argocd()
         try:
             ok, err = await adapter.health_check()
             if not ok:

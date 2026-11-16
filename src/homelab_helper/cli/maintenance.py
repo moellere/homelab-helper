@@ -22,14 +22,10 @@ from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.proxmox import ProxmoxConfigError
 from homelab_helper.adapters.talos import TalosAdapter, TalosError
-from homelab_helper.cli.execute import (
-    _build_adapter,
-    _build_argocd_adapter,
-    _build_k8s_adapter,
-)
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import MaintenanceStatus
 from homelab_helper.db.lookup import rows_by_id_prefix
@@ -135,7 +131,7 @@ def maintenance_plan(
     async def _go() -> int:
         engine = make_engine(database_url())
         try:
-            adapter = _build_adapter()
+            adapter = factories.proxmox()
         except ProxmoxConfigError as exc:
             console.print(f"[red]cannot plan:[/red] {escape(str(exc))}")
             return 2
@@ -220,7 +216,7 @@ def maintenance_run(
     async def _go() -> int:
         engine = make_engine(database_url())
         try:
-            adapter = _build_adapter()
+            adapter = factories.proxmox()
         except ProxmoxConfigError as exc:
             console.print(f"[red]cannot run:[/red] {escape(str(exc))}")
             return 2
@@ -257,8 +253,8 @@ def maintenance_run(
                         actor=operator_identity(),
                         confirm_cb=_confirm,
                         ssh_adapter=KernelSSHAdapter(),
-                        k8s_adapter=_build_k8s_adapter(),
-                        argocd_adapter=_build_argocd_adapter(),
+                        k8s_adapter=factories.k8s_if_available(),
+                        argocd_adapter=factories.argocd_if_configured(),
                         talos_adapter=talos,
                         health_cb=talos_health_gate(talos, run.node) if talos else None,
                         notifier=notifier_from_env(),

@@ -20,6 +20,7 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine import discoverers
 from homelab_helper.engine.category_findings import category_of
 from homelab_helper.engine.suggestions import (
     BUILDING_BLOCKS,
@@ -142,7 +143,6 @@ async def suggestions_db():
 
 
 async def test_the_pass_reads_guests_services_and_host_facts(suggestions_db) -> None:
-    from homelab_helper import mcp_server as mcp_srv
 
     async with session_scope(suggestions_db) as session:
         session.add(Host(hostname="bmax0", capabilities={"gpu_count": 1, "gpu_vendors": ["Intel"]}))
@@ -153,7 +153,7 @@ async def test_the_pass_reads_guests_services_and_host_facts(suggestions_db) -> 
         session.add(Service(name="grafana"))
         await session.flush()
 
-        result = await mcp_srv._discover_suggestions(session)  # noqa: SLF001
+        result = await discoverers._discover_suggestions(session)  # noqa: SLF001
         findings = (
             (
                 await session.execute(
@@ -178,10 +178,9 @@ async def test_the_pass_reads_guests_services_and_host_facts(suggestions_db) -> 
 async def test_the_pass_needs_no_adapter(suggestions_db) -> None:
     """It reads stored facts only, so both categories are always observed and
     a lab with nothing discovered yet still gets its suggestions."""
-    from homelab_helper import mcp_server as mcp_srv
 
     async with session_scope(suggestions_db) as session:
-        result = await mcp_srv._discover_suggestions(session)  # noqa: SLF001
+        result = await discoverers._discover_suggestions(session)  # noqa: SLF001
 
     assert result["errors"] == {}
     assert result["findings"]["opened"] == len(BUILDING_BLOCKS)

@@ -13,11 +13,12 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from homelab_helper import mcp_server as mcp_srv
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfig
 from homelab_helper.db.base import Base
 from homelab_helper.db.enums import FindingKind, FindingSeverity
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine import discoverers
 from homelab_helper.engine.storage import (
     HEADROOM_MEDIUM_DAYS,
     MIN_HEADROOM_SAMPLES,
@@ -317,17 +318,17 @@ async def storage_session():
 async def test_discovery_pass_opens_one_finding_per_category(
     storage_session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(mcp_srv, "_load_proxmox_adapter", lambda: _proxmox(_handler))
-    monkeypatch.setattr(mcp_srv, "_load_k8s_adapter", _StubK8s)
+    monkeypatch.setattr(factories, "proxmox", lambda: _proxmox(_handler))
+    monkeypatch.setattr(factories, "k8s", _StubK8s)
     monkeypatch.setattr(
-        mcp_srv,
+        discoverers,
         "_proxmox_storage_facts",
-        mcp_srv._proxmox_storage_facts,  # noqa: SLF001 - exercising the real gather
+        discoverers._proxmox_storage_facts,  # noqa: SLF001 - exercising the real gather
     )
 
     async with session_scope(storage_session) as session:
         # One guest for the gather to walk.
-        result = await mcp_srv._discover_storage(session)  # noqa: SLF001
+        result = await discoverers._discover_storage(session)  # noqa: SLF001
 
     assert result["errors"] == {}, result["errors"]
     assert result["findings"]["opened"] >= 1
@@ -341,11 +342,11 @@ async def test_a_dead_source_resolves_nothing(
     def boom() -> ProxmoxAdapter:
         raise RuntimeError("pve unreachable")
 
-    monkeypatch.setattr(mcp_srv, "_load_proxmox_adapter", boom)
-    monkeypatch.setattr(mcp_srv, "_load_k8s_adapter", _StubK8s)
+    monkeypatch.setattr(factories, "proxmox", boom)
+    monkeypatch.setattr(factories, "k8s", _StubK8s)
 
     async with session_scope(storage_session) as session:
-        result = await mcp_srv._discover_storage(session)  # noqa: SLF001
+        result = await discoverers._discover_storage(session)  # noqa: SLF001
 
     assert "proxmox" in result["errors"]
     assert result["findings"]["resolved"] == 0

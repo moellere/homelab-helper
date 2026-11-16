@@ -285,4 +285,40 @@ async def reconcile_rightsizing(
     return result, issues, skipped
 
 
-__all__ = ["CATEGORIES", "MIN_SAMPLES", "evaluate", "guest_issues", "reconcile_rightsizing"]
+async def rightsizing_report(
+    session: AsyncSession, *, days: int = 30, persist: bool = False
+) -> dict[str, Any]:
+    """The recommendations as plain data; ``persist`` also reconciles them as findings."""
+    window = timedelta(days=days)
+    if persist:
+        result, issues, skipped = await reconcile_rightsizing(session, window=window)
+        counts: dict[str, int] | None = result.counts()
+    else:
+        issues, _evaluated, skipped = await evaluate(session, window=window)
+        counts = None
+    return {
+        "window_days": days,
+        "recommendations": [
+            {
+                "category": i.category,
+                "severity": i.severity.value,
+                "guest": i.target_id,
+                "title": i.title,
+                "detail": i.description,
+                **i.evidence,
+            }
+            for i in issues
+        ],
+        "skipped": skipped,
+        "findings": counts,
+    }
+
+
+__all__ = [
+    "CATEGORIES",
+    "MIN_SAMPLES",
+    "evaluate",
+    "guest_issues",
+    "reconcile_rightsizing",
+    "rightsizing_report",
+]

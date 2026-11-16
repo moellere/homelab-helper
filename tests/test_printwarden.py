@@ -10,8 +10,8 @@ import pytest
 from sqlalchemy import select
 from typer.testing import CliRunner
 
-import homelab_helper.cli.discover as cli_discover
 import homelab_helper.mcp_server as mcp_srv
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.printwarden import (
     PrintWardenAdapter,
     PrintWardenAPIError,
@@ -218,14 +218,14 @@ def db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 def test_run_discovery_printwarden(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     body = _status(sw1=_printer(), sw2=_printer(connected=False))
-    monkeypatch.setattr(mcp_srv, "_load_printwarden_adapter", lambda: _adapter(_serving(body)))
+    monkeypatch.setattr(factories, "printwarden", lambda: _adapter(_serving(body)))
     out = asyncio.run(mcp_srv.run_discovery("printwarden"))
     assert out["reachable"]
     assert out["printers"] == ["sw1", "sw2"]
     assert [i["category"] for i in out["issues"]] == ["printer-offline"]
     assert out["findings"]["opened"] == 1
 
-    monkeypatch.setattr(mcp_srv, "_load_printwarden_adapter", lambda: _adapter(_down))
+    monkeypatch.setattr(factories, "printwarden", lambda: _adapter(_down))
     out = asyncio.run(mcp_srv.run_discovery("printwarden"))
     assert not out["reachable"]
     assert out["findings"] == {"opened": 1, "reopened": 0, "updated": 0, "resolved": 0}
@@ -236,7 +236,7 @@ runner = CliRunner()
 
 def test_cli_discover_printwarden_shows_printers(monkeypatch: pytest.MonkeyPatch) -> None:
     body = _status(sw1=_printer(state="printing", progress_pct=42.0, queue=2))
-    monkeypatch.setattr(cli_discover, "_load_printwarden_adapter", lambda: _adapter(_serving(body)))
+    monkeypatch.setattr(factories, "printwarden", lambda: _adapter(_serving(body)))
     result = runner.invoke(app, ["discover", "printwarden"])
     assert result.exit_code == 0, result.stdout
     assert "1 printer(s)" in result.stdout
@@ -246,7 +246,7 @@ def test_cli_discover_printwarden_shows_printers(monkeypatch: pytest.MonkeyPatch
 def test_cli_discover_printwarden_unreachable_persists(
     db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli_discover, "_load_printwarden_adapter", lambda: _adapter(_down))
+    monkeypatch.setattr(factories, "printwarden", lambda: _adapter(_down))
     dry = runner.invoke(app, ["discover", "printwarden", "--persist", "--dry-run"])
     assert dry.exit_code == 1
     assert "unreachable" in dry.stdout

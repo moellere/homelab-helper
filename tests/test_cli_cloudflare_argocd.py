@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-import homelab_helper.cli.discover as cli_discover
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfig
 from homelab_helper.adapters.cloudflare import CloudflareAdapter, CloudflareConfig
 from homelab_helper.cli.main import app
@@ -112,7 +112,7 @@ async def empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def test_discover_cloudflare_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_discover, "_load_cloudflare_adapter", lambda: _cloudflare(_cf_handler))
+    monkeypatch.setattr(factories, "cloudflare", lambda: _cloudflare(_cf_handler))
     result = runner.invoke(app, ["discover", "cloudflare"])
     assert result.exit_code == 0
     assert "1 DNS record" in result.stdout
@@ -123,7 +123,7 @@ def test_discover_cloudflare_unreachable_exits_nonzero(monkeypatch: pytest.Monke
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, text="bad token")
 
-    monkeypatch.setattr(cli_discover, "_load_cloudflare_adapter", lambda: _cloudflare(down))
+    monkeypatch.setattr(factories, "cloudflare", lambda: _cloudflare(down))
     result = runner.invoke(app, ["discover", "cloudflare"])
     assert result.exit_code == 1
     assert "unreachable" in result.stdout.lower()
@@ -132,7 +132,7 @@ def test_discover_cloudflare_unreachable_exits_nonzero(monkeypatch: pytest.Monke
 def test_discover_cloudflare_persist_creates_external_endpoints(
     empty_db: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli_discover, "_load_cloudflare_adapter", lambda: _cloudflare(_cf_handler))
+    monkeypatch.setattr(factories, "cloudflare", lambda: _cloudflare(_cf_handler))
     result = runner.invoke(app, ["discover", "cloudflare", "--persist"])
     assert result.exit_code == 0
     assert "1 created" in result.stdout
@@ -146,7 +146,7 @@ def test_discover_cloudflare_persist_creates_external_endpoints(
 def test_discover_cloudflare_dry_run_rolls_back(
     empty_db: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli_discover, "_load_cloudflare_adapter", lambda: _cloudflare(_cf_handler))
+    monkeypatch.setattr(factories, "cloudflare", lambda: _cloudflare(_cf_handler))
     result = runner.invoke(app, ["discover", "cloudflare", "--persist", "--dry-run"])
     assert result.exit_code == 0
     assert "dry-run" in result.stdout.lower()
@@ -160,7 +160,7 @@ def test_discover_cloudflare_dry_run_rolls_back(
 
 
 def test_discover_argocd_lists_and_flags_drift(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_discover, "_load_argocd_adapter", lambda: _argocd(_argo_handler))
+    monkeypatch.setattr(factories, "argocd", lambda: _argocd(_argo_handler))
     result = runner.invoke(app, ["discover", "argocd"])
     assert result.exit_code == 0
     assert "2 application(s)" in result.stdout
@@ -169,11 +169,52 @@ def test_discover_argocd_lists_and_flags_drift(monkeypatch: pytest.MonkeyPatch) 
     assert "loki" in result.stdout
 
 
+def test_discover_argocd_persist_reconciles_drift_and_dry_run_rolls_back(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from sqlalchemy import func, select
+
+    from homelab_helper.db.base import Base
+    from homelab_helper.db.models import ReconciliationFinding
+    from homelab_helper.db.session import make_engine, make_sessionmaker
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'argo.db'}"
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
+
+    async def _init() -> None:
+        eng = make_engine(url)
+        async with eng.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await eng.dispose()
+
+    async def _count() -> int:
+        eng = make_engine(url)
+        try:
+            async with make_sessionmaker(eng)() as s:
+                q = select(func.count()).select_from(ReconciliationFinding)
+                return int((await s.execute(q)).scalar_one())
+        finally:
+            await eng.dispose()
+
+    asyncio.run(_init())
+    monkeypatch.setattr(factories, "argocd", lambda: _argocd(_argo_handler))
+    dry = runner.invoke(app, ["discover", "argocd", "--persist", "--dry-run"])
+    assert dry.exit_code == 0, dry.output
+    assert "1 opened" in dry.stdout
+    assert "rolled back" in dry.stdout
+    assert asyncio.run(_count()) == 0
+    real = runner.invoke(app, ["discover", "argocd", "--persist"])
+    assert real.exit_code == 0, real.output
+    assert asyncio.run(_count()) == 1  # loki, the same finding the MCP tool opens
+
+
 def test_discover_argocd_unreachable_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text="forbidden")
 
-    monkeypatch.setattr(cli_discover, "_load_argocd_adapter", lambda: _argocd(down))
+    monkeypatch.setattr(factories, "argocd", lambda: _argocd(down))
     result = runner.invoke(app, ["discover", "argocd"])
     assert result.exit_code == 1
     assert "unreachable" in result.stdout.lower()

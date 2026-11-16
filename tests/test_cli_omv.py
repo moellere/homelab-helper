@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-import homelab_helper.cli.discover as cli_discover
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter, OpenMediaVaultConfig
 from homelab_helper.cli.main import app
 
@@ -65,7 +65,7 @@ def _handler(request: httpx.Request) -> httpx.Response:
 
 
 def test_discover_omv_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_discover, "_load_omv_adapter", lambda: _omv(_handler))
+    monkeypatch.setattr(factories, "omv", lambda: _omv(_handler))
     result = runner.invoke(app, ["discover", "omv"])
     assert result.exit_code == 0
     assert "1 filesystem(s)" in result.stdout
@@ -79,7 +79,7 @@ def test_discover_omv_unreachable_exits_nonzero(monkeypatch: pytest.MonkeyPatch)
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, text="unauthorized")
 
-    monkeypatch.setattr(cli_discover, "_load_omv_adapter", lambda: _omv(down))
+    monkeypatch.setattr(factories, "omv", lambda: _omv(down))
     result = runner.invoke(app, ["discover", "omv"])
     assert result.exit_code == 1
     assert "unreachable" in result.stdout.lower()
@@ -122,7 +122,7 @@ def test_discover_omv_flags_stray_exports_and_persists(
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=_ok(responses.get(_rpc_of(request), [])))
 
-    monkeypatch.setattr(cli_discover, "_load_omv_adapter", lambda: _omv(handler))
+    monkeypatch.setattr(factories, "omv", lambda: _omv(handler))
     result = runner.invoke(app, ["discover", "omv"])
     assert result.exit_code == 0, result.stdout
     assert "stray exports" in result.stdout

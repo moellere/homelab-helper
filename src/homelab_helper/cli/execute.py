@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import shutil
 import signal
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -22,12 +21,13 @@ from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
-from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDAPIError, ArgoCDConfigError
+from homelab_helper.adapters import factories
+from homelab_helper.adapters.argocd import ArgoCDAPIError
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
-from homelab_helper.adapters.kubernetes import K8sAdapter, KubeError
-from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxAPIError, ProxmoxConfigError
+from homelab_helper.adapters.kubernetes import KubeError
+from homelab_helper.adapters.proxmox import ProxmoxAPIError, ProxmoxConfigError
 from homelab_helper.adapters.talos import TalosAdapter
-from homelab_helper.adapters.unifi import UniFiAdapter, UniFiAPIError, UniFiConfig, UniFiConfigError
+from homelab_helper.adapters.unifi import UniFiAPIError
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
 from homelab_helper.db.lookup import rows_by_id_prefix
@@ -64,37 +64,6 @@ exec_app = typer.Typer(
 )
 
 console = Console()
-
-
-def _build_adapter() -> ProxmoxAdapter:
-    """Adapter factory — module-level so tests can inject a MockTransport."""
-    return ProxmoxAdapter.from_env()
-
-
-def _build_k8s_adapter() -> K8sAdapter | None:
-    """Kubernetes adapter for workload actions; ``None`` when kubectl is not on this machine."""
-    if shutil.which("kubectl") is None:
-        return None
-    return K8sAdapter.from_env()
-
-
-def _build_argocd_adapter() -> ArgoCDAdapter | None:
-    """Argo CD adapter for sync actions; ``None`` when it is not configured."""
-    try:
-        return ArgoCDAdapter.from_env()
-    except ArgoCDConfigError:
-        return None
-
-
-def _build_unifi_adapter(controller: str | None) -> UniFiAdapter | None:
-    """The UniFi controller a DNS action names (or the only one); ``None`` when unconfigured."""
-    try:
-        configs = UniFiConfig.all_from_env()
-    except UniFiConfigError:
-        return None
-    if controller is None:
-        return UniFiAdapter(configs[0]) if len(configs) == 1 else None
-    return next((UniFiAdapter(c) for c in configs if c.name == controller), None)
 
 
 async def _pending_action_proposals(session: AsyncSession) -> list[tuple[ProposalLog, str | None]]:
@@ -287,7 +256,7 @@ def exec_run(
 
                 try:
                     manifest = parse_manifest(proposal)
-                    adapter = _build_adapter()
+                    adapter = factories.proxmox()
                 except (ManifestError, ProxmoxConfigError) as exc:
                     console.print(f"[red]cannot run:[/red] {escape(str(exc))}")
                     return 2
@@ -299,9 +268,9 @@ def exec_run(
                         actor=operator_identity(),
                         confirm_cb=_confirm,
                         override=grant,
-                        k8s_adapter=_build_k8s_adapter(),
-                        argocd_adapter=_build_argocd_adapter(),
-                        unifi_adapter=_build_unifi_adapter(manifest.controller),
+                        k8s_adapter=factories.k8s_if_available(),
+                        argocd_adapter=factories.argocd_if_configured(),
+                        unifi_adapter=factories.unifi_for(manifest.controller),
                         ssh_adapter=KernelSSHAdapter() if manifest.is_node else None,
                         talos_adapter=TalosAdapter() if manifest.uses_talosctl else None,
                         notifier=notifier_from_env(),
@@ -455,7 +424,7 @@ def exec_rollback(
                     return 3
 
                 try:
-                    adapter = _build_adapter()
+                    adapter = factories.proxmox()
                 except ProxmoxConfigError as exc:
                     console.print(f"[red]adapter config:[/red] {escape(str(exc))}")
                     return 2
@@ -465,9 +434,9 @@ def exec_rollback(
                         receipt,
                         adapter,
                         actor=operator_identity(),
-                        k8s_adapter=_build_k8s_adapter(),
-                        argocd_adapter=_build_argocd_adapter(),
-                        unifi_adapter=_build_unifi_adapter(
+                        k8s_adapter=factories.k8s_if_available(),
+                        argocd_adapter=factories.argocd_if_configured(),
+                        unifi_adapter=factories.unifi_for(
                             (receipt.rollback_state or {}).get("controller")
                         ),
                         talos_adapter=TalosAdapter()

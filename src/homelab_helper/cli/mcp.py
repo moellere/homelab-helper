@@ -12,9 +12,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from homelab_helper.mcp_server import main as serve_stdio
-from homelab_helper.mcp_server import server
-
 mcp_app = typer.Typer(
     name="mcp",
     help="Model Context Protocol server for Claude Desktop / Claude Code / Cursor.",
@@ -27,12 +24,18 @@ console = Console()
 @mcp_app.command(name="serve")
 def mcp_serve() -> None:
     """Serve the harness's MCP tools over stdio (blocking; launched by a client)."""
-    serve_stdio()
+    # Imported here: the server builds itself and loads .env at import, which
+    # no other command should pay for.
+    from homelab_helper.mcp_server import main  # noqa: PLC0415
+
+    main()
 
 
 @mcp_app.command(name="tools")
 def mcp_tools() -> None:
     """List the MCP tools this server exposes (smoke check, no client needed)."""
+    from homelab_helper.mcp_server import server  # noqa: PLC0415
+
     tools = asyncio.run(server.list_tools())
     table = Table(title=f"{len(tools)} MCP tool(s)")
     table.add_column("tool", no_wrap=True)

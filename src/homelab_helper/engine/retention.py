@@ -13,7 +13,8 @@ load-bearing:
   above the 90 days of ``host.smart`` history disk health reads.
 - a **discovery run** older than ``HOMELAB_HELPER_RUN_DAYS`` (default 120)
   goes once no observation or placement refers to it, unless it is the newest
-  for its host and probe: the schedule reads that one for cadence.
+  for its host and probe: the schedule reads that one for cadence. A **source
+  run** follows the same horizon, keeping the newest per source.
 
 Either variable set to ``0`` turns that half off. Findings are not pruned:
 they are the record of what was wrong and when, and a resolved one is what a
@@ -28,7 +29,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, exists, func, select
 
-from homelab_helper.db.models import DiscoveryRun, Observation, Placement
+from homelab_helper.db.models import DiscoveryRun, Observation, Placement, SourceRun
 from homelab_helper.engine.disk_health import HISTORY_WINDOW
 
 if TYPE_CHECKING:
@@ -89,16 +90,32 @@ async def prune_runs(session: AsyncSession, cutoff: datetime) -> int:
     return int(getattr(res, "rowcount", 0) or 0)
 
 
+async def prune_source_runs(session: AsyncSession, cutoff: datetime) -> int:
+    newest_first = (
+        func.row_number()
+        .over(
+            partition_by=SourceRun.source,
+            order_by=(SourceRun.started_at.desc(), SourceRun.id.desc()),
+        )
+        .label("rank")
+    )
+    ranked = select(SourceRun.id, SourceRun.started_at, newest_first).subquery()
+    stale = select(ranked.c.id).where(ranked.c.rank > 1, ranked.c.started_at < cutoff)
+    res = await session.execute(delete(SourceRun).where(SourceRun.id.in_(stale)))
+    return int(getattr(res, "rowcount", 0) or 0)
+
+
 async def prune_history(session: AsyncSession, *, now: datetime | None = None) -> dict[str, int]:
     """Delete observations and runs past their horizon; returns rows removed."""
     current = now or datetime.now(UTC)
-    removed = {"observations": 0, "runs": 0}
+    removed = {"observations": 0, "runs": 0, "source_runs": 0}
     keep = horizon(OBSERVATION_DAYS_ENV, floor=HISTORY_WINDOW + timedelta(days=1))
     if keep is not None:
         removed["observations"] = await prune_observations(session, current - keep)
     keep = horizon(RUN_DAYS_ENV)
     if keep is not None:
         removed["runs"] = await prune_runs(session, current - keep)
+        removed["source_runs"] = await prune_source_runs(session, current - keep)
     await session.flush()
     return removed
 
@@ -111,4 +128,5 @@ __all__ = [
     "prune_history",
     "prune_observations",
     "prune_runs",
+    "prune_source_runs",
 ]

@@ -40,3 +40,11 @@ talos:
 assertions:
   default: 6h
   ceph-replication-link-speed: 1d   # an assertion's own `schedule` column still wins
+
+# Discovery sources (helper daemon run's discovery job). Without this block every
+# source runs on each discovery pass. With it, a source runs once its interval has
+# passed since its last run, good or failed; `default` covers sources not named,
+# and a source with neither runs every pass.
+sources:
+  usage: 1h          # metrics-server has no history to backfill; sample hourly
+  default: 4h

@@ -12,7 +12,8 @@ holds the app to GET-only. Meant to sit on a LAN behind a dashboard widget
 from __future__ import annotations
 
 import hmac
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 
@@ -20,6 +21,9 @@ from homelab_helper.config import database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker
 from homelab_helper.engine.status import snapshot
 from homelab_helper.secrets import secret_from_env
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 TOKEN_VAR = "HOMELAB_HELPER_STATUS_TOKEN"
 
@@ -35,7 +39,24 @@ def build_app(*, token: str | None = None, url: str | None = None) -> FastAPI:
     """The ASGI app. ``token`` and ``url`` default to the environment at call time."""
     required = token if token is not None else secret_from_env(TOKEN_VAR)
     db_url = url or database_url()
-    app = FastAPI(title="homelab-helper status", docs_url=None, redoc_url=None, openapi_url=None)
+    engine = make_engine(db_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # One engine for the life of the server, not one per request.
+        try:
+            yield
+        finally:
+            await engine.dispose()
+
+    app = FastAPI(
+        title="homelab-helper status",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
@@ -47,12 +68,8 @@ def build_app(*, token: str | None = None, url: str | None = None) -> FastAPI:
             given = _presented(request) or ""
             if not hmac.compare_digest(given.encode(), required.encode()):
                 raise HTTPException(status_code=401, detail="token required")
-        engine = make_engine(db_url)
-        try:
-            async with make_sessionmaker(engine)() as session:
-                return await snapshot(session)
-        finally:
-            await engine.dispose()
+        async with sessionmaker() as session:
+            return await snapshot(session)
 
     return app
 

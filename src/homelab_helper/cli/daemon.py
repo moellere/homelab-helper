@@ -21,9 +21,10 @@ remain CLI gestures, and a cell at PROPOSE still produces nothing but a row.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -53,6 +54,7 @@ from homelab_helper.engine.schedule import (
     ScheduleError,
     ScheduleRun,
     load_schedule,
+    plan_sources,
     run_due,
 )
 from homelab_helper.secrets import redact
@@ -102,11 +104,40 @@ def configured_sources() -> list[str]:
     return [s for s in config_status()["configured_sources"] if s in _DISCOVERERS]
 
 
-async def run_discovery_pass(sources: list[str]) -> dict[str, Any]:
-    from homelab_helper.mcp_server import run_discovery  # noqa: PLC0415 - interface→interface
+async def run_discovery_pass(
+    sources: list[str], schedule_path: str | None = None
+) -> dict[str, Any]:
+    """Each source once; with a schedule whose ``sources:`` block names a cadence,
+    only the sources that are due (a failed run waits its interval like a good one)."""
+    from homelab_helper.mcp_server import (  # noqa: PLC0415 - interface→interface
+        _DISCOVERERS,
+        run_discovery,
+    )
 
     out: dict[str, Any] = {}
-    for src in sources:
+    due = list(sources)
+    schedule = None
+    if schedule_path:
+        # A schedule that does not load is the schedule job's error to report;
+        # discovery then runs every source, as it does with no file.
+        with contextlib.suppress(ScheduleError):
+            schedule = load_schedule(schedule_path)
+    if schedule is not None and schedule.sources:
+        unknown = sorted(set(schedule.sources) - set(_DISCOVERERS) - {"default"})
+        if unknown:
+            return {"error": f"schedule sources: unknown source(s) {', '.join(unknown)}"}
+        engine = make_engine(database_url())
+        try:
+            async with make_sessionmaker(engine)() as session:
+                plan = await plan_sources(session, schedule, list(sources))
+        finally:
+            await engine.dispose()
+        now = datetime.now(UTC)
+        due = [d.source for d in plan if d.due_in(now) <= timedelta(0)]
+        waiting = [d.source for d in plan if d.source not in due]
+        if waiting:
+            out["not_due"] = waiting
+    for src in due:
         out[src] = await run_discovery(src)
     return out
 
@@ -192,6 +223,9 @@ async def run_schedule_pass(
                         schedule,
                         probes=half == "probes",
                         assertions=half == "assertions",
+                        sessionmaker=sessionmaker,
+                        # SQLite has one writer: targets there go one at a time.
+                        concurrency=PROBE_CONCURRENCY if engine.dialect.name == "postgresql" else 1,
                     )
             total.probes_run += r.probes_run
             total.probe_failures += r.probe_failures
@@ -243,6 +277,10 @@ async def run_digest_pass(days: int | None, quiet_ok: bool) -> dict[str, Any]:
             return {"sent": title, **digest.counts()}
     finally:
         await engine.dispose()
+
+
+PROBE_CONCURRENCY = 4
+"""Scheduled targets probed at once on Postgres, each in its own transaction."""
 
 
 def _job_errored(result: dict[str, Any]) -> bool:
@@ -310,7 +348,7 @@ def daemon_run(
     async def _pass(job: str) -> None:
         try:
             if job == "discovery":
-                result = await run_discovery_pass(source_list)
+                result = await run_discovery_pass(source_list, schedule_path)
             elif job == "playbooks":
                 result = await run_playbook_pass()
             elif job == "listen":

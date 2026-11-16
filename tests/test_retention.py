@@ -94,7 +94,7 @@ async def test_old_readings_go_and_the_newest_stays(sessionmaker_) -> None:  # n
 
         removed = await prune_history(s, now=NOW)
 
-        assert removed == {"observations": 2, "runs": 2}
+        assert removed == {"observations": 2, "runs": 2, "source_runs": 0}
         assert await _values(s) == ["6.8"]
         assert await s.get(DiscoveryRun, old) is None
 
@@ -107,7 +107,7 @@ async def test_a_host_that_stopped_reporting_keeps_its_last_known_facts(sessionm
 
         removed = await prune_history(s, now=NOW)
 
-        assert removed == {"observations": 1, "runs": 1}
+        assert removed == {"observations": 1, "runs": 1, "source_runs": 0}
         assert await _values(s) == ["6.5"]
         assert await s.get(DiscoveryRun, last) is not None  # the schedule's cadence anchor
         await Reconciler().reconcile_host(s, host.id)
@@ -169,3 +169,15 @@ async def test_the_horizon_never_cuts_into_smart_history(sessionmaker_, monkeypa
         await _reading(s, host, probe, 10, "6.8")
 
         assert (await prune_history(s, now=NOW))["observations"] == 0
+
+
+async def test_old_source_runs_go_and_each_sources_newest_stays(sessionmaker_) -> None:  # noqa: F811
+    from homelab_helper.db.models import SourceRun
+
+    async with session_scope(sessionmaker_) as s:
+        for source, days in (("usage", 300), ("usage", 200), ("argocd", 300)):
+            s.add(SourceRun(source=source, started_at=NOW - timedelta(days=days), ok=True))
+        await s.flush()
+        assert (await prune_history(s, now=NOW))["source_runs"] == 1
+        left = sorted((await s.execute(select(SourceRun.source))).scalars())
+        assert left == ["argocd", "usage"]

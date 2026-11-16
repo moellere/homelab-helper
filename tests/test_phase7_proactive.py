@@ -717,7 +717,7 @@ def test_daemon_once_runs_each_job(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/d.db")
     seen: list[str] = []
 
-    async def fake_discovery(sources):
+    async def fake_discovery(sources, schedule_path=None):
         seen.append(f"discovery:{','.join(sources)}")
         return {"k8s": {"nodes_seen": 0}}
 
@@ -740,7 +740,7 @@ def test_daemon_once_runs_each_job(tmp_path, monkeypatch) -> None:
     assert result.exit_code == 0
     assert seen[-1] == "playbooks"
 
-    async def one_source_down(sources):
+    async def one_source_down(sources, schedule_path=None):
         return {"k8s": {"nodes_seen": 0}, "argocd": {"source": "argocd", "error": "timed out"}}
 
     monkeypatch.setattr(mod, "run_discovery_pass", one_source_down)
@@ -765,7 +765,7 @@ def test_daemon_default_sources_are_the_configured_ones(tmp_path, monkeypatch) -
     monkeypatch.setenv("HOMELAB_HELPER_PROXMOX_TOKEN_SECRET", "s")
     seen: list[list[str]] = []
 
-    async def fake_discovery(sources):
+    async def fake_discovery(sources, schedule_path=None):
         seen.append(list(sources))
         return {}
 

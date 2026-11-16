@@ -21,6 +21,7 @@ from .proposal import ProposalLog
 from .receipt import ExecutionReceipt
 from .service import Service, ServiceEndpoint
 from .skill import SkillProfile
+from .source_run import SourceRun
 from .trust import CellTrust, Domain, ElevationWindow, TrustBoundary, TrustHistory
 from .usage import UsageSample
 from .virtualization import Cluster, VirtualMachine
@@ -47,6 +48,7 @@ __all__ = [
     "Service",
     "ServiceEndpoint",
     "SkillProfile",
+    "SourceRun",
     "TrustBoundary",
     "TrustHistory",
     "UsageSample",

@@ -1128,6 +1128,13 @@ from 1.0.0 is the operator-time list under 9.1.
   `assertions:` block, so a probes-only daemon leaves them to the daemon whose
   file names them. Each half holds its own Postgres advisory lock, so two
   passes never run the same probe batch or assertion at once.
+  Each target and each assertion commits on its own, so an interrupted pass
+  keeps what finished and a target that raises rolls back alone; on Postgres
+  up to four targets are probed at once, each in its own session. A
+  `sources:` block gives discovery sources their own cadences, read from a
+  `source_run` row every discovery leaves (migration `b6d2e8f1a3c7`).
+  SQLite connections run in WAL mode with a 5 s busy timeout, and the status
+  endpoint shares one engine for the life of the server.
   AC #6 met: two probes on different cadences from one daemon, an assertion on
   its own schedule (`tests/test_schedule.py`).
 - [x] **Probe history has a horizon** — `engine/retention.py`, run with the

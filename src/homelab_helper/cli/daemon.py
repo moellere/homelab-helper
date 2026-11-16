@@ -27,9 +27,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import typer
-from rich.console import Console
 from rich.markup import escape
 
+from homelab_helper.cli._console import RedactingConsole
 from homelab_helper.config import config_status, database_url
 from homelab_helper.db.session import (
     advisory_lock,
@@ -55,6 +55,7 @@ from homelab_helper.engine.schedule import (
     load_schedule,
     run_due,
 )
+from homelab_helper.secrets import redact
 
 if TYPE_CHECKING:
     from homelab_helper.engine.executor import ActionManifest
@@ -64,7 +65,7 @@ daemon_app = typer.Typer(
     help="Run discovery, playbooks and the approval listener on a cadence.",
     no_args_is_help=True,
 )
-console = Console(soft_wrap=True)
+console = RedactingConsole(soft_wrap=True)
 
 MIN_DIGEST_DAYS = 6.0
 """A digest covering less than this is not due yet — so a restart, or a
@@ -229,12 +230,14 @@ async def run_digest_pass(days: int | None, quiet_ok: bool) -> dict[str, Any]:
             try:
                 config = HomeAssistantApprovalConfig.from_env()
             except ApprovalConfigError as exc:
-                await record_digest(session, digest, delivery="unconfigured", detail=str(exc))
+                await record_digest(
+                    session, digest, delivery="unconfigured", detail=redact(str(exc))
+                )
                 return {"unconfigured": str(exc)}
             try:
                 await send_digest(config, title, message)
             except Exception as exc:
-                await record_digest(session, digest, delivery="failed", detail=str(exc))
+                await record_digest(session, digest, delivery="failed", detail=redact(str(exc)))
                 return {"failed": str(exc)}
             await record_digest(session, digest, delivery="sent")
             return {"sent": title, **digest.counts()}

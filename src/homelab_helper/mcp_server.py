@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
@@ -69,6 +68,7 @@ from homelab_helper.db.enums import (
     ProposalOutcome,
     ResolutionScope,
 )
+from homelab_helper.db.lookup import rows_by_id_prefix
 from homelab_helper.db.models import (
     CellTrust,
     Cluster,
@@ -2477,6 +2477,16 @@ _RUN_ASK_STEPS = 4
 """How many step names the one phone prompt for a maintenance run lists."""
 
 
+async def _one_run(session: AsyncSession, ref: str) -> tuple[MaintenanceRun | None, str]:
+    """A maintenance run by id or unique id prefix, or the reason there is none."""
+    hits = await rows_by_id_prefix(session, MaintenanceRun, ref)
+    if len(hits) == 1:
+        return hits[0], ""
+    if hits:
+        return None, f"{ref!r} matches more than one maintenance run; give more of the id"
+    return None, f"no maintenance run {ref!r}"
+
+
 @server.tool()
 async def plan_maintenance_run(
     node: str, target_node: str | None = None, resume_from: str | None = None
@@ -2497,9 +2507,9 @@ async def plan_maintenance_run(
         async with session_scope(sm) as session:
             earlier = None
             if resume_from:
-                earlier = await session.get(MaintenanceRun, uuid.UUID(resume_from))
+                earlier, why = await _one_run(session, resume_from)
                 if earlier is None:
-                    return {"error": f"no maintenance run {resume_from}"}
+                    return {"error": why}
             try:
                 run = await plan_maintenance(
                     session,
@@ -2574,9 +2584,9 @@ async def execute_maintenance_run(run_id: str) -> dict[str, Any]:
     try:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as session:
-            found = await session.get(MaintenanceRun, uuid.UUID(run_id))
+            found, why = await _one_run(session, run_id)
             if found is None:
-                return {"error": f"no maintenance run {run_id}"}
+                return {"error": why}
             run: MaintenanceRun = found
             pending = [st for st in run.steps if st["state"] == "planned"]
             if not pending:

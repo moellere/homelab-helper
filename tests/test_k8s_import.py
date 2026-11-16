@@ -36,11 +36,15 @@ def _node(name: str, **over: Any) -> dict[str, Any]:
 
 
 class _FakeK8s:
-    def __init__(self, nodes: list[dict[str, Any]]) -> None:
+    def __init__(self, nodes: list[dict[str, Any]], context: str = "admin@lab") -> None:
         self._nodes = nodes
+        self._context = context
 
     async def list_nodes(self) -> list[dict[str, Any]]:
         return self._nodes
+
+    async def cluster_name(self) -> str:
+        return self._context
 
 
 @pytest.fixture
@@ -129,3 +133,37 @@ async def test_discover_matches_existing_host_by_ip(sessionmaker) -> None:
     assert result.hosts_created == []
     async with sessionmaker() as s:
         assert len((await s.execute(select(Host))).scalars().all()) == 1  # no duplicate
+
+
+async def test_discovery_records_the_kubernetes_cluster_and_keeps_its_node_list_current(
+    sessionmaker,
+) -> None:
+    from homelab_helper.db.models import Cluster
+
+    async with session_scope(sessionmaker) as s:
+        nodes = [
+            _node("cp1", internal_ip="192.0.2.11"),
+            _node("w1", internal_ip="192.0.2.21", roles=[]),
+        ]
+        result = await discover_k8s_nodes(s, _FakeK8s(nodes), when=_WHEN)
+        assert result.cluster == "admin@lab"
+        [cluster] = (await s.execute(select(Cluster))).scalars().all()
+        assert (cluster.kind, cluster.node_count) == ("kubernetes", 2)
+        assert cluster.attributes["nodes"] == ["cp1", "w1"]
+        assert cluster.attributes["roles"] == {"cp1": ["control-plane"], "w1": []}
+
+        await discover_k8s_nodes(s, _FakeK8s(nodes[:1]), when=_WHEN)
+        await s.refresh(cluster)
+        assert cluster.attributes["nodes"] == ["cp1"]  # a node that left leaves the list
+
+
+async def test_a_name_held_by_a_proxmox_cluster_is_not_adopted(sessionmaker) -> None:
+    from homelab_helper.db.models import Cluster
+
+    async with session_scope(sessionmaker) as s:
+        s.add(Cluster(name="lab", kind="proxmox"))
+        await s.flush()
+        result = await discover_k8s_nodes(s, _FakeK8s([_node("cp1")], context="lab"), when=_WHEN)
+        assert result.cluster == "lab (kubernetes)"
+        kinds = dict((await s.execute(select(Cluster.name, Cluster.kind))).all())
+        assert kinds == {"lab": "proxmox", "lab (kubernetes)": "kubernetes"}

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import or_, select
 
 from homelab_helper.db.enums import Confidence, DiscoverySource, IntentTargetType, PrivilegeLevel
-from homelab_helper.db.models import DiscoveryRun, Host, Observation, Probe
+from homelab_helper.db.models import Cluster, DiscoveryRun, Host, Observation, Probe
 from homelab_helper.engine.reconciler import Reconciler
 
 if TYPE_CHECKING:
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from homelab_helper.adapters.kubernetes import K8sAdapter
 
 _K8S_PROBE = "k8s.node"
+KUBERNETES = "kubernetes"
 
 
 @dataclass
@@ -34,6 +35,8 @@ class K8sDiscoverResult:
     nodes_seen: int = 0
     hosts_created: list[str] = field(default_factory=list)
     hosts_matched: list[str] = field(default_factory=list)
+    cluster: str | None = None
+    """The ``Cluster(kind="kubernetes")`` row the nodes were recorded on."""
 
 
 async def _ensure_probe(session: AsyncSession) -> Probe:
@@ -98,12 +101,14 @@ async def discover_k8s_nodes(
     """Record each K8s node's facts as INFERRED observations, then reconcile."""
     result = K8sDiscoverResult()
     probe = await _ensure_probe(session)
+    roles: dict[str, list[str]] = {}
 
     for node in await adapter.list_nodes():
         name = node.get("name")
         if not isinstance(name, str) or not name:
             continue
         result.nodes_seen += 1
+        roles[name] = list(node.get("roles") or [])
         host, created = await _resolve_host(session, name, node.get("internal_ip"))
         (result.hosts_created if created else result.hosts_matched).append(name)
 
@@ -133,7 +138,52 @@ async def discover_k8s_nodes(
         await session.flush()
         await Reconciler().reconcile_host(session, host.id)
 
+    if roles:
+        result.cluster = await _record_cluster(
+            session,
+            await adapter.cluster_name(),
+            roles,
+            result.hosts_created + result.hosts_matched,
+            when,
+        )
     return result
 
 
-__all__ = ["K8sDiscoverResult", "discover_k8s_nodes"]
+async def _record_cluster(
+    session: AsyncSession,
+    context: str,
+    roles: dict[str, list[str]],
+    hostnames: list[str],
+    when: datetime,
+) -> str:
+    """Upsert this context's ``Cluster(kind="kubernetes")`` with the node list just seen.
+
+    The list is replaced each run, so a node that left the cluster leaves the
+    list. Membership is by the matched ``Host`` names (a node may match a host
+    recorded under another name by its IP). A name already taken by another
+    kind of cluster gets a ``(kubernetes)`` suffix rather than adopting it.
+    """
+    name = context
+    taken = (
+        await session.execute(select(Cluster).where(Cluster.name == name))
+    ).scalar_one_or_none()
+    if taken is not None and taken.kind != KUBERNETES:
+        name = f"{context} (kubernetes)"
+        taken = (
+            await session.execute(select(Cluster).where(Cluster.name == name))
+        ).scalar_one_or_none()
+    cluster = taken
+    if cluster is None:
+        cluster = Cluster(name=name, kind=KUBERNETES, discovery_source=DiscoverySource.K8S)
+        session.add(cluster)
+    attrs = dict(cluster.attributes or {})
+    attrs["nodes"] = sorted(set(hostnames))
+    attrs["roles"] = {node: roles[node] for node in sorted(roles)}
+    cluster.attributes = attrs
+    cluster.node_count = len(roles)
+    cluster.discovery_last_run = when
+    await session.flush()
+    return name
+
+
+__all__ = ["KUBERNETES", "K8sDiscoverResult", "discover_k8s_nodes"]

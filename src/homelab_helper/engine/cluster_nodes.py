@@ -7,7 +7,10 @@ it on that cluster's node list (``Cluster.attributes["nodes"]``), or when it
 runs one of the cluster's guests (the fallback for rows written before the node
 list was persisted). Nothing else qualifies. Free RAM on a NAS, a Pi or a
 Kubernetes worker is not capacity a guest can move into, and a NAS running
-Docker is not "surplus" because the harness sees no guests on it.
+Docker is not "surplus" because the harness sees no guests on it. Membership
+counts hypervisor clusters only unless a caller asks for every kind: Kubernetes
+nodes are on a ``Cluster(kind="kubernetes")`` node list too, and the diagram
+draws them, but they are not where a VM goes.
 
 This is the rule #51 fixed into ``plan rebalance`` after the live fleet planned
 guests onto a NAS; the other planners had the same hole. One definition, read
@@ -69,23 +72,45 @@ class ClusterNodes:
         return {k: frozenset(v) for k, v in out.items()}
 
 
-async def cluster_nodes(session: AsyncSession, hosts: Iterable[Host]) -> ClusterNodes:
-    """Membership for ``hosts`` from the clusters' node lists, else from their guests."""
+HYPERVISOR_KINDS: tuple[str, ...] = ("proxmox",)
+"""Cluster kinds whose nodes run guests. A Kubernetes worker has no
+``VirtualMachine`` rows and would read as an empty, 0%-committed hypervisor."""
+
+
+async def cluster_nodes(
+    session: AsyncSession,
+    hosts: Iterable[Host],
+    *,
+    kinds: Iterable[str] | None = HYPERVISOR_KINDS,
+) -> ClusterNodes:
+    """Membership for ``hosts`` from the clusters' node lists, else from their guests.
+
+    ``kinds`` limits it to clusters of those kinds; the default is the hypervisor
+    clusters the placement planners reason about. ``None`` means every kind
+    (the diagram draws Kubernetes membership too).
+    """
     by_id = {h.id: h for h in hosts}
     by_name = {h.hostname: h.id for h in by_id.values()}
     members: dict[uuid.UUID, set[uuid.UUID]] = {}
+    wanted = None if kinds is None else tuple(kinds)
+    clusters = select(Cluster)
+    if wanted is not None:
+        clusters = clusters.where(Cluster.kind.in_(wanted))
 
-    for cluster in (await session.execute(select(Cluster))).scalars().all():
+    for cluster in (await session.execute(clusters)).scalars().all():
         for node in (cluster.attributes or {}).get("nodes") or []:
             host_id = by_name.get(str(node))
             if host_id is not None:
                 members.setdefault(host_id, set()).add(cluster.id)
 
-    rows = await session.execute(
-        select(VirtualMachine.node_host_id, VirtualMachine.cluster_id).where(
-            VirtualMachine.node_host_id.is_not(None)
-        )
+    guests = select(VirtualMachine.node_host_id, VirtualMachine.cluster_id).where(
+        VirtualMachine.node_host_id.is_not(None)
     )
+    if wanted is not None:
+        guests = guests.join(Cluster, Cluster.id == VirtualMachine.cluster_id).where(
+            Cluster.kind.in_(wanted)
+        )
+    rows = await session.execute(guests)
     for host_id, cluster_id in rows.all():
         if host_id in by_id:
             members.setdefault(host_id, set()).add(cluster_id)
@@ -93,4 +118,10 @@ async def cluster_nodes(session: AsyncSession, hosts: Iterable[Host]) -> Cluster
     return ClusterNodes({k: frozenset(v) for k, v in members.items()})
 
 
-__all__ = ["NOT_A_NODE", "PLACEMENT_TARGET_RULE", "ClusterNodes", "cluster_nodes"]
+__all__ = [
+    "HYPERVISOR_KINDS",
+    "NOT_A_NODE",
+    "PLACEMENT_TARGET_RULE",
+    "ClusterNodes",
+    "cluster_nodes",
+]

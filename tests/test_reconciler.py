@@ -1450,7 +1450,7 @@ async def test_wwn_notation_change_closes_prior_placement(sessionmaker) -> None:
         )
         await Reconciler().reconcile_host(s, old_host.id)
 
-        new_host = await _seed_host(s, hostname="wynode2")
+        new_host = await _seed_host(s, hostname="edge2")
         run2 = await _seed_run(s, new_host.id, probe_name="host.storage")
         await _record_observations(
             s,

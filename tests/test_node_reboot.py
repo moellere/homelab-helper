@@ -24,7 +24,7 @@ from homelab_helper.engine.rollback import NO_INVERSE, select_strategy
 from homelab_helper.engine.trust import grant_cell, seed_domains
 from tests.test_node_update import sessionmaker_  # noqa: F401 - fixture
 
-NODE = "bmax2"
+NODE = "hv2"
 
 
 def proposal_for(node: str = NODE) -> ProposalLog:
@@ -66,10 +66,10 @@ class _FakeProxmox:
     async def list_nodes(self) -> list[dict[str, Any]]:
         status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
         self.calls.append(f"list_nodes:{status}")
-        return [{"node": NODE, "status": status}, {"node": "bmax0", "status": "online"}]
+        return [{"node": NODE, "status": status}, {"node": "hv0", "status": "online"}]
 
     async def cluster_status(self) -> dict[str, Any]:
-        return {"name": "bmax", "quorate": self._quorate}
+        return {"name": "hv", "quorate": self._quorate}
 
     async def vm_current_status(self, *a: Any, **k: Any) -> dict[str, Any]:
         return {}

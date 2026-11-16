@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from sqlalchemy import select
 
 import homelab_helper.mcp_server as mcp_srv
+import homelab_helper.mcp_server.discovery as mcp_discovery
 from homelab_helper import __version__
 from homelab_helper.adapters import factories
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
@@ -170,7 +171,6 @@ async def test_no_tool_can_change_authority_or_execute() -> None:
 
 def test_mcp_module_never_calls_the_write_paths() -> None:
     """Belt and braces: the module must not even import the authority-changing helpers."""
-    import homelab_helper.mcp_server as mod
 
     forbidden = (
         "rollback_receipt",
@@ -182,23 +182,43 @@ def test_mcp_module_never_calls_the_write_paths() -> None:
         "record_clean_outcome",
         "record_bad_outcome",
     )
-    present = [name for name in forbidden if hasattr(mod, name)]
-    assert not present, f"mcp_server imported write-path helpers: {present}"
-
-    source = Path(mod.__file__).read_text()
+    for module in _server_modules():
+        present = [name for name in forbidden if hasattr(module, name)]
+        assert not present, f"{module.__name__} imported write-path helpers: {present}"
+    source = _server_source()
     called = [name for name in forbidden if f"{name}(" in source]
     assert not called, f"mcp_server calls write-path helpers: {called}"
+
+
+def _server_modules() -> list[Any]:
+    """The package and every module in it: the tools are split across them."""
+    import importlib
+    import pkgutil
+
+    import homelab_helper.mcp_server as pkg
+
+    return [pkg] + [
+        importlib.import_module(f"{pkg.__name__}.{info.name}")
+        for info in pkgutil.iter_modules(pkg.__path__)
+    ]
+
+
+def _server_source() -> str:
+    """Every source file of the server package, so a check cannot miss a module."""
+    import homelab_helper.mcp_server as pkg
+
+    files = sorted(Path(pkg.__file__).parent.glob("*.py"))
+    assert len(files) > 1, "expected the server split across modules"
+    return "\n".join(f.read_text() for f in files)
 
 
 def test_execute_proposal_can_never_carry_an_override() -> None:
     """The trigger runs the executor with ``override=None`` and nothing else:
     no OverrideGrant is ever built here, so an agent cannot cross a soft-hard
     floor through the MCP surface."""
-    import homelab_helper.mcp_server as mod
-
-    source = Path(mod.__file__).read_text()
+    source = _server_source()
     assert "OverrideGrant" not in source
-    assert not hasattr(mod, "OverrideGrant")
+    assert not any(hasattr(m, "OverrideGrant") for m in _server_modules())
     assert "override=None" in source
     assert "override=grant" not in source
     assert "override=override" not in source
@@ -502,7 +522,7 @@ def probe_calls(monkeypatch: pytest.MonkeyPatch) -> list[HostProbeRequest]:
             hostname=request.name, host_id="00000000-0000-0000-0000-000000000000"
         )
 
-    monkeypatch.setattr(mcp_srv, "_probe_host", _fake)
+    monkeypatch.setattr(mcp_discovery, "_probe_host", _fake)
     monkeypatch.setenv("HOMELAB_HELPER_SSH_KEY", "/nonexistent/key")
     monkeypatch.delenv(PROBE_ALLOW_VAR, raising=False)
     return calls
@@ -589,7 +609,7 @@ def talos_calls(monkeypatch: pytest.MonkeyPatch) -> list[TalosProbeRequest]:
             hostname=request.name, host_id="00000000-0000-0000-0000-000000000000"
         )
 
-    monkeypatch.setattr(mcp_srv, "_probe_talos", _fake)
+    monkeypatch.setattr(mcp_discovery, "_probe_talos", _fake)
     monkeypatch.delenv(PROBE_ALLOW_VAR, raising=False)
     return calls
 
@@ -882,7 +902,7 @@ async def test_run_discovery_mikrotik_persists(
         base_url="https://r.lan/rest", transport=httpx.MockTransport(handler)
     )
     adapter = MikroTikAdapter(
-        MikroTikConfig(url="https://r.lan", username="ro", password="pw", name="wyola"),
+        MikroTikConfig(url="https://r.lan", username="ro", password="pw", name="siteb"),
         client=client,
     )
     monkeypatch.setattr(factories, "mikrotik", lambda: adapter)
@@ -893,7 +913,7 @@ async def test_run_discovery_mikrotik_persists(
         await client.aclose()
     assert out["source"] == "mikrotik"
     assert out["router"] == "core-router"
-    assert out["resolver"] == "mikrotik:wyola"
+    assert out["resolver"] == "mikrotik:siteb"
     assert out["endpoints"]["created"] == 2
     assert out["stray_config"]["opened"] == 1
 
@@ -965,3 +985,11 @@ async def test_run_discovery_proxmox_unreachable_is_an_error_not_an_empty_cluste
     monkeypatch.setattr(factories, "proxmox", lambda: _FakeProxmox([], up=False))
     out = await run_discovery("proxmox")
     assert out["error"] == "proxmox unreachable: connection refused"
+
+
+def test_the_safety_checks_read_every_tool_module() -> None:
+    """The write-path and override checks scan the whole package: a tool moved
+    into a new module cannot slip past them."""
+    source = _server_source()
+    for marker in ("async def execute_proposal", "async def trust_status", "async def list_hosts"):
+        assert marker in source

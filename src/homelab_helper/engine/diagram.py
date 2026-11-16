@@ -90,7 +90,7 @@ _LEASE_SUFFIX = re.compile(r"(?:-[0-9a-f]{2}){2}$")
 
 def _is_noise(service_name: str, host: Host) -> bool:
     """A DNS record that only restates the host: its own name, or a DHCP lease name
-    (UniFi appends two MAC octets, ``bmax1-b4-be``). Drawing those adds no information."""
+    (UniFi appends two MAC octets, ``hv1-b4-be``). Drawing those adds no information."""
     short = host.hostname.split(".")[0].lower()
     name = service_name.lower()
     return name in {host.hostname.lower(), short} or bool(_LEASE_SUFFIX.search(name))

@@ -69,7 +69,7 @@ async def _seed(s) -> tuple[Host, Host]:
     old = Host(
         hostname="pi-cp1", primary_ip="10.0.1.11", capabilities={"mem_total_bytes": 8 * 1024**3}
     )
-    new = Host(hostname="wyhome", primary_ip="10.254.0.11")
+    new = Host(hostname="sitebha", primary_ip="10.20.0.11")
     s.add_all([old, new])
     await s.flush()
     ssd = PhysicalPart(kind=PartKind.SSD, serial="SSD-A", model="Kingston A400")
@@ -98,7 +98,7 @@ async def _seed(s) -> tuple[Host, Host]:
                 kind=FindingKind.INVENTORY_GAP,
                 severity=FindingSeverity.LOW,
                 fingerprint="f-new-1",
-                title="gap on wyhome",
+                title="gap on sitebha",
                 description="",
                 affected=[{"target_type": "host", "target_id": str(new.id)}],
             ),
@@ -122,7 +122,7 @@ async def test_retire_closes_placements_resolves_findings_records_intent(session
     async with session_scope(sessionmaker) as s:
         old, new = await _seed(s)
         result = await retire_host(
-            s, old, declared_by="enoch", rationale="reflashed as wyhome", when=when
+            s, old, declared_by="enoch", rationale="reflashed as sitebha", when=when
         )
         assert result.already_retired is False
         assert sorted(result.placements_closed) == [("SSD-A", "sda"), ("aa:bb:cc:dd:ee:01", "eth0")]
@@ -155,7 +155,7 @@ async def test_retire_closes_placements_resolves_findings_records_intent(session
         assert intents[0].intent is IntentState.DECOMMISSIONING
         assert intents[0].target_id == str(old.id)
         assert intents[0].declared_by == "enoch"
-        assert intents[0].rationale == "reflashed as wyhome"
+        assert intents[0].rationale == "reflashed as sitebha"
         assert old.expected_power_state is PowerState.OFF
         assert await is_retired(s, old.id)
         assert not await is_retired(s, new.id)
@@ -270,7 +270,7 @@ async def _seed_slices(s) -> None:
     svc_nas = Service(name="nas")
     s.add_all([svc_ha, svc_nas])
     await s.flush()
-    for resolver in ("unifi", "unifi:covington"):
+    for resolver in ("unifi", "unifi:sitea"):
         s.add(
             ServiceEndpoint(
                 service_id=svc_ha.id,
@@ -310,7 +310,7 @@ async def test_list_and_retire_resolver_slice(sessionmaker) -> None:
         slices = {(x.scope, x.resolver): x.endpoints for x in await list_resolver_slices(s)}
         assert slices == {
             ("internal", "unifi"): 2,
-            ("internal", "unifi:covington"): 1,
+            ("internal", "unifi:sitea"): 1,
             ("external", "cloudflare"): 1,
         }
 
@@ -321,7 +321,7 @@ async def test_list_and_retire_resolver_slice(sessionmaker) -> None:
             (e.resolver, e.hostname)
             for e in (await s.execute(select(ServiceEndpoint))).scalars().all()
         }
-        assert remaining == {("unifi:covington", "ha.lan"), ("cloudflare", "ha.example.com")}
+        assert remaining == {("unifi:sitea", "ha.lan"), ("cloudflare", "ha.example.com")}
         assert {x.name for x in (await s.execute(select(Service))).scalars().all()} == {"ha"}
 
 

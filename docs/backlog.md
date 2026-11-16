@@ -1144,8 +1144,11 @@ from 1.0.0 is the operator-time list under 9.1.
   `helper --help` no longer imports the MCP stack, and two drifts are closed:
   `helper discover argocd --persist [--dry-run]` reconciles drift-candidate
   findings as the MCP tool does, and the shared Proxmox runner checks the API
-  is reachable before reading. Splitting the remaining tool registrations by
-  domain is still open.
+  is reachable before reading. The tools themselves are split by domain:
+  `mcp_server/` is a package (`inventory`, `discovery`, `planning`, `trust`,
+  `proposals`, `execution`, with the server object in `_app`), still imported
+  as `homelab_helper.mcp_server:server` / `main`; the no-write-path and
+  no-override tests read every module of it.
 - [x] **Probe history has a horizon** — `engine/retention.py`, run with the
   hourly usage job. Observations older than `HOMELAB_HELPER_OBSERVATION_DAYS`
   and discovery runs older than `HOMELAB_HELPER_RUN_DAYS` (default 120 each,

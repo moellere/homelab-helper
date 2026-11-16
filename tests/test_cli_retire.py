@@ -34,7 +34,7 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as s:
             old = Host(hostname="pi-cp1", primary_ip="10.0.1.11")
-            new = Host(hostname="wyhome")
+            new = Host(hostname="sitebha")
             s.add_all([old, new])
             await s.flush()
             a = PhysicalPart(kind=PartKind.SSD, serial="SSD-A", model="A400")
@@ -50,7 +50,7 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
             svc = Service(name="ha")
             s.add(svc)
             await s.flush()
-            for resolver in ("unifi", "unifi:covington"):
+            for resolver in ("unifi", "unifi:sitea"):
                 s.add(
                     ServiceEndpoint(
                         service_id=svc.id,
@@ -101,7 +101,7 @@ def test_host_retire_requires_confirmation_then_closes(
     assert result.exit_code == 0, result.stdout
     assert "1 placement(s) closed" in result.stdout
     assert asyncio.run(_open_placements(url, "pi-cp1")) == 0
-    assert asyncio.run(_open_placements(url, "wyhome")) == 1
+    assert asyncio.run(_open_placements(url, "sitebha")) == 1
 
     again = runner.invoke(app, ["host", "retire", "pi-cp1", "--yes"])
     assert again.exit_code == 0
@@ -127,7 +127,7 @@ def test_part_show_and_merge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
     after = runner.invoke(app, ["part", "show", "SSD-A"])
     assert after.exit_code == 0
-    assert "wyhome" in after.stdout
+    assert "sitebha" in after.stdout
     assert "merged from" in after.stdout
 
     gone = runner.invoke(app, ["part", "show", "0xdeadbeef"])
@@ -145,7 +145,7 @@ def test_service_resolvers_retire_and_aliases(
     _db(tmp_path, monkeypatch)
     listed = runner.invoke(app, ["service", "resolvers"])
     assert listed.exit_code == 0, listed.stdout
-    assert "unifi:covington" in listed.stdout
+    assert "unifi:sitea" in listed.stdout
     assert "2 slice(s)" in listed.stdout
 
     retired = runner.invoke(app, ["service", "retire-resolver", "unifi", "--yes"])

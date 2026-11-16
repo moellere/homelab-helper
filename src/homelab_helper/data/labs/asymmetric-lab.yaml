@@ -4,7 +4,7 @@
 # `helper bottlenecks`. No hardware, no credentials, no SSH.
 #
 # Why this file exists. P4-AC2 (Ceph narration) and P5-AC4 (generated
-# mitigations) could not be validated against the author's own fleet: bmax0-3
+# mitigations) could not be validated against the author's own fleet: its Proxmox nodes
 # are symmetric 1 GbE, so the analyser is correctly silent and there is nothing
 # to narrate. A criterion that only ever fails open is not validated. This
 # fixture supplies the asymmetry the fleet does not have, so the derivation runs

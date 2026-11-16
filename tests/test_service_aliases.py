@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 _EXAMPLE = {
     "services": {
         "home-assistant": {"hostnames": ["ha.lan", "HA.example.com"]},
-        "grafana-wyola": ["grafana.wyola.lan", "*.grafana.wyola.lan"],
+        "grafana-siteb": ["grafana.siteb.lan", "*.grafana.siteb.lan"],
     }
 }
 
@@ -35,12 +35,12 @@ def test_parse_exact_and_glob_and_shorthand() -> None:
     assert aliases.exact == {
         "ha.lan": "home-assistant",
         "ha.example.com": "home-assistant",
-        "grafana.wyola.lan": "grafana-wyola",
+        "grafana.siteb.lan": "grafana-siteb",
     }
-    assert aliases.patterns == (("*.grafana.wyola.lan", "grafana-wyola"),)
-    assert aliases.services == ["grafana-wyola", "home-assistant"]
+    assert aliases.patterns == (("*.grafana.siteb.lan", "grafana-siteb"),)
+    assert aliases.services == ["grafana-siteb", "home-assistant"]
     assert aliases.resolve("HA.LAN") == "home-assistant"
-    assert aliases.resolve("api.grafana.wyola.lan") == "grafana-wyola"
+    assert aliases.resolve("api.grafana.siteb.lan") == "grafana-siteb"
     assert aliases.resolve("grafana.lan") is None
 
 
@@ -58,7 +58,7 @@ def test_service_key_uses_aliases_then_leftmost_label() -> None:
     assert service_key("ha.example.com", aliases) == "home-assistant"
     assert service_key("nas.lan", aliases) == "nas"
     assert service_key("nas.lan") == "nas"
-    assert service_key("api.grafana.wyola.lan", aliases) == "grafana-wyola"
+    assert service_key("api.grafana.siteb.lan", aliases) == "grafana-siteb"
     assert service_key("grafana.lan", aliases) == "grafana"
 
 
@@ -162,10 +162,10 @@ async def test_reconcile_reports_a_superseded_resolver_slice(
     async with session_scope(sessionmaker) as s:
         first = await reconcile_internal_endpoints(s, records, resolver="unifi")
         assert first.superseded_resolvers == []
-        second = await reconcile_internal_endpoints(s, records, resolver="unifi:covington")
+        second = await reconcile_internal_endpoints(s, records, resolver="unifi:sitea")
         assert second.superseded_resolvers == ["unifi"]
         # A different set at the same scope is not "superseded".
         third = await reconcile_internal_endpoints(
-            s, [_rec("other.lan", "10.9.9.9")], resolver="unifi:wyola"
+            s, [_rec("other.lan", "10.9.9.9")], resolver="unifi:siteb"
         )
         assert third.superseded_resolvers == []

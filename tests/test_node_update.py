@@ -30,7 +30,7 @@ from homelab_helper.engine.manifest import build_node_artifact, validate_artifac
 from homelab_helper.engine.rollback import NO_INVERSE, RollbackError, RollbackPlan, restore
 from homelab_helper.engine.trust import grant_cell, seed_domains
 
-NODE = "bmax1"
+NODE = "hv1"
 
 
 # ---------------------------------------------------------------- authoring
@@ -259,7 +259,7 @@ async def test_stopped_guests_do_not_block_an_update(sessionmaker_) -> None:
 
 async def test_guests_on_another_node_do_not_block(sessionmaker_) -> None:
     ssh = _FakeSSH()
-    elsewhere = [{"node": "bmax2", "vmid": 201, "status": "running", "template": False}]
+    elsewhere = [{"node": "hv2", "vmid": 201, "status": "running", "template": False}]
     async with session_scope(sessionmaker_) as s:
         await seeded(s)
         p = proposal_for()

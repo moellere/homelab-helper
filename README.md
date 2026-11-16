@@ -612,7 +612,7 @@ client should never see `probe_host`), and is not planned for 1.0.
 │   ├── migrations/                 # Alembic env + versions (ship in the wheel)
 │   ├── data/                       # Workload library, OS/Ceph/Kubernetes/Talos EOL table, replayable labs (ship in the wheel)
 │   ├── cli/                        # `helper` Typer app
-│   ├── mcp_server.py               # MCP tools over stdio
+│   ├── mcp_server/                 # MCP tools over stdio, one module per domain
 │   ├── status_api.py               # GET /status + /healthz (FastAPI)
 │   ├── config.py                   # .env loading, per-user dirs, source status
 │   ├── secrets.py                  # Secret references (file/age/sops/keyring) + redaction

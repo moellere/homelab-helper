@@ -804,7 +804,7 @@ from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig  # noqa: E40
 from homelab_helper.engine.manifest import build_argocd_artifact, build_dns_artifact  # noqa: E402
 
 _ARGO = ArgoCDConfig(url="https://argo.test", api_token="t")
-_UNIFI = UniFiConfig(url="https://unifi.test", api_key="k", name="covington")
+_UNIFI = UniFiConfig(url="https://unifi.test", api_key="k", name="sitea")
 
 
 def make_argocd(
@@ -1039,10 +1039,10 @@ async def test_dns_record_create_then_rollback_deletes_it(sessionmaker) -> None:
         await grant_cell(
             s, TrustDomain.DNS, "dns-record", "single-service", AutonomyLevel.AUTONOMOUS, actor="op"
         )
-        artifact = build_dns_artifact(hostname="new.lan", value="10.0.0.9", controller="covington")
+        artifact = build_dns_artifact(hostname="new.lan", value="10.0.0.9", controller="sitea")
         p = await make_proposal(s, artifact, "single-service")
         m = parse_manifest(p)
-        assert m.target_label == "dns A new.lan -> 10.0.0.9 on covington"
+        assert m.target_label == "dns A new.lan -> 10.0.0.9 on sitea"
         result = await execute_proposal(s, p, adapter, actor="op", unifi_adapter=unifi)
         assert result.outcome == "succeeded"
         assert records[0]["key"] == "new.lan"

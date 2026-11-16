@@ -73,7 +73,7 @@ def finding(
         fingerprint=fingerprint,
         title=title,
         description=title,
-        affected=[{"target_type": "host", "target_id": "bmax0"}],
+        affected=[{"target_type": "host", "target_id": "hv0"}],
         status=status,
         first_seen=first_seen,
         last_seen=first_seen,
@@ -102,7 +102,7 @@ async def receipt(
             "kind": "action",
             "domain": "containers",
             "action_kind": "restart",
-            "target": {"node": "bmax0", "vmid": 101},
+            "target": {"node": "hv0", "vmid": 101},
         },
         rollback_state={},
         outcome=outcome,
@@ -348,7 +348,7 @@ async def test_page_names_what_happened(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         s.add(
             finding(
-                title="bmax1 is 8 versions behind",
+                title="hv1 is 8 versions behind",
                 fingerprint="f" * 16,
                 first_seen=NOW - timedelta(days=1),
                 severity=FindingSeverity.HIGH,
@@ -361,7 +361,7 @@ async def test_page_names_what_happened(sessionmaker) -> None:
     assert "## What was done" in page
     assert "## What changed" in page
     assert "## What is recommended" in page
-    assert "bmax1 is 8 versions behind" in page
+    assert "hv1 is 8 versions behind" in page
     assert "containers/restart" in page
 
 

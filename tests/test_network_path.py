@@ -25,13 +25,13 @@ _GB = 1024**3
 
 _TOPOLOGY_YAML = """
 sites:
-  covington:
+  sitea:
     hosts: [node0, nas]
-  wyola:
-    hosts: [wyhome, wynode2]
+  siteb:
+    hosts: [sitebha, edge2]
 links:
-  - a: covington
-    b: wyola
+  - a: sitea
+    b: siteb
     kind: vpn
     bandwidth_mbps: 40
     latency_ms: 28
@@ -81,7 +81,7 @@ def test_undeclared_host_defaults_to_lan(tmp_path: Path) -> None:
 
 def test_cross_site_inherits_worst_link(tmp_path: Path) -> None:
     """AC6's core: the VPN hop sets the whole path's character."""
-    path = _topology(tmp_path).path("node0", "wyhome")
+    path = _topology(tmp_path).path("node0", "sitebha")
     assert path is not None
     assert path.same_site is False
     assert path.lan_grade is False
@@ -148,7 +148,7 @@ def test_example_topology_file_parses() -> None:
 def test_ceph_refused_across_vpn(tmp_path: Path) -> None:
     """AC6 verbatim: refuse + explain latency/reliability worst-link inheritance."""
     ceph = load_workload_library()["ceph-osd"]
-    path = _topology(tmp_path).path("node0", "wyhome")
+    path = _topology(tmp_path).path("node0", "sitebha")
     assert path is not None
     verdict, message = network_verdict(ceph, path)
     assert verdict == "refuse"
@@ -161,7 +161,7 @@ def test_ceph_refused_across_vpn(tmp_path: Path) -> None:
 
 def test_lan_preferred_warns_not_refuses(tmp_path: Path) -> None:
     plex = load_workload_library()["plex"]
-    path = _topology(tmp_path).path("node0", "wyhome")
+    path = _topology(tmp_path).path("node0", "sitebha")
     assert path is not None
     verdict, message = network_verdict(plex, path)
     assert verdict == "warn"
@@ -188,18 +188,18 @@ def _host(name: str, *, mem_gb: int = 32, disk_tb: float | None = None) -> Host:
 
 
 async def test_placement_rejects_cross_vpn_for_lan_required(sessionmaker, tmp_path: Path) -> None:
-    """The anchor (gravity carrier) is in covington; wyola candidates refuse."""
+    """The anchor (gravity carrier) is in sitea; siteb candidates refuse."""
     ceph = load_workload_library()["ceph-osd"]
     async with session_scope(sessionmaker) as s:
-        s.add(_host("nas", disk_tb=8))  # gravity anchor, covington
-        s.add(_host("node0"))  # covington
-        s.add(_host("wyhome", mem_gb=64))  # wyola — better RAM, wrong site
+        s.add(_host("nas", disk_tb=8))  # gravity anchor, sitea
+        s.add(_host("node0"))  # sitea
+        s.add(_host("sitebha", mem_gb=64))  # siteb — better RAM, wrong site
     async with sessionmaker() as s:
         report = await recommend_placement(s, ceph, topology=_topology(tmp_path))
     names = [c.hostname for c in report.candidates]
-    assert "wyhome" not in names
+    assert "sitebha" not in names
     assert "node0" in names
-    rejection = dict(report.rejected)["wyhome"]
+    rejection = dict(report.rejected)["sitebha"]
     assert "worst link" in rejection
     assert "vpn" in rejection
 
@@ -211,22 +211,22 @@ async def test_placement_penalizes_cross_vpn_for_lan_preferred(
     async with session_scope(sessionmaker) as s:
         s.add(_host("nas", disk_tb=8))
         s.add(_host("node0"))
-        s.add(_host("wyhome", mem_gb=33))  # marginally more RAM than node0
+        s.add(_host("sitebha", mem_gb=33))  # marginally more RAM than node0
     async with sessionmaker() as s:
         report = await recommend_placement(s, plex, topology=_topology(tmp_path))
     names = [c.hostname for c in report.candidates]
-    assert "wyhome" in names  # warned, not refused
-    wyhome = next(c for c in report.candidates if c.hostname == "wyhome")
-    assert any("degraded" in c for c in wyhome.caveats)
+    assert "sitebha" in names  # warned, not refused
+    sitebha = next(c for c in report.candidates if c.hostname == "sitebha")
+    assert any("degraded" in c for c in sitebha.caveats)
     assert report.best is not None
-    assert report.best.hostname != "wyhome"  # the penalty outweighs 1 GiB of RAM
+    assert report.best.hostname != "sitebha"  # the penalty outweighs 1 GiB of RAM
 
 
 async def test_placement_without_topology_unchanged(sessionmaker) -> None:
     ceph = load_workload_library()["ceph-osd"]
     async with session_scope(sessionmaker) as s:
         s.add(_host("nas", disk_tb=8))
-        s.add(_host("wyhome"))
+        s.add(_host("sitebha"))
     async with sessionmaker() as s:
         report = await recommend_placement(s, ceph, topology=None)
     # No declared topology: single-site assumption, nothing network-rejected.
@@ -242,7 +242,7 @@ def test_cli_path_shows_inheritance(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     f = tmp_path / "topo.yaml"
     f.write_text(_TOPOLOGY_YAML)
     monkeypatch.setenv("HOMELAB_HELPER_NETWORK_TOPOLOGY", str(f))
-    result = runner.invoke(app, ["plan", "path", "node0", "wyhome"])
+    result = runner.invoke(app, ["plan", "path", "node0", "sitebha"])
     assert result.exit_code == 0
     assert "40 Mbps" in result.stdout
     assert "28.0 ms" in result.stdout
@@ -254,7 +254,7 @@ def test_cli_path_workload_refusal_exits_1(tmp_path: Path, monkeypatch: pytest.M
     f = tmp_path / "topo.yaml"
     f.write_text(_TOPOLOGY_YAML)
     monkeypatch.setenv("HOMELAB_HELPER_NETWORK_TOPOLOGY", str(f))
-    result = runner.invoke(app, ["plan", "path", "node0", "wyhome", "--workload", "ceph-osd"])
+    result = runner.invoke(app, ["plan", "path", "node0", "sitebha", "--workload", "ceph-osd"])
     assert result.exit_code == 1
     assert "refused" in result.stdout
     assert "worst link" in result.stdout

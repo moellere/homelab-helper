@@ -93,7 +93,7 @@ def test_reallocated_sectors_medium_when_steady_high_when_growing() -> None:
 
 
 def test_crc_errors_only_when_they_grow_in_the_window() -> None:
-    # covomv's Hitachi: 58 CRC errors from years ago, unchanged — history, not news.
+    # nasbox's Hitachi: 58 CRC errors from years ago, unchanged — history, not news.
     static = disk_issues(
         HOST, "nas", [_drive(crc_errors=58)], _history((60, _drive(crc_errors=58))), now=NOW
     )

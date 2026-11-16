@@ -918,3 +918,12 @@ async def test_list_findings_filters_in_the_query_and_honours_the_limit(seeded_d
     assert len(await list_findings(status="open", kind="stray-config", limit=1)) == 1
     assert await list_findings(severity="no-such-severity") == []
     assert await list_findings(status="open", severity="critical") == []
+
+
+async def test_maintenance_tools_answer_a_bad_run_id_with_an_error(seeded_db: str) -> None:
+    from homelab_helper.mcp_server import execute_maintenance_run
+
+    for ref in ("not-a-uuid", "0123", "%"):
+        out = await execute_maintenance_run(ref)
+        assert "error" in out, out
+        assert "no maintenance run" in out["error"]

@@ -444,16 +444,16 @@ async def run_due(
                         adapter=talos_adapter,
                     )
             except Exception as exc:  # one dead target must not stop the others
-                result.errors.append(f"{target}: {exc}")
+                result.errors.append(redact(f"{target}: {exc}"))
                 continue
             session_error = getattr(outcome, "session_error", None)
             if session_error:
-                result.errors.append(f"{target}: {session_error}")
+                result.errors.append(redact(f"{target}: {session_error}"))
                 continue
             result.probes_run.append(f"{target}: {', '.join(names)}")
             for p in getattr(outcome, "probes", []) or []:
                 if not getattr(p, "success", True):
-                    result.probe_failures.append(f"{target}/{p.probe}: {p.error}")
+                    result.probe_failures.append(redact(f"{target}/{p.probe}: {p.error}"))
         counts = (await reconcile_probe_failures(session, schedule)).counts()
         result.probe_findings = {k: v for k, v in counts.items() if v}
     if assertions and schedule.assertions:
@@ -464,7 +464,7 @@ async def run_due(
             try:
                 run = await engine.run_assertion(session, item.assertion)
             except Exception as exc:
-                result.errors.append(f"assertion {item.assertion.name}: {exc}")
+                result.errors.append(redact(f"assertion {item.assertion.name}: {exc}"))
                 continue
             status = getattr(getattr(run, "status", None), "value", "ran")
             result.assertions_run.append(f"{item.assertion.name}: {status}")

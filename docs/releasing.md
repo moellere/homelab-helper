@@ -51,6 +51,9 @@ pre-releases on GitHub; `pip`/`uv` won't install them unless asked
 `talosctl`, running as a non-root user with `HOMELAB_HELPER_HOME=/home/helper`; it exists for the
 cluster's CronJobs (discovery, the daemon) and needs no PyPI release of its own.
 
+The image installs its Python dependencies from `uv.lock` with hashes required, so it runs what CI
+tested; `kubectl` and `talosctl` are checked against their releases' published SHA-256 sums.
+
 ## What users get
 
 ```bash

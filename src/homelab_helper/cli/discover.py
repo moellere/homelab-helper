@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import typer
-from rich.console import Console
 from rich.table import Table
 from sqlalchemy import select
 
@@ -37,6 +36,7 @@ from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
 from homelab_helper.adapters.printwarden import PrintWardenAdapter, PrintWardenAPIError
 from homelab_helper.adapters.proxmox import ProxmoxAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
+from homelab_helper.cli._console import RedactingConsole
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.enums import DiscoverySource, FindingKind, FindingSeverity, FindingStatus
@@ -109,7 +109,7 @@ discover_app = typer.Typer(
     no_args_is_help=True,
 )
 
-console = Console()
+console = RedactingConsole()
 
 
 def _resolve_probes(filter_names: list[str] | None) -> list[type[Probe]]:

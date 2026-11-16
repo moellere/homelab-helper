@@ -32,6 +32,7 @@ from homelab_helper.cli.execute import (
 )
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import MaintenanceStatus
+from homelab_helper.db.lookup import rows_by_id_prefix
 from homelab_helper.db.models import MaintenanceRun
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.maintenance import (
@@ -77,14 +78,13 @@ def _outlive_the_terminal() -> None:
 
 
 async def _resolve(session: AsyncSession, prefix: str) -> MaintenanceRun | None:
-    rows = (await session.execute(select(MaintenanceRun))).scalars().all()
-    hits = [r for r in rows if str(r.id).startswith(prefix)]
+    hits = await rows_by_id_prefix(session, MaintenanceRun, prefix)
     if len(hits) == 1:
         return hits[0]
     console.print(
         f"[red]no run matches {escape(prefix)!s}[/red]"
         if not hits
-        else f"[red]{len(hits)} runs match {escape(prefix)}; give more of the id[/red]"
+        else f"[red]more than one run matches {escape(prefix)}; give more of the id[/red]"
     )
     return None
 

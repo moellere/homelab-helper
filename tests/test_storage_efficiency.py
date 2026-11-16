@@ -113,7 +113,7 @@ def snap(name: str, days_old: int) -> dict[str, object]:
 
 
 def guest(**kw: object) -> dict[str, object]:
-    return {"vmid": 101, "node": "bmax0", "kind": "lxc", "name": "web01", **kw}
+    return {"vmid": 101, "node": "hv0", "kind": "lxc", "name": "web01", **kw}
 
 
 def test_old_snapshots_are_flagged() -> None:
@@ -121,7 +121,7 @@ def test_old_snapshots_are_flagged() -> None:
         [guest(snapshots=[snap("before-upgrade", STALE_SNAPSHOT_DAYS + 5)])], now=NOW
     )
     assert len(issues) == 1
-    assert issues[0].target_id == "bmax0/101"
+    assert issues[0].target_id == "hv0/101"
     assert "before-upgrade" in issues[0].description
 
 
@@ -271,12 +271,12 @@ def _proxmox(handler) -> ProxmoxAdapter:
 _VM_ROW = {
     "vmid": 101,
     "name": "web01",
-    "node": "bmax0",
+    "node": "hv0",
     "type": "lxc",
     "status": "running",
 }
 _RESOURCES = {
-    "storage": [{"storage": "local", "node": "bmax0", "status": "available"}],
+    "storage": [{"storage": "local", "node": "hv0", "status": "available"}],
     "vm": [_VM_ROW],
 }
 _GUEST_CONFIG = {"scsi0": "local-zfs:vm-101-disk-0", "unused0": "local-zfs:vm-101-disk-1"}

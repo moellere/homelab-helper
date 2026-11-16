@@ -140,7 +140,7 @@ _CEPH_VERSION = re.compile(r"ceph version (\d+\.\d+\.\d+)")
 
 
 def ceph_daemon_versions(metadata: dict[str, Any]) -> dict[str, str]:
-    """``{"mon.bmax0": "19.2.6", "osd.2": "19.2.6", …}`` from ``/cluster/ceph/metadata``."""
+    """``{"mon.hv0": "19.2.6", "osd.2": "19.2.6", …}`` from ``/cluster/ceph/metadata``."""
     out: dict[str, str] = {}
     for kind in ("mon", "mgr", "mds"):
         entries = metadata.get(kind) or {}

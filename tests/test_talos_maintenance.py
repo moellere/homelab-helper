@@ -32,10 +32,10 @@ from tests.test_node_update import sessionmaker_  # noqa: F401 - fixture
 CP = "10.0.6.13"
 OLD, NEW = "v1.14.1", "v1.14.2"
 MEMBERS = [
-    {"hostname": "bmax4", "machine_type": "worker", "address": "10.0.6.24", "talos": OLD},
+    {"hostname": "hv4", "machine_type": "worker", "address": "10.0.6.24", "talos": OLD},
     {"hostname": "talos-cp2", "machine_type": "controlplane", "address": "10.0.6.14", "talos": OLD},
     {"hostname": "talos-cp1", "machine_type": "controlplane", "address": CP, "talos": OLD},
-    {"hostname": "bmax5", "machine_type": "worker", "address": "10.0.6.25", "talos": NEW},
+    {"hostname": "hv5", "machine_type": "worker", "address": "10.0.6.25", "talos": NEW},
 ]
 
 
@@ -132,8 +132,8 @@ async def test_plan_orders_control_planes_first_and_skips_members_on_the_target(
         assert [st["name"].split(" ")[1] for st in run.steps[:3]] == [
             "talos-cp1",
             "talos-cp2",
-            "bmax4",
-        ], "control planes first, workers after, bmax5 (already on target) absent"
+            "hv4",
+        ], "control planes first, workers after, hv5 (already on target) absent"
         proposals = [await s.get(ProposalLog, uuid.UUID(st["proposal_id"])) for st in run.steps]
         assert [p.blast_radius for p in proposals] == ["single-host"] * 3 + ["cluster"]
         assert proposals[0].artifact["action"]["target"] == {"node": CP, "version": NEW}

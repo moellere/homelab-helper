@@ -698,7 +698,7 @@ async def test_listener_ignores_operator_authored_proposals(sessionmaker) -> Non
         await reconcile_workload_health(s, [_workload("web", ready=0)])
         await run_playbooks(s, min_age=NOW)
         p = (await s.execute(select(ProposalLog))).scalar_one()
-        p.proposed_by = "moellere"  # hand-authored at the CLI: the listener leaves it alone
+        p.proposed_by = "operator"  # hand-authored at the CLI: the listener leaves it alone
         await s.flush()
         r = await ask_pending(s, channel=channel, adapters_for=adapters_for)
         assert r.asked == []

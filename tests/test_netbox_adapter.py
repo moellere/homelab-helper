@@ -210,7 +210,7 @@ async def test_get_device_by_name_filters_case_insensitive_matches() -> None:
                 "next": None,
                 "previous": None,
                 "results": [
-                    {"id": 1, "name": "BMAX0"},
+                    {"id": 1, "name": "HV0"},
                     {"id": 2, "name": "node0"},
                 ],
             },

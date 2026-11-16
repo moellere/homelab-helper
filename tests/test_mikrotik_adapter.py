@@ -136,8 +136,8 @@ def test_config_from_env_resolver_and_ssl_default(monkeypatch: pytest.MonkeyPatc
     cfg = MikroTikConfig.from_env()
     assert cfg.verify_ssl is False
     assert cfg.resolver == "mikrotik"
-    monkeypatch.setenv("HOMELAB_HELPER_MIKROTIK_NAME", "wyola")
-    assert MikroTikConfig.from_env().resolver == "mikrotik:wyola"
+    monkeypatch.setenv("HOMELAB_HELPER_MIKROTIK_NAME", "siteb")
+    assert MikroTikConfig.from_env().resolver == "mikrotik:siteb"
 
 
 def test_parsers_map_onto_unifi_shapes() -> None:

@@ -32,8 +32,8 @@ from homelab_helper.engine.suggestions import (
 from homelab_helper.engine.workloads import load_workload_library
 
 LIBRARY = load_workload_library()
-GPU_HOST = ("host-1", "bmax0", {"gpu_count": 1, "gpu_vendors": ["Intel"]})
-PLAIN_HOST = ("host-2", "bmax1", {"gpu_count": 0})
+GPU_HOST = ("host-1", "hv0", {"gpu_count": 1, "gpu_vendors": ["Intel"]})
+PLAIN_HOST = ("host-2", "hv1", {"gpu_count": 0})
 
 
 # ---------------------------------------------------------------- normalising
@@ -145,7 +145,7 @@ async def suggestions_db():
 async def test_the_pass_reads_guests_services_and_host_facts(suggestions_db) -> None:
 
     async with session_scope(suggestions_db) as session:
-        session.add(Host(hostname="bmax0", capabilities={"gpu_count": 1, "gpu_vendors": ["Intel"]}))
+        session.add(Host(hostname="hv0", capabilities={"gpu_count": 1, "gpu_vendors": ["Intel"]}))
         cluster = Cluster(name="homelab", kind="proxmox")
         session.add(cluster)
         await session.flush()

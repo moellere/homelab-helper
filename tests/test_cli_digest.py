@@ -51,9 +51,9 @@ async def digest_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
                 kind=FindingKind.VERSION_DRIFT,
                 severity=FindingSeverity.HIGH,
                 fingerprint="a" * 16,
-                title="bmax1 is behind on packages",
+                title="hv1 is behind on packages",
                 description="123 pending",
-                affected=[{"target_type": "host", "target_id": "bmax1"}],
+                affected=[{"target_type": "host", "target_id": "hv1"}],
                 status=FindingStatus.OPEN,
                 first_seen=now - timedelta(days=1),
                 last_seen=now,
@@ -101,7 +101,7 @@ def _runs(url: str) -> list[sqlite3.Row]:
 def test_show_renders_the_page_without_recording(digest_db: str) -> None:
     result = runner.invoke(app, ["digest", "show"])
     assert result.exit_code == 0, result.output
-    assert "bmax1 is behind on packages" in result.output
+    assert "hv1 is behind on packages" in result.output
     assert "not recorded" in result.output
 
 

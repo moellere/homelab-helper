@@ -167,8 +167,8 @@ async def test_cross_vpn_migration_never_planned(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         await _seed_imbalanced(s, dimms_on_node2=0)
     topology = Topology(
-        host_sites={"node1": "covington", "node2": "wyola"},
-        links=(Link("covington", "wyola", "vpn", 40, 28.0, "best-effort"),),
+        host_sites={"node1": "sitea", "node2": "siteb"},
+        links=(Link("sitea", "siteb", "vpn", 40, 28.0, "best-effort"),),
     )
     async with sessionmaker() as s:
         report = await plan_rebalance(s, topology=topology)
@@ -185,8 +185,8 @@ async def test_moves_skip_an_illegal_emptiest_host_and_find_the_cluster_mate(ses
         cluster = (await s.execute(select(Cluster))).scalar_one()
         cluster.attributes = {"nodes": ["node1", "node2", "remote-idle"]}
     topology = Topology(
-        host_sites={"node1": "covington", "node2": "covington", "remote-idle": "wyola"},
-        links=(Link("covington", "wyola", "vpn", 40, 28.0, "best-effort"),),
+        host_sites={"node1": "sitea", "node2": "sitea", "remote-idle": "siteb"},
+        links=(Link("sitea", "siteb", "vpn", 40, 28.0, "best-effort"),),
     )
     async with sessionmaker() as s:
         report = await plan_rebalance(s, topology=topology)

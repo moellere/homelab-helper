@@ -242,7 +242,7 @@ def test_assert_list_with_all_includes_disabled(assert_db_url: str, tmp_path: Pa
     assert "3 assertion(s)" in all_listed.stdout
 
 
-_LIB_YAML_BMAX0 = """
+_LIB_YAML_HV0 = """
 version: 1
 assertions:
   - name: node0.from_library.cores_at_least_4
@@ -266,7 +266,7 @@ assertions:
 
 def test_assert_load_creates_rows(assert_db_url: str, tmp_path: Path) -> None:
     lib = tmp_path / "lib.yaml"
-    lib.write_text(_LIB_YAML_BMAX0)
+    lib.write_text(_LIB_YAML_HV0)
 
     result = runner.invoke(app, ["assert", "load", str(lib)])
     assert result.exit_code == 0
@@ -280,7 +280,7 @@ def test_assert_load_creates_rows(assert_db_url: str, tmp_path: Path) -> None:
 
 def test_assert_load_dry_run_writes_nothing(assert_db_url: str, tmp_path: Path) -> None:
     lib = tmp_path / "lib.yaml"
-    lib.write_text(_LIB_YAML_BMAX0)
+    lib.write_text(_LIB_YAML_HV0)
 
     result = runner.invoke(app, ["assert", "load", str(lib), "--dry-run"])
     assert result.exit_code == 0
@@ -293,7 +293,7 @@ def test_assert_load_dry_run_writes_nothing(assert_db_url: str, tmp_path: Path) 
 
 def test_assert_load_idempotent(assert_db_url: str, tmp_path: Path) -> None:
     lib = tmp_path / "lib.yaml"
-    lib.write_text(_LIB_YAML_BMAX0)
+    lib.write_text(_LIB_YAML_HV0)
     runner.invoke(app, ["assert", "load", str(lib)])
     second = runner.invoke(app, ["assert", "load", str(lib)])
     assert second.exit_code == 0

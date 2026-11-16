@@ -261,9 +261,9 @@ _MEMBERS = """{
              "machineType": "controlplane", "operatingSystem": "Talos (v1.14.2)"}
 }
 {
-    "metadata": {"id": "bmax4", "namespace": "cluster"},
+    "metadata": {"id": "hv4", "namespace": "cluster"},
     "node": "10.0.0.1",
-    "spec": {"nodeId": "b", "addresses": ["10.0.6.24"], "hostname": "bmax4",
+    "spec": {"nodeId": "b", "addresses": ["10.0.6.24"], "hostname": "hv4",
              "machineType": "worker", "operatingSystem": "Talos (v1.13.5)"}
 }"""
 
@@ -293,7 +293,7 @@ async def test_members_carry_type_address_and_talos_release() -> None:
             "address": "10.0.6.13",
             "talos": "v1.14.2",
         },
-        {"hostname": "bmax4", "machine_type": "worker", "address": "10.0.6.24", "talos": "v1.13.5"},
+        {"hostname": "hv4", "machine_type": "worker", "address": "10.0.6.24", "talos": "v1.13.5"},
     ]
 
 

@@ -37,12 +37,12 @@ runner = CliRunner()
 
 TOPOLOGY = """
 sites:
-  covington:
-    hosts: [bmax0, bmax1, covomv]
-  wyola:
-    hosts: [wynode2]
+  sitea:
+    hosts: [hv0, hv1, nasbox]
+  siteb:
+    hosts: [edge2]
 links:
-  - {a: covington, b: wyola, kind: vpn, bandwidth_mbps: 100, latency_ms: 6}
+  - {a: sitea, b: siteb, kind: vpn, bandwidth_mbps: 100, latency_ms: 6}
 """
 
 
@@ -52,36 +52,32 @@ async def _seed(url: str) -> None:
         await conn.run_sync(Base.metadata.create_all)
     sm = make_sessionmaker(engine)
     async with session_scope(sm) as session:
-        bmax0 = Host(hostname="bmax0", primary_ip="10.250.6.20")
-        bmax1 = Host(hostname="bmax1", primary_ip="10.250.6.21")
-        covomv = Host(hostname="covomv", primary_ip="10.250.6.29")
-        wynode2 = Host(hostname="wynode2", primary_ip="10.254.0.42")
+        hv0 = Host(hostname="hv0", primary_ip="10.10.6.20")
+        hv1 = Host(hostname="hv1", primary_ip="10.10.6.21")
+        nasbox = Host(hostname="nasbox", primary_ip="10.10.6.29")
+        edge2 = Host(hostname="edge2", primary_ip="10.20.0.42")
         stray = Host(hostname="stray", primary_ip="192.168.9.9")  # not in the topology
-        session.add_all([bmax0, bmax1, covomv, wynode2, stray])
+        session.add_all([hv0, hv1, nasbox, edge2, stray])
         await session.flush()
-        pve = Cluster(
-            name="bmax", kind="proxmox", node_count=2, attributes={"nodes": ["bmax0", "bmax1"]}
-        )
+        pve = Cluster(name="hv", kind="proxmox", node_count=2, attributes={"nodes": ["hv0", "hv1"]})
         session.add(pve)
         await session.flush()
         session.add_all(
             [
-                VirtualMachine(
-                    cluster_id=pve.id, name="ubuntu-dev", kind="qemu", node_host_id=bmax0.id
-                ),
-                VirtualMachine(cluster_id=pve.id, name="ops", kind="qemu", node_host_id=bmax0.id),
+                VirtualMachine(cluster_id=pve.id, name="devvm", kind="qemu", node_host_id=hv0.id),
+                VirtualMachine(cluster_id=pve.id, name="ops", kind="qemu", node_host_id=hv0.id),
                 VirtualMachine(
                     cluster_id=pve.id,
                     name="tmpl",
                     kind="qemu",
-                    node_host_id=bmax0.id,
+                    node_host_id=hv0.id,
                     template=True,
                 ),
             ]
         )
-        svc = Service(name="argo.dorktool.com")
-        lease = Service(name="covomv-c0-8e")  # UniFi DHCP lease name: noise
-        same = Service(name="covomv")  # the host's own record: noise
+        svc = Service(name="argo.example.org")
+        lease = Service(name="nasbox-c0-8e")  # UniFi DHCP lease name: noise
+        same = Service(name="nasbox")  # the host's own record: noise
         session.add_all([svc, lease, same])
         await session.flush()
         for noise in (lease, same):
@@ -90,7 +86,7 @@ async def _seed(url: str) -> None:
                     service_id=noise.id,
                     scope=ResolutionScope.INTERNAL,
                     hostname=noise.name,
-                    ip="10.250.6.29",
+                    ip="10.10.6.29",
                     resolver="unifi",
                 )
             )
@@ -99,21 +95,21 @@ async def _seed(url: str) -> None:
                 ServiceEndpoint(
                     service_id=svc.id,
                     scope=ResolutionScope.INTERNAL,
-                    hostname="argo.dorktool.com",
-                    ip="10.250.6.29",
+                    hostname="argo.example.org",
+                    ip="10.10.6.29",
                     resolver="unifi",
                 ),
                 ServiceEndpoint(
                     service_id=svc.id,
                     scope=ResolutionScope.EXTERNAL,
-                    hostname="argo.dorktool.com",
-                    ip="10.250.6.29",
+                    hostname="argo.example.org",
+                    ip="10.10.6.29",
                     resolver="cloudflare",
                 ),
                 ServiceEndpoint(
                     service_id=svc.id,
                     scope=ResolutionScope.INTERNAL,
-                    hostname="old.dorktool.com",
+                    hostname="old.example.org",
                     ip="10.99.99.99",
                     resolver="unifi",  # resolves to nothing we know
                 ),
@@ -126,7 +122,7 @@ async def _seed(url: str) -> None:
                 fingerprint="fp-1",
                 title="t",
                 description="d",
-                affected=[{"target_type": "host", "target_id": str(covomv.id)}],
+                affected=[{"target_type": "host", "target_id": str(nasbox.id)}],
             )
         )
         session.add(
@@ -136,7 +132,7 @@ async def _seed(url: str) -> None:
                 fingerprint="fp-2",
                 title="t2",
                 description="d",
-                affected=[{"type": "host", "id": str(covomv.id)}],
+                affected=[{"type": "host", "id": str(nasbox.id)}],
             )
         )
     await engine.dispose()
@@ -161,20 +157,20 @@ async def test_model_groups_hosts_by_site_and_draws_clusters_services_findings(l
     finally:
         await engine.dispose()
 
-    assert set(model.sites) == {"covington", "wyola", "192.168.9.0/24"}
-    assert model.sites["covington"] == ["h_bmax0", "h_bmax1", "h_covomv"]
+    assert set(model.sites) == {"sitea", "siteb", "192.168.9.0/24"}
+    assert model.sites["sitea"] == ["h_hv0", "h_hv1", "h_nasbox"]
     # guests are listed inside the node, templates are not
-    assert "guests: ops, ubuntu-dev" in model.nodes["h_bmax0"].lines
+    assert "guests: devvm, ops" in model.nodes["h_hv0"].lines
     # both finding shapes count
-    assert "2 open findings" in model.nodes["h_covomv"].lines
+    assert "2 open findings" in model.nodes["h_nasbox"].lines
     # cluster membership from the node list
     edges = {(e.src, e.dst, e.label, e.style) for e in model.edges}
-    assert ("h_bmax0", "c_bmax", "node of", "solid") in edges
-    assert ("h_bmax1", "c_bmax", "node of", "solid") in edges
+    assert ("h_hv0", "c_hv", "node of", "solid") in edges
+    assert ("h_hv1", "c_hv", "node of", "solid") in edges
     # one service node, two resolvers; the unknown IP, the lease name and the host's own record ignored
-    assert [n.label for n in model.nodes.values() if n.kind == "service"] == ["argo.dorktool.com"]
-    assert ("s_argo_dorktool_com", "h_covomv", "internal via unifi", "solid") in edges
-    assert ("s_argo_dorktool_com", "h_covomv", "external via cloudflare", "dashed") in edges
+    assert [n.label for n in model.nodes.values() if n.kind == "service"] == ["argo.example.org"]
+    assert ("s_argo_example_org", "h_nasbox", "internal via unifi", "solid") in edges
+    assert ("s_argo_example_org", "h_nasbox", "external via cloudflare", "dashed") in edges
     assert model.stats == {
         "sites": 3,
         "hosts": 5,
@@ -190,19 +186,19 @@ async def test_site_filter_and_flags(lab: str) -> None:
     try:
         async with make_sessionmaker(engine)() as session:
             topo = load_topology()
-            only = await build_model(session, site="wyola", topology=topo)
+            only = await build_model(session, site="siteb", topology=topo)
             bare = await build_model(
                 session, include_services=False, include_guests=False, topology=topo
             )
             no_topo = await build_model(session, topology=None, use_topology_file=False)
     finally:
         await engine.dispose()
-    assert list(only.sites) == ["wyola"]
+    assert list(only.sites) == ["siteb"]
     assert only.stats["hosts"] == 1
     assert not any(n.kind == "service" for n in bare.nodes.values())
-    assert not any(line.startswith("guests:") for line in bare.nodes["h_bmax0"].lines)
+    assert not any(line.startswith("guests:") for line in bare.nodes["h_hv0"].lines)
     # without a topology the /24 stands in for the site
-    assert "10.250.6.0/24" in no_topo.sites
+    assert "10.10.6.0/24" in no_topo.sites
     assert UNPLACED not in no_topo.sites
 
 
@@ -215,17 +211,17 @@ async def test_renderings(lab: str) -> None:
         await engine.dispose()
     mermaid = render_mermaid(model)
     assert mermaid.startswith("flowchart LR\n")
-    assert 'subgraph site_covington["covington"]' in mermaid
-    assert 'h_bmax0["bmax0<br/>10.250.6.20<br/>guests: ops, ubuntu-dev"]' in mermaid
-    assert 'h_bmax0 -->|"node of"| c_bmax' in mermaid
-    assert 's_argo_dorktool_com -.->|"external via cloudflare"| h_covomv' in mermaid
+    assert 'subgraph site_sitea["sitea"]' in mermaid
+    assert 'h_hv0["hv0<br/>10.10.6.20<br/>guests: devvm, ops"]' in mermaid
+    assert 'h_hv0 -->|"node of"| c_hv' in mermaid
+    assert 's_argo_example_org -.->|"external via cloudflare"| h_nasbox' in mermaid
     page = render_html(model, title="Lab")
     assert page.startswith("<!doctype html>")
     assert "<title>Lab</title>" in page
     assert "mermaid@11.4.1" in page
     assert "flowchart LR" in page
     graph = to_dict(model)
-    assert {n["id"] for n in graph["nodes"]} >= {"h_bmax0", "c_bmax", "s_argo_dorktool_com"}
+    assert {n["id"] for n in graph["nodes"]} >= {"h_hv0", "c_hv", "s_argo_example_org"}
     assert graph["stats"]["hosts"] == 5
 
 
@@ -269,8 +265,8 @@ def test_cli_formats_and_out(lab: str, tmp_path: Path) -> None:
 async def test_mcp_tool(lab: str) -> None:
     got = await diagram_tool()
     assert got["format"] == "mermaid"
-    assert "subgraph site_wyola" in got["text"]
+    assert "subgraph site_siteb" in got["text"]
     assert got["stats"]["hosts"] == 5
-    got = await diagram_tool(site="wyola", format="json")
-    assert list(got["graph"]["sites"]) == ["wyola"]
+    got = await diagram_tool(site="siteb", format="json")
+    assert list(got["graph"]["sites"]) == ["siteb"]
     assert "error" in await diagram_tool(format="png")

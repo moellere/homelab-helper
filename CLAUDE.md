@@ -71,7 +71,7 @@ src/homelab_helper/
 └── probes/         host.* + network.* plugins; register via entry points
 ├── migrations/     Alembic env + versions (shipped in the wheel; alembic.ini
 │                   at the root is a dev convenience only)
-mcp_server.py       MCP tools over stdio (helper mcp serve)
+mcp_server/        MCP tools over stdio (helper mcp serve), one module per domain
 secrets.py          secret references (env:/file:/keyring:) + redact()
 config.py           .env loading, per-user data/config dirs, source status
 tests/              pytest, asyncio_mode = "auto"

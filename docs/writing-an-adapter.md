@@ -89,21 +89,26 @@ runs in CI.
 
 ## Wiring it in
 
-An adapter becomes a *source* in four places, each small:
+An adapter becomes a *source* in five places, each small:
 
 1. **`config.py` → `SOURCES`.** A `SourceConfig` naming the required and
    optional variables and which are secret. This is what `helper config`
    reports as configured or not, and what the daemon uses to decide which
    sources to discover from by default.
-2. **`mcp_server.py` → `_DISCOVERERS`.** An `async def _discover_<source>(session)`
-   that builds the adapter from the environment, reads what it reads, hands
-   the result to a reconcile function, closes the adapter in a `finally`, and
-   returns a JSON-safe summary. The MCP `run_discovery` tool and the daemon
-   both call this.
-3. **`cli/discover.py`.** A `helper discover <source>` verb with `--persist`
+2. **`adapters/factories.py`.** One function that builds the adapter from the
+   environment. The CLI, the daemon and the MCP server all call it as
+   `factories.<source>()`, and tests replace it there.
+3. **`engine/discoverers.py` → `DISCOVERERS`.** An `async def _discover_<source>(session)`
+   that builds the adapter through the factory, checks it is reachable, reads
+   what it reads, hands the result to a reconcile function, closes the adapter
+   in a `finally`, and returns a JSON-safe summary (`{"error": ...}` when the
+   source is down). The MCP `run_discovery` tool, `helper discover usage`-style
+   verbs and the daemon all run it through `run_discovery`, which also records
+   a `source_run`.
+4. **`cli/discover.py`.** A `helper discover <source>` verb with `--persist`
    and `--dry-run`, wrapping its coroutine in a `try/finally` that disposes the
-   engine.
-4. **A reconcile function** in `engine/`, if the source produces inventory or
+   engine; with `--persist` it calls the same reconcile function as step 3.
+5. **A reconcile function** in `engine/`, if the source produces inventory or
    findings. Findings use `make_fingerprint(kind, target_type, target_id,
    root_cause_token)` so the same condition always hits the same row, and
    resolve only when the category was observed this run — never because an

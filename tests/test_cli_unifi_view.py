@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-import homelab_helper.cli.discover as cli_discover
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
 from homelab_helper.cli.main import app
 from homelab_helper.db.base import Base
@@ -63,7 +63,7 @@ def _r(rows: list[dict]) -> httpx.Response:
 
 
 def test_discover_unifi_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_discover, "_load_unifi_adapter", lambda: _unifi(_unifi_handler))
+    monkeypatch.setattr(factories, "unifi", lambda: _unifi(_unifi_handler))
     result = runner.invoke(app, ["discover", "unifi"])
     assert result.exit_code == 0
     assert "1 DNS record" in result.stdout
@@ -74,7 +74,7 @@ def test_discover_unifi_unreachable_exits_nonzero(monkeypatch: pytest.MonkeyPatc
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="down")
 
-    monkeypatch.setattr(cli_discover, "_load_unifi_adapter", lambda: _unifi(down))
+    monkeypatch.setattr(factories, "unifi", lambda: _unifi(down))
     result = runner.invoke(app, ["discover", "unifi"])
     assert result.exit_code == 1
     assert "unreachable" in result.stdout.lower()
@@ -94,7 +94,7 @@ async def empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 def test_discover_unifi_persist_creates_endpoints(
     empty_db: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli_discover, "_load_unifi_adapter", lambda: _unifi(_unifi_handler))
+    monkeypatch.setattr(factories, "unifi", lambda: _unifi(_unifi_handler))
     result = runner.invoke(app, ["discover", "unifi", "--persist"])
     assert result.exit_code == 0
     assert "1 created" in result.stdout
@@ -102,7 +102,7 @@ def test_discover_unifi_persist_creates_endpoints(
 
 
 def test_discover_unifi_dry_run_rolls_back(empty_db: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_discover, "_load_unifi_adapter", lambda: _unifi(_unifi_handler))
+    monkeypatch.setattr(factories, "unifi", lambda: _unifi(_unifi_handler))
     result = runner.invoke(app, ["discover", "unifi", "--persist", "--dry-run"])
     assert result.exit_code == 0
     assert "dry-run" in result.stdout.lower()

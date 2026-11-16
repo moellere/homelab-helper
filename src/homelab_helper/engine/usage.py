@@ -376,6 +376,30 @@ async def summarize_many(
     return {key: _summary(key, rows, resolution) for key, rows in grouped.items()}
 
 
+async def usage_overview(
+    session: AsyncSession, *, subject: str | None = None, days: int = 30
+) -> list[dict[str, Any]]:
+    """Every subject with history in the last ``days``, or the ones ``subject`` names
+    (a node name, guest name, or vmid), sorted by type then label."""
+    keys = (
+        await session.execute(
+            select(UsageSample.subject_type, UsageSample.subject_key, UsageSample.label).distinct()
+        )
+    ).all()
+    by_type: dict[str, list[str]] = {}
+    for stype, key, label in keys:
+        if subject and subject not in (key, label, key.rsplit("/", 1)[-1]):
+            continue
+        by_type.setdefault(stype, []).append(key)
+    out = []
+    for stype, wanted in by_type.items():
+        summaries = await summarize_many(
+            session, subject_type=stype, subject_keys=wanted, window=timedelta(days=days)
+        )
+        out += [{"type": stype, **s} for s in summaries.values() if s.get("samples")]
+    return sorted(out, key=lambda r: (r["type"], str(r.get("label") or r["subject"])))
+
+
 def _summary(subject_key: str, rows: list[UsageSample], resolution: str) -> dict[str, Any]:
     if not rows:
         return {"subject": subject_key, "samples": 0}
@@ -431,5 +455,6 @@ __all__ = [
     "rollup",
     "summarize",
     "summarize_many",
+    "usage_overview",
     "workload_bucket",
 ]

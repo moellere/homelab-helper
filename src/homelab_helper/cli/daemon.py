@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 from rich.markup import escape
 
+from homelab_helper.adapters import factories
 from homelab_helper.cli._console import RedactingConsole
 from homelab_helper.config import config_status, database_url
 from homelab_helper.db.session import (
@@ -44,6 +45,7 @@ from homelab_helper.engine.approval import (
     approval_channel_from_env,
 )
 from homelab_helper.engine.digest import build_digest, record_digest, render_notification
+from homelab_helper.engine.discoverers import DISCOVERERS, run_discovery
 from homelab_helper.engine.listener import Adapters, ask_pending, listener_lock
 from homelab_helper.engine.notify import notifier_from_env, send_digest
 from homelab_helper.engine.playbooks import run_playbooks
@@ -80,9 +82,7 @@ def _stamp() -> str:
 
 async def _adapters_for(manifest: ActionManifest) -> Adapters | str:
     """The listener's adapter resolver — the same one the MCP trigger uses."""
-    from homelab_helper.mcp_server import _execution_adapters  # noqa: PLC0415 - interface→interface
-
-    adapters, problem = _execution_adapters(manifest)
+    adapters, problem = factories.for_action(manifest)
     if problem is not None or adapters is None:
         return problem or "adapters unavailable"
     return (
@@ -99,9 +99,7 @@ def configured_sources() -> list[str]:
     """The discovery sources ``helper config`` reports configured — the default
     when ``--sources`` is not given, so a lab without Argo CD is never asked
     about Argo CD every hour because the author's lab had it."""
-    from homelab_helper.mcp_server import _DISCOVERERS  # noqa: PLC0415 - interface→interface
-
-    return [s for s in config_status()["configured_sources"] if s in _DISCOVERERS]
+    return [s for s in config_status()["configured_sources"] if s in DISCOVERERS]
 
 
 async def run_discovery_pass(
@@ -109,11 +107,6 @@ async def run_discovery_pass(
 ) -> dict[str, Any]:
     """Each source once; with a schedule whose ``sources:`` block names a cadence,
     only the sources that are due (a failed run waits its interval like a good one)."""
-    from homelab_helper.mcp_server import (  # noqa: PLC0415 - interface→interface
-        _DISCOVERERS,
-        run_discovery,
-    )
-
     out: dict[str, Any] = {}
     due = list(sources)
     schedule = None
@@ -123,7 +116,7 @@ async def run_discovery_pass(
         with contextlib.suppress(ScheduleError):
             schedule = load_schedule(schedule_path)
     if schedule is not None and schedule.sources:
-        unknown = sorted(set(schedule.sources) - set(_DISCOVERERS) - {"default"})
+        unknown = sorted(set(schedule.sources) - set(DISCOVERERS) - {"default"})
         if unknown:
             return {"error": f"schedule sources: unknown source(s) {', '.join(unknown)}"}
         engine = make_engine(database_url())

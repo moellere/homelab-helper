@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-import homelab_helper.cli.discover as cli_discover
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.mikrotik import MikroTikAdapter, MikroTikConfig
 from homelab_helper.cli.main import app
 from homelab_helper.db.base import Base
@@ -57,7 +57,7 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def test_discover_mikrotik_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_discover, "_load_mikrotik_adapter", lambda: _mikrotik(_handler))
+    monkeypatch.setattr(factories, "mikrotik", lambda: _mikrotik(_handler))
     result = runner.invoke(app, ["discover", "mikrotik"])
     assert result.exit_code == 0, result.stdout
     assert "core-router" in result.stdout
@@ -69,7 +69,7 @@ def test_discover_mikrotik_unreachable_exits_nonzero(monkeypatch: pytest.MonkeyP
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"error": 401})
 
-    monkeypatch.setattr(cli_discover, "_load_mikrotik_adapter", lambda: _mikrotik(down))
+    monkeypatch.setattr(factories, "mikrotik", lambda: _mikrotik(down))
     result = runner.invoke(app, ["discover", "mikrotik"])
     assert result.exit_code == 1
     assert "unreachable" in result.stdout
@@ -79,7 +79,7 @@ def test_discover_mikrotik_persist_writes_endpoints_and_stray_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     url = _db(tmp_path, monkeypatch)
-    monkeypatch.setattr(cli_discover, "_load_mikrotik_adapter", lambda: _mikrotik(_handler))
+    monkeypatch.setattr(factories, "mikrotik", lambda: _mikrotik(_handler))
     result = runner.invoke(app, ["discover", "mikrotik", "--persist"])
     assert result.exit_code == 0, result.stdout
     assert "endpoints" in result.stdout
@@ -110,7 +110,7 @@ def test_discover_mikrotik_dry_run_rolls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     url = _db(tmp_path, monkeypatch)
-    monkeypatch.setattr(cli_discover, "_load_mikrotik_adapter", lambda: _mikrotik(_handler))
+    monkeypatch.setattr(factories, "mikrotik", lambda: _mikrotik(_handler))
     result = runner.invoke(app, ["discover", "mikrotik", "--persist", "--dry-run"])
     assert result.exit_code == 0, result.stdout
     assert "rolled back" in result.stdout

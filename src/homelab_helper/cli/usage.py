@@ -8,13 +8,16 @@ window. Read-only.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from homelab_helper import mcp_server
+from homelab_helper.config import database_url
+from homelab_helper.db.session import make_engine, make_sessionmaker
+from homelab_helper.engine.usage import usage_overview
 
 usage_app = typer.Typer(
     name="usage", help="Usage history: p95 and peak CPU/memory per host and guest."
@@ -31,12 +34,21 @@ def _gib(x: float | None) -> str:
     return "—" if x is None else f"{x / _GIB:.1f}"
 
 
+async def _overview(subject: str | None, days: int) -> list[dict[str, Any]]:
+    engine = make_engine(database_url())
+    try:
+        async with make_sessionmaker(engine)() as session:
+            return await usage_overview(session, subject=subject, days=days)
+    finally:
+        await engine.dispose()
+
+
 @usage_app.callback(invoke_without_command=True)
 def usage_show(
     subject: str | None = typer.Argument(None, help="Node name, guest name or vmid; omit for all."),
     days: int = typer.Option(30, "--days", help="Window in days."),
 ) -> None:
-    rows = asyncio.run(mcp_server.usage_summary(subject=subject, days=days))
+    rows = asyncio.run(_overview(subject, days))
     if not rows:
         console.print("no usage history yet — run `helper discover usage`")
         raise typer.Exit(code=0)

@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-import homelab_helper.cli.discover as cli_discover
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
 from homelab_helper.adapters.proxmox import ProxmoxAdapter, ProxmoxConfig
 from homelab_helper.cli.main import app
@@ -69,7 +69,7 @@ def _proxmox_handler(request: httpx.Request) -> httpx.Response:
 
 
 def test_discover_proxmox_prints_inventory(monkeypatch) -> None:
-    monkeypatch.setattr(cli_discover, "_load_proxmox_adapter", lambda: _proxmox(_proxmox_handler))
+    monkeypatch.setattr(factories, "proxmox", lambda: _proxmox(_proxmox_handler))
     result = runner.invoke(app, ["discover", "proxmox"])
     assert result.exit_code == 0
     assert "cluster lab" in result.stdout
@@ -80,7 +80,7 @@ def test_discover_proxmox_unreachable_exits_nonzero(monkeypatch) -> None:
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text="permission denied")
 
-    monkeypatch.setattr(cli_discover, "_load_proxmox_adapter", lambda: _proxmox(down))
+    monkeypatch.setattr(factories, "proxmox", lambda: _proxmox(down))
     result = runner.invoke(app, ["discover", "proxmox"])
     assert result.exit_code == 1
     assert "unreachable" in result.stdout
@@ -98,8 +98,8 @@ def test_discover_proxmox_netbox_sync_creates_vm(monkeypatch) -> None:
         posts.append(request.method)
         return httpx.Response(201, json={"id": 9})
 
-    monkeypatch.setattr(cli_discover, "_load_proxmox_adapter", lambda: _proxmox(_proxmox_handler))
-    monkeypatch.setattr(cli_discover, "_load_netbox_adapter", lambda: _netbox(nb_handler))
+    monkeypatch.setattr(factories, "proxmox", lambda: _proxmox(_proxmox_handler))
+    monkeypatch.setattr(factories, "netbox", lambda: _netbox(nb_handler))
     result = runner.invoke(app, ["discover", "proxmox", "--netbox-sync"])
     assert result.exit_code == 0
     assert "1 created" in result.stdout
@@ -111,8 +111,8 @@ def test_discover_proxmox_sync_missing_cluster(monkeypatch, flag: str) -> None:
     def nb_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"results": [], "next": None})  # no cluster
 
-    monkeypatch.setattr(cli_discover, "_load_proxmox_adapter", lambda: _proxmox(_proxmox_handler))
-    monkeypatch.setattr(cli_discover, "_load_netbox_adapter", lambda: _netbox(nb_handler))
+    monkeypatch.setattr(factories, "proxmox", lambda: _proxmox(_proxmox_handler))
+    monkeypatch.setattr(factories, "netbox", lambda: _netbox(nb_handler))
     result = runner.invoke(app, ["discover", "proxmox", *flag.split()])
     assert result.exit_code == 1
     assert "not found" in result.stdout

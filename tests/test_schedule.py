@@ -626,7 +626,7 @@ def test_source_intervals_are_validated_and_default_covers_the_rest(tmp_path, fa
 
 
 async def test_the_discovery_job_runs_only_the_sources_that_are_due(tmp_path, monkeypatch) -> None:
-    from homelab_helper import mcp_server
+    from homelab_helper.cli import daemon as daemon_mod
     from homelab_helper.cli.daemon import run_discovery_pass
     from homelab_helper.db.models import SourceRun
 
@@ -645,7 +645,7 @@ async def test_the_discovery_job_runs_only_the_sources_that_are_due(tmp_path, mo
         ran.append(source)
         return {"source": source}
 
-    monkeypatch.setattr(mcp_server, "run_discovery", fake)
+    monkeypatch.setattr(daemon_mod, "run_discovery", fake)
     path = _write(tmp_path, "sources: {usage: 1h, versions: 4h}\n")
     out = await run_discovery_pass(["usage", "versions", "k8s"], str(path))
     assert ran == ["versions", "k8s"]  # k8s has no cadence: every pass, as before

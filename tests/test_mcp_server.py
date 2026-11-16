@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 import homelab_helper.mcp_server as mcp_srv
 from homelab_helper import __version__
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
 from homelab_helper.adapters.mikrotik import MikroTikAdapter, MikroTikConfig
 from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter, OpenMediaVaultConfig
@@ -44,6 +45,7 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine import discoverers
 from homelab_helper.engine.host_probe import HostProbeRequest, HostProbeResult
 from homelab_helper.engine.trust import seed_domains
 from homelab_helper.mcp_server import (
@@ -404,7 +406,7 @@ def _unifi_handler(request: httpx.Request) -> httpx.Response:
 async def test_run_discovery_unifi_persists(
     seeded_db: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(mcp_srv, "_load_unifi_adapter", lambda: _unifi(_unifi_handler))
+    monkeypatch.setattr(factories, "unifi", lambda: _unifi(_unifi_handler))
     out = await run_discovery("unifi")
     assert out["source"] == "unifi"
     assert out["endpoints"]["created"] == 1
@@ -414,8 +416,12 @@ async def test_run_discovery_unifi_persists(
 
 
 class _FakeProxmox:
-    def __init__(self, vms: list[dict]) -> None:
+    def __init__(self, vms: list[dict], *, up: bool = True) -> None:
         self._vms = vms
+        self._up = up
+
+    async def health_check(self) -> tuple[bool, str | None]:
+        return (True, None) if self._up else (False, "connection refused")
 
     async def cluster_status(self) -> dict:
         return {"name": "lab", "quorate": True, "node_count": 1, "nodes": [{"name": "node0"}]}
@@ -432,12 +438,12 @@ async def test_run_discovery_proxmox_reports_removed_guests(
 ) -> None:
     # The seeded "ha" (vmid 105) is gone from Proxmox; one other guest remains.
     other = {"vmid": 200, "name": "web", "node": "node0", "type": "qemu", "status": "running"}
-    monkeypatch.setattr(mcp_srv, "_load_proxmox_adapter", lambda: _FakeProxmox([other]))
+    monkeypatch.setattr(factories, "proxmox", lambda: _FakeProxmox([other]))
 
     async def _no_storage(adapter: object, vms: list[dict]) -> None:
         return None
 
-    monkeypatch.setattr(mcp_srv, "annotate_guest_storage", _no_storage)
+    monkeypatch.setattr(discoverers, "annotate_guest_storage", _no_storage)
     out = await run_discovery("proxmox")
     assert out["vms"]["created"] == 1
     assert out["vms"]["removed"] == 1
@@ -457,7 +463,7 @@ async def test_run_discovery_config_error_is_data(
     def _boom() -> UniFiAdapter:
         raise RuntimeError("no credentials configured")
 
-    monkeypatch.setattr(mcp_srv, "_load_unifi_adapter", _boom)
+    monkeypatch.setattr(factories, "unifi", _boom)
     out = await run_discovery("unifi")
     assert out["error"] == "no credentials configured"
 
@@ -708,7 +714,7 @@ def _hass_handler(request: httpx.Request) -> httpx.Response:
 
 
 async def test_run_discovery_hass_persists(seeded_db: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mcp_srv, "_load_hass_adapter", lambda: _hass(_hass_handler))
+    monkeypatch.setattr(factories, "hass", lambda: _hass(_hass_handler))
     out = await run_discovery("hass")
     assert out["source"] == "hass"
     assert out["created"] is True
@@ -846,7 +852,7 @@ async def test_run_discovery_omv_persists_stray_exports(
         return httpx.Response(200, json={"response": responses.get(key, []), "error": None})
 
     client = httpx.AsyncClient(base_url="https://nas.lan", transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(mcp_srv, "_load_omv_adapter", lambda: _omv(client))
+    monkeypatch.setattr(factories, "omv", lambda: _omv(client))
     try:
         out = await run_discovery("omv")
     finally:
@@ -879,7 +885,7 @@ async def test_run_discovery_mikrotik_persists(
         MikroTikConfig(url="https://r.lan", username="ro", password="pw", name="wyola"),
         client=client,
     )
-    monkeypatch.setattr(mcp_srv, "_load_mikrotik_adapter", lambda: adapter)
+    monkeypatch.setattr(factories, "mikrotik", lambda: adapter)
     monkeypatch.delenv("HOMELAB_HELPER_SERVICE_ALIASES", raising=False)
     try:
         out = await run_discovery("mikrotik")
@@ -898,7 +904,7 @@ async def test_run_discovery_error_names_the_exception_class(
     async def _boom(session: object) -> dict[str, object]:
         raise httpx.ReadTimeout("")
 
-    monkeypatch.setitem(mcp_srv._DISCOVERERS, "usage", _boom)
+    monkeypatch.setitem(discoverers.DISCOVERERS, "usage", _boom)
     result = await mcp_srv.run_discovery("usage")
     assert result["error"] == "ReadTimeout"
 
@@ -938,8 +944,8 @@ async def test_every_discovery_run_leaves_a_source_run(seeded_db: str, monkeypat
     async def boom(session: object) -> dict[str, object]:
         raise httpx.ReadTimeout("")
 
-    monkeypatch.setitem(mcp_srv._DISCOVERERS, "usage", ok)
-    monkeypatch.setitem(mcp_srv._DISCOVERERS, "versions", boom)
+    monkeypatch.setitem(discoverers.DISCOVERERS, "usage", ok)
+    monkeypatch.setitem(discoverers.DISCOVERERS, "versions", boom)
     await mcp_srv.run_discovery("usage")
     await mcp_srv.run_discovery("versions")
     engine = make_engine(seeded_db)
@@ -951,3 +957,11 @@ async def test_every_discovery_run_leaves_a_source_run(seeded_db: str, monkeypat
     assert rows["usage"].ok is True
     assert rows["versions"].ok is False
     assert rows["versions"].error == "ReadTimeout"
+
+
+async def test_run_discovery_proxmox_unreachable_is_an_error_not_an_empty_cluster(
+    seeded_db: str, monkeypatch
+) -> None:
+    monkeypatch.setattr(factories, "proxmox", lambda: _FakeProxmox([], up=False))
+    out = await run_discovery("proxmox")
+    assert out["error"] == "proxmox unreachable: connection refused"

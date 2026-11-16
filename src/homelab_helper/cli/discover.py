@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,29 +19,23 @@ import typer
 from rich.table import Table
 from sqlalchemy import select
 
-from homelab_helper import mcp_server
-from homelab_helper.adapters.argocd import ArgoCDAdapter, application_is_drifted
-from homelab_helper.adapters.cloudflare import CloudflareAdapter
+from homelab_helper.adapters import factories
+from homelab_helper.adapters.argocd import application_is_drifted
 from homelab_helper.adapters.homeassistant import (
-    HomeAssistantAdapter,
     integrations_of_interest,
     summarize_states,
 )
-from homelab_helper.adapters.jetkvm import JetKVMAdapter, JetKVMAPIError
-from homelab_helper.adapters.kubernetes import K8sAdapter
-from homelab_helper.adapters.mikrotik import MikroTikAdapter
-from homelab_helper.adapters.netbox import NetBoxAdapter, NetBoxConfig
-from homelab_helper.adapters.openmediavault import OpenMediaVaultAdapter
-from homelab_helper.adapters.printwarden import PrintWardenAdapter, PrintWardenAPIError
-from homelab_helper.adapters.proxmox import ProxmoxAdapter
-from homelab_helper.adapters.unifi import UniFiAdapter, UniFiConfig
+from homelab_helper.adapters.jetkvm import JetKVMAPIError
+from homelab_helper.adapters.printwarden import PrintWardenAPIError
 from homelab_helper.cli._console import RedactingConsole
 from homelab_helper.cli._probe_sync import sync_probes_sync
 from homelab_helper.config import database_url as _database_url
 from homelab_helper.db.enums import DiscoverySource, FindingKind, FindingSeverity, FindingStatus
 from homelab_helper.db.models import Host, Observation, ReconciliationFinding
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
+from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
 from homelab_helper.engine.capacity import record_filesystem_samples
+from homelab_helper.engine.discoverers import run_discovery
 from homelab_helper.engine.dns_reconcile import (
     reconcile_external_endpoints,
     reconcile_internal_endpoints,
@@ -101,6 +94,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from homelab_helper.adapters.unifi import UniFiAdapter
     from homelab_helper.probes.base import Probe
 
 discover_app = typer.Typer(
@@ -119,73 +113,6 @@ def _resolve_probes(filter_names: list[str] | None) -> list[type[Probe]]:
     except UnknownProbeError as exc:
         console.print(f"[red]unknown probe:[/red] {exc.args[0]}")
         sys.exit(2)
-
-
-def _load_proxmox_adapter() -> ProxmoxAdapter:
-    """Factory (monkeypatched in tests) — builds a Proxmox adapter from env."""
-    return ProxmoxAdapter.from_env()
-
-
-def _load_netbox_adapter() -> NetBoxAdapter:
-    """Factory (monkeypatched in tests) — builds a NetBox adapter from env."""
-    return NetBoxAdapter(NetBoxConfig.from_env())
-
-
-def _load_k8s_adapter() -> K8sAdapter:
-    """Factory (monkeypatched in tests) — builds a Kubernetes adapter from env."""
-    return K8sAdapter.from_env()
-
-
-def _load_unifi_adapter() -> UniFiAdapter:
-    """Factory (monkeypatched in tests) — builds a UniFi adapter from env."""
-    return UniFiAdapter.from_env()
-
-
-def _load_unifi_adapters() -> list[UniFiAdapter]:
-    """Every configured controller.
-
-    Without ``HOMELAB_HELPER_UNIFI_CONTROLLERS`` this defers to the single-
-    controller factory above, so one gateway stays the simple path.
-    """
-    raw = os.environ.get("HOMELAB_HELPER_UNIFI_CONTROLLERS") or ""
-    if not [n for n in raw.split(",") if n.strip()]:
-        return [_load_unifi_adapter()]
-    return [UniFiAdapter(cfg) for cfg in UniFiConfig.all_from_env()]
-
-
-def _load_cloudflare_adapter() -> CloudflareAdapter:
-    """Factory (monkeypatched in tests) — builds a Cloudflare adapter from env."""
-    return CloudflareAdapter.from_env()
-
-
-def _load_argocd_adapter() -> ArgoCDAdapter:
-    """Factory (monkeypatched in tests) — builds an Argo CD adapter from env."""
-    return ArgoCDAdapter.from_env()
-
-
-def _load_omv_adapter() -> OpenMediaVaultAdapter:
-    """Factory (monkeypatched in tests) — builds an OpenMediaVault adapter from env."""
-    return OpenMediaVaultAdapter.from_env()
-
-
-def _load_hass_adapter() -> HomeAssistantAdapter:
-    """Factory (monkeypatched in tests) — builds a Home Assistant adapter from env."""
-    return HomeAssistantAdapter.from_env()
-
-
-def _load_jetkvm_adapter() -> JetKVMAdapter:
-    """Factory (monkeypatched in tests)."""
-    return JetKVMAdapter.from_env()
-
-
-def _load_printwarden_adapter() -> PrintWardenAdapter:
-    """Factory (monkeypatched in tests)."""
-    return PrintWardenAdapter.from_env()
-
-
-def _load_mikrotik_adapter() -> MikroTikAdapter:
-    """Factory (monkeypatched in tests) — builds a MikroTik adapter from env."""
-    return MikroTikAdapter.from_env()
 
 
 def _warn_superseded(resolvers: list[str]) -> None:
@@ -510,7 +437,7 @@ def discover_proxmox(
     """Read a Proxmox cluster's nodes + VMs/LXCs (read-only); persist and/or push to NetBox."""
 
     async def _go() -> int:
-        adapter = _load_proxmox_adapter()
+        adapter = factories.proxmox()
         try:
             ok, err = await adapter.health_check()
             if not ok:
@@ -574,7 +501,7 @@ def discover_proxmox(
             if not netbox_sync:
                 return 0
 
-            nb = _load_netbox_adapter()
+            nb = factories.netbox()
             try:
                 real_vms = [v for v in vms if not v.get("template")]
                 res = await nb.sync_cluster_vms(cluster_label, real_vms, dry_run=dry_run)
@@ -600,7 +527,7 @@ def discover_k8s() -> None:
     """Discover Kubernetes nodes as Host observations (INFERRED; kernel facts win)."""
 
     async def _go() -> int:
-        adapter = _load_k8s_adapter()
+        adapter = factories.k8s()
         ok, err = await adapter.health_check()
         if not ok:
             console.print(f"[red]kubernetes unreachable:[/red] {err}")
@@ -822,7 +749,7 @@ def discover_unifi(
             await adapter.aclose()
 
     async def _go() -> int:
-        adapters = _load_unifi_adapters()
+        adapters = factories.unifi_all()
         reachable: list[tuple[UniFiAdapter, dict[str, Any]]] = []
         for adapter in adapters:
             data = await _read_one(adapter)
@@ -907,7 +834,7 @@ def discover_mikrotik(
     """Read a MikroTik RouterOS 7 router (read-only): identity, interfaces, subnets, leases, static DNS."""
 
     async def _go() -> int:
-        adapter = _load_mikrotik_adapter()
+        adapter = factories.mikrotik()
         cfg = adapter.config
         try:
             ok, err = await adapter.health_check()
@@ -1001,7 +928,7 @@ def discover_cloudflare(
     """Read a Cloudflare zone's public DNS records (read-only) — the external half."""
 
     async def _go() -> int:
-        adapter = _load_cloudflare_adapter()
+        adapter = factories.cloudflare()
         try:
             ok, err = await adapter.health_check()
             if not ok:
@@ -1048,12 +975,35 @@ def discover_cloudflare(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
+async def _persist_argocd_drift(apps: list[dict[str, Any]], *, dry_run: bool) -> None:
+    engine = make_engine(_database_url())
+    try:
+        async with session_scope(make_sessionmaker(engine)) as session:
+            drift = await reconcile_argocd_drift(session, apps, when=datetime.now(UTC))
+            console.print(
+                f"[green]drift-candidate[/green]: {len(drift.opened)} opened, "
+                f"{len(drift.reopened)} reopened, {len(drift.resolved)} resolved"
+            )
+            if dry_run:
+                await session.rollback()
+                console.print("[dim](dry-run, rolled back)[/dim]")
+    finally:
+        await engine.dispose()
+
+
 @discover_app.command(name="argocd")
-def discover_argocd() -> None:
+def discover_argocd(
+    persist: bool = typer.Option(
+        False,
+        "--persist",
+        help="Reconcile drift-candidate findings from the applications, as the MCP tool does.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --persist, preview + roll back."),
+) -> None:
     """Read Argo CD Applications (read-only): git desired-state + sync/health drift."""
 
     async def _go() -> int:
-        adapter = _load_argocd_adapter()
+        adapter = factories.argocd()
         try:
             ok, err = await adapter.health_check()
             if not ok:
@@ -1091,6 +1041,8 @@ def discover_argocd() -> None:
                     f"{r.get('kind')}/{r.get('name')}({r.get('status')})" for r in oos
                 )
                 console.print(f"  [dim]{a.get('name')}[/dim]: {names}")
+        if persist:
+            await _persist_argocd_drift(apps, dry_run=dry_run)
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))
@@ -1192,7 +1144,7 @@ def discover_omv(
     """Read an OpenMediaVault NAS (read-only): filesystems, disks, shares, services, stray exports."""
 
     async def _go() -> int:
-        adapter = _load_omv_adapter()
+        adapter = factories.omv()
         try:
             ok, err = await adapter.health_check()
             if not ok:
@@ -1245,7 +1197,7 @@ def discover_printwarden(
     """Read print-warden's status (read-only): reachability, Moonraker, Klipper, telemetry age."""
 
     async def _go() -> int:
-        adapter = _load_printwarden_adapter()
+        adapter = factories.printwarden()
         status: dict[str, Any] | None = None
         error: str | None = None
         try:
@@ -1341,7 +1293,7 @@ def discover_jetkvm(
     """Read a JetKVM (read-only): device status, and the attached host's reachability + console."""
 
     async def _go() -> int:
-        adapter = _load_jetkvm_adapter()
+        adapter = factories.jetkvm()
         attached_to, port = attached_from_env()
         code = 0
         try:
@@ -1397,7 +1349,7 @@ def discover_hass(
     """Read a Home Assistant instance (read-only): version, integrations, entities."""
 
     async def _go() -> int:
-        adapter = _load_hass_adapter()
+        adapter = factories.hass()
         try:
             ok, err = await adapter.health_check()
             if not ok:
@@ -1457,7 +1409,7 @@ def _category_discovery(source: str, kind: FindingKind, title: str) -> int:
     """Run one Phase 8 pass through the MCP discoverer and print its open findings."""
 
     async def _go() -> int:
-        result = await mcp_server.run_discovery(source)
+        result = await run_discovery(source)
         if "error" in result:
             console.print(f"[red]{source} failed:[/red] {result['error']}")
             return 1
@@ -1545,7 +1497,7 @@ def discover_backups() -> None:
 @discover_app.command(name="usage")
 def discover_usage() -> None:
     """Usage history (Phase 8.3): hourly/daily rollups from Proxmox RRD, backfilled, pruned."""
-    result = asyncio.run(mcp_server.run_discovery("usage"))
+    result = asyncio.run(run_discovery("usage"))
     if "error" in result:
         console.print(f"[red]usage failed:[/red] {result['error']}")
         raise typer.Exit(code=1)

@@ -11,9 +11,9 @@ import pytest
 from sqlalchemy import select
 from typer.testing import CliRunner
 
-import homelab_helper.cli.discover as cli_discover
 import homelab_helper.engine.jetkvm as jk
 import homelab_helper.mcp_server as mcp_srv
+from homelab_helper.adapters import factories
 from homelab_helper.adapters.jetkvm import (
     JetKVMAdapter,
     JetKVMAPIError,
@@ -402,7 +402,7 @@ def _loader(device: Device, grabber: Grabber | None = None) -> Callable[[], JetK
 @pytest.mark.usefixtures("db_url")
 def test_run_discovery_jetkvm(monkeypatch: pytest.MonkeyPatch, reachable: dict[str, bool]) -> None:
     reachable["up"] = False
-    monkeypatch.setattr(mcp_srv, "_load_jetkvm_adapter", _loader(Device()))
+    monkeypatch.setattr(factories, "jetkvm", _loader(Device()))
     out = asyncio.run(mcp_srv.run_discovery("jetkvm"))
     assert out["reachable"]
     assert out["attached"]["host"] == "node-a"
@@ -413,13 +413,13 @@ def test_run_discovery_jetkvm(monkeypatch: pytest.MonkeyPatch, reachable: dict[s
 
 @pytest.mark.usefixtures("db_url")
 def test_console_snapshot_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mcp_srv, "_load_jetkvm_adapter", _loader(Device()))
+    monkeypatch.setattr(factories, "jetkvm", _loader(Device()))
     out = asyncio.run(mcp_srv.console_snapshot())
     assert out["attached_to"] == "node-a"
     assert out["path"].endswith(".png")
 
     monkeypatch.setattr(
-        mcp_srv, "_load_jetkvm_adapter", _loader(Device(), Grabber(JetKVMSnapshotUnavailable("x")))
+        factories, "jetkvm", _loader(Device(), Grabber(JetKVMSnapshotUnavailable("x")))
     )
     assert asyncio.run(mcp_srv.console_snapshot())["error"] == "x"
 
@@ -430,7 +430,7 @@ runner = CliRunner()
 def test_cli_discover_jetkvm_reads_and_snapshots(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(cli_discover, "_load_jetkvm_adapter", _loader(Device()))
+    monkeypatch.setattr(factories, "jetkvm", _loader(Device()))
     out = tmp_path / "shot.png"
     result = runner.invoke(app, ["discover", "jetkvm", "--snapshot", str(out)])
     assert result.exit_code == 0, result.stdout
@@ -443,7 +443,7 @@ def test_cli_discover_jetkvm_persists(
     monkeypatch: pytest.MonkeyPatch, reachable: dict[str, bool]
 ) -> None:
     reachable["up"] = False
-    monkeypatch.setattr(cli_discover, "_load_jetkvm_adapter", _loader(Device()))
+    monkeypatch.setattr(factories, "jetkvm", _loader(Device()))
     dry = runner.invoke(app, ["discover", "jetkvm", "--persist", "--dry-run"])
     assert dry.exit_code == 0, dry.stdout
     assert "rolled back" in dry.stdout
@@ -452,6 +452,6 @@ def test_cli_discover_jetkvm_persists(
     assert "unreachable" in result.stdout
     assert "1 opened" in result.stdout
 
-    monkeypatch.setattr(cli_discover, "_load_jetkvm_adapter", _loader(Device(up=False)))
+    monkeypatch.setattr(factories, "jetkvm", _loader(Device(up=False)))
     down = runner.invoke(app, ["discover", "jetkvm", "--persist"])
     assert down.exit_code == 1

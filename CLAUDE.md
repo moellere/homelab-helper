@@ -30,6 +30,7 @@ the relevant page in the same PR.
 ```
 src/homelab_helper/
 ├── adapters/       NetBox, KernelSSH, Proxmox, K8s, UniFi, Cloudflare,
+│                   (factories.py builds each from the environment, once),
 │                   Argo CD, OpenMediaVault — read-only at L1, except the
 │                   Proxmox guest, K8s workload, Argo CD sync, UniFi DNS and
 │                   KernelSSH node-update and Talos upgrade/rollback writes
@@ -57,6 +58,8 @@ src/homelab_helper/
 │                   11.3: the Talos plane, node by node, health-gated),
 │                   schedule (9.6: per-probe/assertion cadences from a YAML file),
 │                   retention (horizon for observations and discovery runs),
+│                   discoverers (one runner per discovery source; CLI, daemon
+│                   and MCP all run them through run_discovery),
 │                   suggestions (8.7 idle capability, missing blocks),
 │                   cluster_nodes (9.2: the one rule for "is this host a
 │                   placement target"; rebalance/surplus/bottlenecks read it),

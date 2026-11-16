@@ -1,7 +1,7 @@
 """CLI tests for ``helper exec list|run|receipts`` against a seeded SQLite.
 
 The adapter is a MockTransport injected by monkeypatching the module-level
-factory ``cli.execute._build_adapter`` — no live Proxmox, no env config.
+factory ``adapters.factories.proxmox`` — no live Proxmox, no env config.
 """
 
 from __future__ import annotations
@@ -155,7 +155,7 @@ def test_exec_list_shows_pending_action(exec_db: str) -> None:
 def test_exec_run_confirms_and_dispatches(exec_db: str, monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[httpx.Request] = []
     monkeypatch.setattr(
-        "homelab_helper.cli.execute._build_adapter", lambda: _mock_adapter(requests)
+        "homelab_helper.adapters.factories.proxmox", lambda: _mock_adapter(requests)
     )
     result = runner.invoke(app, ["exec", "run", exec_db[:8]], input="y\n")
     assert result.exit_code == 0, result.output
@@ -175,7 +175,7 @@ def test_exec_run_declined_dispatches_nothing(
 ) -> None:
     requests: list[httpx.Request] = []
     monkeypatch.setattr(
-        "homelab_helper.cli.execute._build_adapter", lambda: _mock_adapter(requests)
+        "homelab_helper.adapters.factories.proxmox", lambda: _mock_adapter(requests)
     )
     result = runner.invoke(app, ["exec", "run", exec_db[:8]], input="n\n")
     assert result.exit_code == 3
@@ -193,7 +193,7 @@ def test_exec_run_refuses_at_propose_without_grant(
     proposal_id = nogrant_db
     requests: list[httpx.Request] = []
     monkeypatch.setattr(
-        "homelab_helper.cli.execute._build_adapter", lambda: _mock_adapter(requests)
+        "homelab_helper.adapters.factories.proxmox", lambda: _mock_adapter(requests)
     )
     result = runner.invoke(app, ["exec", "run", proposal_id[:8]])
     assert result.exit_code == 3
@@ -251,7 +251,7 @@ def test_exec_rollback_undoes_an_execution(exec_db: str, monkeypatch: pytest.Mon
     """Run, then roll back: the undo gets its own receipt and links the original."""
     requests: list[httpx.Request] = []
     monkeypatch.setattr(
-        "homelab_helper.cli.execute._build_adapter", lambda: _mock_adapter(requests)
+        "homelab_helper.adapters.factories.proxmox", lambda: _mock_adapter(requests)
     )
     run = runner.invoke(app, ["exec", "run", exec_db[:8], "--yes"])
     assert run.exit_code == 0, run.output
@@ -276,7 +276,7 @@ def test_exec_rollback_unknown_receipt(exec_db: str) -> None:
 def test_exec_run_yes_flag_preconsents(exec_db: str, monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[httpx.Request] = []
     monkeypatch.setattr(
-        "homelab_helper.cli.execute._build_adapter", lambda: _mock_adapter(requests)
+        "homelab_helper.adapters.factories.proxmox", lambda: _mock_adapter(requests)
     )
     result = runner.invoke(app, ["exec", "run", exec_db[:8], "--yes"])
     assert result.exit_code == 0, result.output

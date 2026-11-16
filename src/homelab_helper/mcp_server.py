@@ -195,7 +195,7 @@ from homelab_helper.engine.usage import (
     prune_usage,
     record_usage,
     record_workload_usage,
-    summarize,
+    summarize_many,
 )
 from homelab_helper.engine.usage import rollup as usage_rollup
 from homelab_helper.engine.versions import (
@@ -208,7 +208,11 @@ from homelab_helper.engine.versions import (
     proxmox_issues,
     reconcile_version_findings,
 )
-from homelab_helper.engine.virt_reconcile import annotate_guest_storage, reconcile_proxmox_cluster
+from homelab_helper.engine.virt_reconcile import (
+    PROXMOX_CONCURRENCY,
+    annotate_guest_storage,
+    reconcile_proxmox_cluster,
+)
 from homelab_helper.engine.workloads import WorkloadLibraryError, load_workload_library
 from homelab_helper.secrets import redact
 
@@ -1065,22 +1069,27 @@ async def _proxmox_storage_facts(
     adapter: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, str], list[dict[str, Any]]]:
     """Guest configs + snapshots, one reader per pool, and the pools' images."""
-    guests: list[dict[str, Any]] = []
-    for vm in await adapter.list_vms():
+    gate = asyncio.Semaphore(PROXMOX_CONCURRENCY)
+
+    async def facts(vm: dict[str, Any]) -> dict[str, Any] | None:
         node, vmid, kind = vm.get("node"), vm.get("vmid"), vm.get("type")
         if not (node and vmid and kind):
-            continue
-        entry: dict[str, Any] = {
-            "vmid": int(vmid),
-            "node": str(node),
-            "kind": str(kind),
-            "name": vm.get("name"),
-            "template": bool(vm.get("template")),
-            "config": await adapter.vm_config(str(node), int(vmid), str(kind)),
-        }
-        if not entry["template"]:
-            entry["snapshots"] = await adapter.list_snapshots(str(node), int(vmid), str(kind))
-        guests.append(entry)
+            return None
+        async with gate:
+            entry: dict[str, Any] = {
+                "vmid": int(vmid),
+                "node": str(node),
+                "kind": str(kind),
+                "name": vm.get("name"),
+                "template": bool(vm.get("template")),
+                "config": await adapter.vm_config(str(node), int(vmid), str(kind)),
+            }
+            if not entry["template"]:
+                entry["snapshots"] = await adapter.list_snapshots(str(node), int(vmid), str(kind))
+        return entry
+
+    found = await asyncio.gather(*(facts(vm) for vm in await adapter.list_vms()))
+    guests = [g for g in found if g is not None]
 
     pools: dict[str, str] = {}
     for row in await adapter.cluster_resources("storage"):
@@ -1392,15 +1401,17 @@ async def usage_summary(subject: str | None = None, days: int = 30) -> list[dict
                     ).distinct()
                 )
             ).all()
-            out = []
+            by_type: dict[str, list[str]] = {}
             for stype, key, label in keys:
                 if subject and subject not in (key, label, key.rsplit("/", 1)[-1]):
                     continue
-                summary = await summarize(
-                    session, subject_type=stype, subject_key=key, window=timedelta(days=days)
+                by_type.setdefault(stype, []).append(key)
+            out = []
+            for stype, wanted in by_type.items():
+                summaries = await summarize_many(
+                    session, subject_type=stype, subject_keys=wanted, window=timedelta(days=days)
                 )
-                if summary.get("samples"):
-                    out.append({"type": stype, **summary})
+                out += [{"type": stype, **s} for s in summaries.values() if s.get("samples")]
             return sorted(out, key=lambda r: (r["type"], str(r.get("label") or r["subject"])))
     finally:
         await engine.dispose()
@@ -2663,24 +2674,18 @@ async def execute_proposal(proposal_id: str) -> dict[str, Any]:
     try:
         sm = make_sessionmaker(engine)
         async with session_scope(sm) as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(ProposalLog)
-                        .where(ProposalLog.outcome == ProposalOutcome.PENDING)
-                        .order_by(ProposalLog.proposed_at.desc())
-                    )
-                )
-                .scalars()
-                .all()
+            matches = await rows_by_id_prefix(
+                session,
+                ProposalLog,
+                proposal_id,
+                ProposalLog.outcome == ProposalOutcome.PENDING,
             )
-            matches = [p for p in rows if str(p.id).startswith(proposal_id.lower())]
             if len(matches) != 1:
                 return {
                     "error": (
                         f"no pending proposal with id {proposal_id!r}"
                         if not matches
-                        else f"id prefix {proposal_id!r} matches {len(matches)} pending proposals"
+                        else f"id prefix {proposal_id!r} matches more than one pending proposal"
                     )
                 }
             proposal = matches[0]
@@ -2834,20 +2839,11 @@ async def get_proposal(proposal_id: str) -> dict[str, Any]:
     try:
         sm = make_sessionmaker(engine)
         async with sm() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(ProposalLog).order_by(ProposalLog.proposed_at.desc())
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            matches = [p for p in rows if str(p.id).startswith(proposal_id.lower())]
+            matches = await rows_by_id_prefix(session, ProposalLog, proposal_id)
             if not matches:
                 return {"error": f"no proposal with id {proposal_id!r}"}
             if len(matches) > 1:
-                return {"error": f"prefix {proposal_id!r} is ambiguous ({len(matches)} matches)"}
+                return {"error": f"prefix {proposal_id!r} is ambiguous (more than one match)"}
             proposal = matches[0]
             out = _proposal_dict(proposal)
             out["artifact"] = proposal.artifact

@@ -30,6 +30,7 @@ from homelab_helper.adapters.talos import TalosAdapter
 from homelab_helper.adapters.unifi import UniFiAdapter, UniFiAPIError, UniFiConfig, UniFiConfigError
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
+from homelab_helper.db.lookup import rows_by_id_prefix
 from homelab_helper.db.models import ExecutionReceipt, ProposalLog
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.escalation import (
@@ -123,21 +124,14 @@ async def _pending_action_proposals(session: AsyncSession) -> list[tuple[Proposa
 
 async def _resolve_pending(session: AsyncSession, prefix: str) -> ProposalLog | None:
     """One PENDING proposal by id prefix, or None with the reason printed."""
-    candidates = (
-        (
-            await session.execute(
-                select(ProposalLog).where(ProposalLog.outcome == ProposalOutcome.PENDING)
-            )
-        )
-        .scalars()
-        .all()
+    matches = await rows_by_id_prefix(
+        session, ProposalLog, prefix, ProposalLog.outcome == ProposalOutcome.PENDING
     )
-    matches = [p for p in candidates if str(p.id).startswith(prefix.lower())]
     if not matches:
         console.print(f"[red]no pending proposal matches[/red] {escape(prefix)}")
         return None
     if len(matches) > 1:
-        console.print(f"[red]ambiguous prefix[/red] — {len(matches)} matches")
+        console.print("[red]ambiguous prefix[/red] — give more of the id")
         return None
     return matches[0]
 
@@ -432,13 +426,12 @@ def exec_rollback(
     """
 
     async def _resolve(session: AsyncSession) -> ExecutionReceipt | None:
-        rows = (await session.execute(select(ExecutionReceipt))).scalars().all()
-        matches = [r for r in rows if str(r.id).startswith(receipt_id.lower())]
+        matches = await rows_by_id_prefix(session, ExecutionReceipt, receipt_id)
         if not matches:
             console.print(f"[red]no receipt matches[/red] {escape(receipt_id)}")
             return None
         if len(matches) > 1:
-            console.print(f"[red]ambiguous prefix[/red] — {len(matches)} matches")
+            console.print("[red]ambiguous prefix[/red] — give more of the id")
             return None
         return matches[0]
 

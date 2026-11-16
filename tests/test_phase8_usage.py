@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from homelab_helper.db.base import Base
 from homelab_helper.db.models import UsageSample
@@ -24,6 +24,7 @@ from homelab_helper.engine.usage import (
     record_usage,
     rollup,
     summarize,
+    summarize_many,
 )
 from tests.test_proxmox_adapter import _adapter
 
@@ -237,3 +238,38 @@ async def test_summarize_restarts_at_an_allocation_change(sessionmaker) -> None:
     assert summary["allocation_changed_at"].startswith("2026-10-03T02:00:00")  # T0 + 50 h
     assert summary["cpu_p95"] == pytest.approx(0.2)
     assert summary["cpu_peak"] == pytest.approx(0.2)
+
+
+async def test_summarize_many_matches_summarize_from_one_query(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        for n, scale in ((1, 1), (2, 3)):
+            points = [_guest_point(60 * h, 0.01 * h * scale, (1 + h % 3) * G) for h in range(50)]
+            await record_usage(
+                s,
+                subject_type="guest",
+                subject_key=f"lab/{n}",
+                label=None,
+                resolution=HOUR,
+                buckets=rollup(points, points, resolution=HOUR, fields=GUEST_FIELDS),
+            )
+        now = T0 + timedelta(days=2)
+        statements: list[str] = []
+        sync_engine = s.bind.sync_engine if hasattr(s.bind, "sync_engine") else s.bind
+
+        def count(_conn, _cursor, statement, *_a) -> None:  # noqa: ANN001
+            if "usage_sample" in statement:
+                statements.append(statement)
+
+        event.listen(sync_engine, "before_cursor_execute", count)
+        try:
+            many = await summarize_many(
+                s, subject_type="guest", subject_keys=["lab/1", "lab/2", "lab/none"], now=now
+            )
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", count)
+        assert len(statements) == 1
+        for key in ("lab/1", "lab/2"):
+            one = await summarize(s, subject_type="guest", subject_key=key, now=now)
+            assert many[key] == one
+        assert many["lab/none"] == {"subject": "lab/none", "samples": 0}
+        assert set(await summarize_many(s, subject_type="guest", now=now)) == {"lab/1", "lab/2"}

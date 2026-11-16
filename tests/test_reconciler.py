@@ -2135,3 +2135,35 @@ async def test_inferred_fills_key_kernel_never_reported(sessionmaker) -> None:
     async with sessionmaker() as s:
         host = (await s.execute(select(Host).where(Host.hostname == host.hostname))).scalar_one()
         assert host.capabilities["os_pretty_name"] == "Proxmox VE 8"
+
+
+async def test_one_ranked_read_serves_every_key_a_reconcile_uses(sessionmaker) -> None:
+    from sqlalchemy import event
+
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        run = await _seed_run(s, host.id)
+        await _record_observations(
+            s,
+            run.id,
+            host.id,
+            {
+                "host.identity.kernel": "6.8.0",
+                "host.network.interfaces": [],
+                "host.raid.arrays": [],
+            },
+        )
+        statements: list[str] = []
+        sync_engine = s.bind.sync_engine
+
+        def count(_conn, _cursor, statement, *_a) -> None:  # noqa: ANN001
+            if "FROM observation" in statement:
+                statements.append(statement)
+
+        event.listen(sync_engine, "before_cursor_execute", count)
+        try:
+            await Reconciler().reconcile_host(s, host.id)
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", count)
+        assert len(statements) == 1
+        assert host.capabilities["kernel"] == "6.8.0"

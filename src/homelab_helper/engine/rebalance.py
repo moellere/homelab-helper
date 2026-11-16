@@ -52,7 +52,7 @@ from homelab_helper.engine.dimm_fit import Board, DimmFit
 from homelab_helper.engine.network_path import Topology, load_topology
 from homelab_helper.engine.retire import retired_host_ids
 from homelab_helper.engine.rightsizing import MIN_SAMPLES as USAGE_MIN_SAMPLES
-from homelab_helper.engine.usage import summarize
+from homelab_helper.engine.usage import summarize_many
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -172,15 +172,19 @@ class RebalanceReport:
         }
 
 
-async def _observed_memory(session: AsyncSession, vm: VirtualMachine) -> int | None:
-    """30-day memory p95 for a guest, or ``None`` with too little history (Phase 8.3/8.4)."""
-    cluster = await session.get(Cluster, vm.cluster_id)
-    if cluster is None:
-        return None
-    s = await summarize(session, subject_type="guest", subject_key=f"{cluster.name}/{vm.vmid}")
-    if (s.get("samples") or 0) < USAGE_MIN_SAMPLES or s.get("mem_p95") is None:
-        return None
-    return int(s["mem_p95"])
+async def _observed_memory(session: AsyncSession, vms: list[VirtualMachine]) -> dict[Any, int]:
+    """30-day memory p95 per guest id, for guests with enough history (Phase 8.3/8.4)."""
+    clusters = {c.id: c.name for c in (await session.execute(select(Cluster))).scalars()}
+    keys = {
+        vm.id: f"{clusters[vm.cluster_id]}/{vm.vmid}" for vm in vms if vm.cluster_id in clusters
+    }
+    summaries = await summarize_many(session, subject_type="guest", subject_keys=keys.values())
+    out: dict[Any, int] = {}
+    for vm_id, key in keys.items():
+        s = summaries[key]
+        if (s.get("samples") or 0) >= USAGE_MIN_SAMPLES and s.get("mem_p95") is not None:
+            out[vm_id] = int(s["mem_p95"])
+    return out
 
 
 async def _load_fleet(
@@ -222,16 +226,18 @@ async def _load_fleet(
     }
     for host_id, load in by_id.items():
         load.no_new_guests = str(host_id) in closed
-    for vm in (await session.execute(select(VirtualMachine))).scalars().all():
-        if vm.status != "running" or vm.node_host_id not in by_id or not vm.memory_bytes:
-            continue
+    placed = [
+        vm
+        for vm in (await session.execute(select(VirtualMachine))).scalars().all()
+        if vm.status == "running" and vm.node_host_id in by_id and vm.memory_bytes
+    ]
+    observed = await _observed_memory(session, placed) if basis == "usage" else {}
+    for vm in placed:
         load = by_id[vm.node_host_id]
-        memory = int(vm.memory_bytes)
-        if basis == "usage":
+        memory = int(vm.memory_bytes or 0)
+        if vm.id in observed:
             # Never above the allocation: a VM's reported memory includes page cache.
-            observed = await _observed_memory(session, vm)
-            if observed is not None:
-                memory = min(memory, observed)
+            memory = min(memory, observed[vm.id])
         load.committed += memory
         load.vms.append(
             VMLoad(

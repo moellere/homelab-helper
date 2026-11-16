@@ -329,3 +329,28 @@ async def test_annotate_guest_storage_marks_shared_and_local(sessionmaker) -> No
         vms[1]["storages"], vms[1]["shared_storage"] = ["Pool0"], True
         moved = await reconcile_proxmox_cluster(s, _STATUS, vms, when=_WHEN)
         assert "has-iso" in moved.vms_updated
+
+
+async def test_guest_configs_are_read_concurrently_and_bounded() -> None:
+    import asyncio
+
+    from homelab_helper.engine.virt_reconcile import PROXMOX_CONCURRENCY, annotate_guest_storage
+
+    class _Slow:
+        in_flight = 0
+        peak = 0
+
+        async def list_storage(self) -> list[dict]:
+            return [{"storage": "ceph", "shared": 1}]
+
+        async def vm_config(self, node: str, vmid: int, kind: str) -> dict:
+            type(self).in_flight += 1
+            type(self).peak = max(type(self).peak, type(self).in_flight)
+            await asyncio.sleep(0.01)
+            type(self).in_flight -= 1
+            return {"scsi0": f"ceph:vm-{vmid}-disk-0,size=8G"}
+
+    vms = [{"node": "pve1", "vmid": 100 + i, "type": "qemu"} for i in range(20)]
+    await annotate_guest_storage(_Slow(), vms)  # type: ignore[arg-type]
+    assert 1 < _Slow.peak <= PROXMOX_CONCURRENCY
+    assert all(vm["shared_storage"] is True for vm in vms)

@@ -98,6 +98,16 @@ _SMART_DEVICES_KEY = "host.smart.devices"
 _SHARES_KEY = "host.shares.exports"
 _SHARE_FOLDERS_KEY = "host.shares.folders"
 _SHARE_FS_KEY = "host.shares.filesystems"
+_LIST_KEYS = (
+    _DIMMS_KEY,
+    _STORAGE_DEVICES_KEY,
+    _INTERFACES_KEY,
+    _RAID_ARRAYS_KEY,
+    _SMART_DEVICES_KEY,
+    _SHARES_KEY,
+    _SHARE_FOLDERS_KEY,
+    _SHARE_FS_KEY,
+)
 
 # Multi-source precedence: when two sources report the same (host, key), the
 # higher-confidence observation wins regardless of recency — kernel probes write
@@ -397,8 +407,11 @@ class Reconciler:
             raise ValueError(f"no Host with id {host_id}")
 
         # Phase 1: Host-row projection (capability bag + typed columns).
+        # One ranked read for every key this pass uses: the projection rules'
+        # scalars and the list-valued lineage, health and share keys alike.
         keys = [r.key for r in self._rules]
-        latest = await self._latest_per_key(session, host_id, keys)
+        found = await self._latest_per_key(session, host_id, [*keys, *_LIST_KEYS])
+        latest = {k: v for k, v in found.items() if k in self._rules_by_key}
 
         changes: dict[str, Any] = {}
         new_caps = dict(host.capabilities or {})
@@ -441,27 +454,34 @@ class Reconciler:
         }
 
         # Phase 2: Part-lineage projection (PhysicalPart + Placement rows).
-        dimms_raw = await self._latest_observation_value(session, host_id, _DIMMS_KEY)
+        dimms_raw = found.get(_DIMMS_KEY)
         dimm_summary = await self._reconcile_dimm_lineage(session, host_id, dimms_raw, ledger)
-        storage_raw = await self._latest_observation_value(session, host_id, _STORAGE_DEVICES_KEY)
+        storage_raw = found.get(_STORAGE_DEVICES_KEY)
         storage_summary = await self._reconcile_storage_lineage(
             session, host_id, storage_raw, ledger
         )
-        nic_raw = await self._latest_observation_value(session, host_id, _INTERFACES_KEY)
+        nic_raw = found.get(_INTERFACES_KEY)
         nic_summary = await self._reconcile_nic_lineage(session, host_id, nic_raw, ledger)
 
         # Phase 3: Auto-resolve findings whose conditions are no longer present.
         await self._auto_resolve_findings(session, host_id, ledger)
 
         # Phase 4 / 10.1: RAID and drive health, each scoped per host.
-        storage_seen = await self._reconcile_storage_health(session, host_id, host, ledger)
+        storage_seen = await self._reconcile_storage_health(
+            session,
+            host_id,
+            host,
+            ledger,
+            found.get(_RAID_ARRAYS_KEY),
+            found.get(_SMART_DEVICES_KEY),
+        )
 
         # Phase 5: host shares → the same stray-export check OMV gets, scoped to
         # this host so its paths never share a finding with another machine's.
-        shares_raw = await self._latest_observation_value(session, host_id, _SHARES_KEY)
+        shares_raw = found.get(_SHARES_KEY)
         if isinstance(shares_raw, list):
-            folders = await self._latest_observation_value(session, host_id, _SHARE_FOLDERS_KEY)
-            mounted = await self._latest_observation_value(session, host_id, _SHARE_FS_KEY)
+            folders = found.get(_SHARE_FOLDERS_KEY)
+            mounted = found.get(_SHARE_FS_KEY)
             stray = await reconcile_stray_exports(
                 session,
                 mounted if isinstance(mounted, list) else [],
@@ -554,23 +574,14 @@ class Reconciler:
             for key, obs in (await self._best_per_key(session, host_id, keys)).items()
         }
 
-    async def _latest_observation_value(
-        self,
-        session: AsyncSession,
-        host_id: uuid.UUID,
-        key: str,
-    ) -> Any:
-        """Return the precedence-winning observation value for one key, or ``None``."""
-        best = await self._best_per_key(session, host_id, [key])
-        obs = best.get(key)
-        return obs.value if obs is not None else None
-
     async def _reconcile_storage_health(
         self,
         session: AsyncSession,
         host_id: uuid.UUID,
         host: Host,
         ledger: dict[str, Any],
+        raid_raw: Any,
+        smart_raw: Any,
     ) -> bool:
         """RAID arrays and SMART drives → ``storage-health`` findings, per host.
 
@@ -580,7 +591,6 @@ class Reconciler:
         """
         # Phase 4: RAID health. Only when host.raid has reported for this host —
         # its findings resolve per host, never from another host's silence.
-        raid_raw = await self._latest_observation_value(session, host_id, _RAID_ARRAYS_KEY)
         if isinstance(raid_raw, list):
             raid = await reconcile_raid_health(session, str(host_id), host.hostname, raid_raw)
             ledger["findings_opened"] += raid.fingerprints["opened"] + raid.fingerprints["reopened"]
@@ -590,7 +600,6 @@ class Reconciler:
         # Phase 10.1: drive health from host.smart, judged against the host's own
         # earlier observations so a moving counter outranks a static one. Same
         # per-host scoping as RAID: silence resolves nothing.
-        smart_raw = await self._latest_observation_value(session, host_id, _SMART_DEVICES_KEY)
         if isinstance(smart_raw, list):
             history = await self._observation_history(
                 session, host_id, _SMART_DEVICES_KEY, since=datetime.now(UTC) - HISTORY_WINDOW

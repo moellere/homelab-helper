@@ -17,13 +17,16 @@ from sqlalchemy import String, cast, func, select
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-_ID_PREFIX = re.compile(r"^[0-9a-f-]+$")
+_ID_PREFIX = re.compile(r"^[0-9a-f-]*$")
 
 
 def id_prefix(text: str) -> str | None:
-    """The bare-hex form of ``text``, or None when it cannot be part of an id."""
+    """The bare-hex form of ``text``, or None when it cannot be part of an id.
+
+    An empty prefix is every id: with more than one row it is ambiguous.
+    """
     value = text.strip().lower()
-    return value.replace("-", "") or None if _ID_PREFIX.match(value) else None
+    return value.replace("-", "") if _ID_PREFIX.match(value) else None
 
 
 async def rows_by_id_prefix[T](

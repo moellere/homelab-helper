@@ -34,6 +34,7 @@ Run it: ``helper mcp serve`` (stdio). Register in a client, e.g. Claude Code::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 from dataclasses import dataclass
@@ -80,6 +81,7 @@ from homelab_helper.db.models import (
     ReconciliationFinding,
     Service,
     ServiceEndpoint,
+    SourceRun,
     TrustBoundary,
     UsageSample,
     VirtualMachine,
@@ -1350,13 +1352,31 @@ async def run_discovery(source: str) -> dict[str, Any]:
     if discoverer is None:
         return {"error": f"unknown source {source!r}; expected one of {sorted(_DISCOVERERS)}"}
     engine = make_engine(database_url())
+    started = datetime.now(UTC)
     try:
         sm = make_sessionmaker(engine)
-        async with session_scope(sm) as session:
-            result = await discoverer(session)
-        return {"source": source, **result}
-    except Exception as exc:  # surface adapter/config errors as data, not protocol faults
-        return {"source": source, "error": redact(_describe(exc))}
+        try:
+            async with session_scope(sm) as session:
+                result = await discoverer(session)
+            out = {"source": source, **result}
+        except Exception as exc:  # surface adapter/config errors as data, not protocol faults
+            out = {"source": source, "error": redact(_describe(exc))}
+        # Its own transaction: a discovery that rolled back is still a run that
+        # happened. Best effort: a record that cannot be written (a database not
+        # yet migrated) must not turn the discovery's own answer into an error.
+        error = out.get("error")
+        with contextlib.suppress(Exception):
+            async with session_scope(sm) as session:
+                session.add(
+                    SourceRun(
+                        source=source,
+                        started_at=started,
+                        ended_at=datetime.now(UTC),
+                        ok=error is None,
+                        error=str(error)[:2000] if error is not None else None,
+                    )
+                )
+        return out
     finally:
         await engine.dispose()
 

@@ -9,9 +9,9 @@ this module currently exposes only the factories so importers don't drift.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
@@ -27,7 +27,24 @@ def make_engine(url: str, *, echo: bool = False) -> AsyncEngine:
     Postgres support is opt-in via the ``postgres`` extra (``asyncpg``); the URL
     shape there is ``postgresql+asyncpg://user:pw@host/db``.
     """
-    return create_async_engine(url, echo=echo, future=True)
+    engine = create_async_engine(url, echo=echo, future=True)
+    if engine.dialect.name == "sqlite":
+        event.listen(engine.sync_engine, "connect", _sqlite_pragmas)
+    return engine
+
+
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+def _sqlite_pragmas(dbapi_connection: Any, _record: Any) -> None:
+    """WAL lets readers (the status page, the MCP server) run beside the daemon's
+    writes, and a busy timeout makes a second writer wait instead of failing at once."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    finally:
+        cursor.close()
 
 
 def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

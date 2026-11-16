@@ -554,3 +554,121 @@ async def test_failure_history_is_read_from_a_recent_window_only(
             run.started_at -= timedelta(days=60)
         await s.flush()
         assert (await reconcile_probe_failures(s, schedule)).counts()["opened"] == 0
+
+
+async def test_each_target_commits_alone_and_a_failure_rolls_back_only_itself(
+    tmp_path, fakes, monkeypatch
+) -> None:
+    url = f"sqlite+aiosqlite:///{tmp_path / 'targets.db'}"  # conftest redirects on Postgres
+    eng = make_engine(url)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sm = make_sessionmaker(eng)
+    text = SCHEDULE.replace(
+        "    probes: {host.fast: 15m}\n",
+        "    probes: {host.fast: 15m}\n  - {name: nas1, ssh_user: root, primary_ip: 10.0.0.10}\n",
+    )
+    schedule = load_schedule(_write(tmp_path, text))
+    real = mod.probe_host
+
+    async def half_then_boom(session, request, **kw):
+        out = await real(session, request, **kw)
+        if request.name == "nas1":
+            raise RuntimeError("lost the connection after writing")
+        return out
+
+    monkeypatch.setattr(mod, "probe_host", half_then_boom)
+    try:
+        async with session_scope(sm) as s:
+            r = await run_due(s, schedule, ssh_adapter=_FakeSSH(), assertions=False)
+        assert r.errors == ["nas1: lost the connection after writing"]
+        async with sm() as fresh:
+            hosts = {h for (h,) in (await fresh.execute(select(Host.hostname))).all()}
+            runs = (
+                await fresh.execute(select(func.count()).select_from(DiscoveryRun))
+            ).scalar_one()
+        assert hosts == {"nas0"}  # nas1's half-written batch went with its rollback
+        assert runs == 2
+    finally:
+        await eng.dispose()
+
+
+async def test_with_a_sessionmaker_targets_are_probed_concurrently_within_the_bound(
+    tmp_path, sessionmaker, fakes, monkeypatch
+) -> None:
+    hosts = "".join(
+        f"  - {{name: n{i}, ssh_user: root, primary_ip: 10.0.0.{i}}}\n" for i in range(6)
+    )
+    schedule = load_schedule(_write(tmp_path, f"hosts:\n{hosts}"))
+    state = {"now": 0, "peak": 0}
+
+    async def slow(session, request, **kw):
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+        await asyncio.sleep(0.02)
+        state["now"] -= 1
+        return type("Outcome", (), {"session_error": None, "probes": []})()
+
+    monkeypatch.setattr(mod, "probe_host", slow)
+    async with session_scope(sessionmaker) as s:
+        r = await run_due(s, schedule, assertions=False, sessionmaker=sessionmaker, concurrency=3)
+    assert len(r.probes_run) == 6
+    assert state["peak"] == 3
+
+
+def test_source_intervals_are_validated_and_default_covers_the_rest(tmp_path, fakes) -> None:
+    schedule = load_schedule(_write(tmp_path, "sources: {usage: 1h, default: 4h}\n"))
+    assert schedule.source_interval("usage") == timedelta(hours=1)
+    assert schedule.source_interval("versions") == timedelta(hours=4)
+    assert load_schedule(_write(tmp_path, "sources: {usage: 1h}\n")).source_interval("k8s") is None
+    with pytest.raises(ScheduleError, match="not an interval"):
+        load_schedule(_write(tmp_path, "sources: {usage: hourly}\n"))
+
+
+async def test_the_discovery_job_runs_only_the_sources_that_are_due(tmp_path, monkeypatch) -> None:
+    from homelab_helper import mcp_server
+    from homelab_helper.cli.daemon import run_discovery_pass
+    from homelab_helper.db.models import SourceRun
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'src.db'}"
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
+    eng = make_engine(url)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with session_scope(make_sessionmaker(eng)) as s:
+        s.add(SourceRun(source="usage", started_at=datetime.now(UTC) - timedelta(minutes=20)))
+        s.add(SourceRun(source="versions", started_at=datetime.now(UTC) - timedelta(hours=5)))
+    await eng.dispose()
+    ran: list[str] = []
+
+    async def fake(source: str) -> dict[str, Any]:
+        ran.append(source)
+        return {"source": source}
+
+    monkeypatch.setattr(mcp_server, "run_discovery", fake)
+    path = _write(tmp_path, "sources: {usage: 1h, versions: 4h}\n")
+    out = await run_discovery_pass(["usage", "versions", "k8s"], str(path))
+    assert ran == ["versions", "k8s"]  # k8s has no cadence: every pass, as before
+    assert out["not_due"] == ["usage"]
+
+    out = await run_discovery_pass(["usage"], str(_write(tmp_path, "sources: {usag: 1h}\n")))
+    assert "unknown source(s) usag" in out["error"]
+
+
+def test_schedule_cli_shows_source_cadences(tmp_path, monkeypatch, fakes) -> None:
+    url = f"sqlite+aiosqlite:///{tmp_path / 'cli.db'}"
+    monkeypatch.setenv("HOMELAB_HELPER_DATABASE_URL", url)
+
+    async def _init() -> None:
+        eng = make_engine(url)
+        async with eng.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await eng.dispose()
+
+    asyncio.run(_init())
+    path = _write(tmp_path, "sources: {usage: 1h, default: 4h}\n")
+    result = CliRunner().invoke(app, ["schedule", "--file", str(path)])
+    assert result.exit_code == 0, result.output
+    assert "source cadences" in result.output
+    assert "usage" in result.output
+    assert "other sources: every 4h" in result.output

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -209,8 +210,14 @@ async def test_empty_database_is_attention_not_an_error(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _client(app) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
+@contextlib.asynccontextmanager
+async def _client(app):
+    """ASGITransport skips lifespan events, so the app's engine is disposed here."""
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client,
+    ):
+        yield client
 
 
 async def test_endpoint_serves_snapshot_and_healthz(db: str) -> None:
@@ -283,3 +290,20 @@ def test_cli_status_show_json(db: str) -> None:
     result = CliRunner().invoke(app, ["status", "show", "--json"])
     assert result.exit_code == 0, result.output
     assert '"health": "critical"' in result.output
+
+
+async def test_one_engine_serves_every_request(db: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import homelab_helper.status_api as api
+
+    built: list[str] = []
+    real = api.make_engine
+
+    def counting(url: str, **kw):  # noqa: ANN003, ANN202
+        built.append(url)
+        return real(url, **kw)
+
+    monkeypatch.setattr(api, "make_engine", counting)
+    async with _client(build_app(url=db, token="")) as c:
+        for _ in range(3):
+            assert (await c.get("/status")).status_code == 200
+    assert len(built) == 1

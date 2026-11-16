@@ -18,10 +18,12 @@ from rich.table import Table
 from homelab_helper.config import database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker
 from homelab_helper.engine.schedule import (
+    DueSource,
     ScheduleError,
     load_schedule,
     plan_assertions,
     plan_probes,
+    plan_sources,
 )
 
 schedule_app = typer.Typer(
@@ -51,6 +53,23 @@ def _interval(delta: timedelta) -> str:
     return f"{s}s"
 
 
+def _print_sources(
+    declared: dict[str, str], sources: list[DueSource], now: datetime, *, due_only: bool
+) -> None:
+    table = Table(title="source cadences")
+    for col in ("source", "every", "last run", "next"):
+        table.add_column(col, no_wrap=True)
+    for src in sources:
+        due_in = src.due_in(now)
+        if due_only and due_in > timedelta(0):
+            continue
+        every = _interval(src.interval) if src.interval else "every pass"
+        table.add_row(src.source, every, _ago(src.last_run, now), _in(due_in))
+    console.print(table)
+    if "default" in declared:
+        console.print(f"[dim]other sources: every {declared['default']}[/dim]")
+
+
 @schedule_app.callback(invoke_without_command=True)
 def schedule_show(
     path: str | None = typer.Option(
@@ -70,6 +89,8 @@ def schedule_show(
         try:
             async with make_sessionmaker(engine)() as session:
                 probes = await plan_probes(session, schedule, now=now)
+                named = [src for src in schedule.sources if src != "default"]
+                sources = await plan_sources(session, schedule, named)
                 # No `assertions:` block means this file's daemon leaves them alone.
                 assertions = (
                     await plan_assertions(session, schedule, now=now) if schedule.assertions else []
@@ -102,10 +123,8 @@ def schedule_show(
             )
             shown += 1
         console.print(atable)
-        if not schedule.assertions:
-            console.print(
-                "[dim]no `assertions:` block: a daemon on this file runs no assertions[/dim]"
-            )
+        if schedule.sources:
+            _print_sources(schedule.sources, sources, now, due_only=due_only)
         console.print(
             f"{shown} row(s); {len(probes)} probe slot(s), {len(assertions)} assertion(s) scheduled"
         )

@@ -84,6 +84,7 @@ async def test_expected_tables_in_metadata() -> None:
         "usage_sample",
         "maintenance_run",
         "digest_run",
+        "source_run",
         "execution_receipt",
     }
     assert set(Base.metadata.tables.keys()) == expected

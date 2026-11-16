@@ -30,6 +30,7 @@ alone; a cron expression is reported as an error rather than guessed at.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from dataclasses import dataclass, field
@@ -42,7 +43,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 
 from homelab_helper.db.enums import FindingKind, FindingSeverity
-from homelab_helper.db.models import AssertionRun, ConfigurationAssertion, DiscoveryRun, Host
+from homelab_helper.db.models import (
+    AssertionRun,
+    ConfigurationAssertion,
+    DiscoveryRun,
+    Host,
+    SourceRun,
+)
+from homelab_helper.db.session import session_scope
 from homelab_helper.engine.category_findings import (
     CategoryIssue,
     CategoryResult,
@@ -54,7 +62,7 @@ from homelab_helper.probes.registry import discover_probes
 from homelab_helper.secrets import redact
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from homelab_helper.engine.assertions import AssertionEngine
 
@@ -123,6 +131,13 @@ class Schedule(BaseModel):
     talos: list[TalosSpec] = Field(default_factory=list)
     assertions: dict[str, str] = Field(default_factory=dict)
     """Assertion name → interval; ``default`` overrides ``defaults.assertions``."""
+    sources: dict[str, str] = Field(default_factory=dict)
+    """Discovery source → interval; ``default`` covers the rest. A source with
+    neither runs on every discovery pass, as it does with no block at all."""
+
+    def source_interval(self, source: str) -> timedelta | None:
+        raw = self.sources.get(source) or self.sources.get("default")
+        return parse_interval(raw) if raw else None
 
     def probe_interval(self, spec: HostSpec | TalosSpec, probe: str) -> timedelta:
         return parse_interval(
@@ -168,7 +183,7 @@ def load_schedule(path: str | Path | None = None) -> Schedule:
                 raise ScheduleError(f"{target}: {spec.name}: unknown probe {name!r}")
         for name in spec.probes.values():
             parse_interval(name)
-    for name in schedule.assertions.values():
+    for name in [*schedule.assertions.values(), *schedule.sources.values()]:
         parse_interval(name)
     parse_interval(schedule.defaults.probes)
     parse_interval(schedule.defaults.assertions)
@@ -288,6 +303,37 @@ def assertions_due(plan: list[DueAssertion], now: datetime) -> list[DueAssertion
     return [d for d in plan if d.last_run is None or d.last_run + d.interval <= now]
 
 
+@dataclass(frozen=True)
+class DueSource:
+    source: str
+    interval: timedelta | None
+    """None: no cadence in the file, so the source runs on every discovery pass."""
+    last_run: datetime | None
+
+    def due_in(self, now: datetime) -> timedelta:
+        if self.interval is None or self.last_run is None:
+            return timedelta(0)
+        return self.last_run + self.interval - now
+
+
+async def plan_sources(
+    session: AsyncSession, schedule: Schedule, sources: list[str]
+) -> list[DueSource]:
+    """Each source with its cadence and when it last ran (a failed run counts, as for probes)."""
+    last = {
+        str(name): _aware(ts)
+        for name, ts in (
+            await session.execute(
+                select(SourceRun.source, func.max(SourceRun.started_at))
+                .where(SourceRun.source.in_(sources))
+                .group_by(SourceRun.source)
+            )
+        ).all()
+        if ts is not None
+    }
+    return [DueSource(src, schedule.source_interval(src), last.get(src)) for src in sources]
+
+
 @dataclass
 class ScheduleRun:
     probes_run: list[str] = field(default_factory=list)
@@ -377,6 +423,124 @@ async def reconcile_probe_failures(session: AsyncSession, schedule: Schedule) ->
     )
 
 
+async def _probe_target(
+    session: AsyncSession,
+    spec: HostSpec | TalosSpec,
+    names: list[str],
+    classes: list[type[Any]],
+    *,
+    ssh_adapter: Any,
+    talos_adapter: Any,
+) -> Any:
+    if isinstance(spec, HostSpec):
+        return await probe_host(
+            session,
+            HostProbeRequest(
+                name=spec.name,
+                ssh_user=spec.ssh_user,
+                ssh_key_path=spec.ssh_key_path,
+                primary_ip=spec.primary_ip,
+                ssh_port=spec.ssh_port,
+                probe_names=tuple(names),
+            ),
+            probe_classes=classes,
+            ssh_adapter=ssh_adapter,
+        )
+    return await probe_talos(
+        session,
+        TalosProbeRequest(
+            name=spec.name, node=spec.node, talosconfig=spec.talosconfig, probe_names=tuple(names)
+        ),
+        probe_classes=classes,
+        adapter=talos_adapter,
+    )
+
+
+async def _due_probes(
+    session: AsyncSession,
+    schedule: Schedule,
+    current: datetime,
+    result: ScheduleRun,
+    *,
+    ssh_adapter: Any,
+    talos_adapter: Any,
+    sessionmaker: async_sessionmaker[AsyncSession] | None,
+    concurrency: int,
+) -> None:
+    plan = await plan_probes(session, schedule, now=current)
+    due = due_now(plan, current)
+    result.not_due += len(plan) - len(due)
+    by_target: dict[tuple[str, str], list[str]] = {}
+    for d in due:
+        by_target.setdefault((d.kind, d.target), []).append(d.probe)
+    specs = {("host", h.name): h for h in schedule.hosts} | {
+        ("talos", t.name): t for t in schedule.talos
+    }
+    available = discover_probes()
+    await session.commit()  # end the planning read before any target writes
+    gate = asyncio.Semaphore(max(1, concurrency) if sessionmaker is not None else 1)
+
+    async def one(kind: str, target: str, names: list[str]) -> Any:
+        spec = specs[kind, target]
+        classes = [available[n] for n in names if n in available]
+        kw = {"ssh_adapter": ssh_adapter, "talos_adapter": talos_adapter}
+        async with gate:
+            if sessionmaker is not None:
+                try:
+                    async with session_scope(sessionmaker) as own:
+                        return await _probe_target(own, spec, names, classes, **kw)
+                except Exception as exc:  # one dead target must not stop the others
+                    return exc
+            try:
+                outcome = await _probe_target(session, spec, names, classes, **kw)
+                await session.commit()
+                return outcome
+            except Exception as exc:
+                await session.rollback()
+                return exc
+
+    targets = list(by_target.items())
+    outcomes = await asyncio.gather(*(one(k, t, n) for (k, t), n in targets))
+    for ((_kind, target), names), outcome in zip(targets, outcomes, strict=True):
+        if isinstance(outcome, BaseException):
+            result.errors.append(redact(f"{target}: {outcome}"))
+            continue
+        session_error = getattr(outcome, "session_error", None)
+        if session_error:
+            result.errors.append(redact(f"{target}: {session_error}"))
+            continue
+        result.probes_run.append(f"{target}: {', '.join(names)}")
+        for p in getattr(outcome, "probes", []) or []:
+            if not getattr(p, "success", True):
+                result.probe_failures.append(redact(f"{target}/{p.probe}: {p.error}"))
+    counts = (await reconcile_probe_failures(session, schedule)).counts()
+    result.probe_findings = {k: v for k, v in counts.items() if v}
+    await session.commit()
+
+
+async def _due_assertions(
+    session: AsyncSession,
+    schedule: Schedule,
+    current: datetime,
+    result: ScheduleRun,
+    assertion_engine: AssertionEngine | None,
+) -> None:
+    from homelab_helper.engine.assertions import AssertionEngine as _Engine  # noqa: PLC0415
+
+    engine = assertion_engine or _Engine()
+    for item in assertions_due(await plan_assertions(session, schedule, now=current), current):
+        name = item.assertion.name
+        try:
+            run = await engine.run_assertion(session, item.assertion)
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            result.errors.append(redact(f"assertion {name}: {exc}"))
+            continue
+        status = getattr(getattr(run, "status", None), "value", "ran")
+        result.assertions_run.append(f"{name}: {status}")
+
+
 async def run_due(
     session: AsyncSession,
     schedule: Schedule,
@@ -387,6 +551,8 @@ async def run_due(
     ssh_adapter: Any = None,
     talos_adapter: Any = None,
     assertion_engine: AssertionEngine | None = None,
+    sessionmaker: async_sessionmaker[AsyncSession] | None = None,
+    concurrency: int = 1,
 ) -> ScheduleRun:
     """Run whatever is due: one probe batch per target, then each due assertion.
 
@@ -397,77 +563,29 @@ async def run_due(
     A target with nothing due costs no connection. Probe failures are reported
     per probe (the batch still reconciles what succeeded, as ``discover host``
     does); an unreachable target is an error for that target only.
+
+    Each target and each assertion is its own transaction: what finished is
+    kept if the pass is interrupted, a target that raises rolls back alone,
+    and no transaction stays open across more than one target's network I/O.
+    With a ``sessionmaker`` each target gets its own session, and up to
+    ``concurrency`` targets are probed at once; without one, ``session`` is
+    reused and targets run one after another.
     """
     current = now or datetime.now(UTC)
     result = ScheduleRun()
     if probes:
-        plan = await plan_probes(session, schedule, now=current)
-        due = due_now(plan, current)
-        result.not_due += len(plan) - len(due)
-        by_target: dict[tuple[str, str], list[str]] = {}
-        for d in due:
-            by_target.setdefault((d.kind, d.target), []).append(d.probe)
-        specs = {("host", h.name): h for h in schedule.hosts} | {
-            ("talos", t.name): t for t in schedule.talos
-        }
-        available = discover_probes()
-        for (kind, target), names in by_target.items():
-            spec = specs[kind, target]
-            classes = [available[n] for n in names if n in available]
-            try:
-                if kind == "host":
-                    assert isinstance(spec, HostSpec)
-                    outcome = await probe_host(
-                        session,
-                        HostProbeRequest(
-                            name=spec.name,
-                            ssh_user=spec.ssh_user,
-                            ssh_key_path=spec.ssh_key_path,
-                            primary_ip=spec.primary_ip,
-                            ssh_port=spec.ssh_port,
-                            probe_names=tuple(names),
-                        ),
-                        probe_classes=classes,
-                        ssh_adapter=ssh_adapter,
-                    )
-                else:
-                    assert isinstance(spec, TalosSpec)
-                    outcome = await probe_talos(
-                        session,
-                        TalosProbeRequest(
-                            name=spec.name,
-                            node=spec.node,
-                            talosconfig=spec.talosconfig,
-                            probe_names=tuple(names),
-                        ),
-                        probe_classes=classes,
-                        adapter=talos_adapter,
-                    )
-            except Exception as exc:  # one dead target must not stop the others
-                result.errors.append(redact(f"{target}: {exc}"))
-                continue
-            session_error = getattr(outcome, "session_error", None)
-            if session_error:
-                result.errors.append(redact(f"{target}: {session_error}"))
-                continue
-            result.probes_run.append(f"{target}: {', '.join(names)}")
-            for p in getattr(outcome, "probes", []) or []:
-                if not getattr(p, "success", True):
-                    result.probe_failures.append(redact(f"{target}/{p.probe}: {p.error}"))
-        counts = (await reconcile_probe_failures(session, schedule)).counts()
-        result.probe_findings = {k: v for k, v in counts.items() if v}
+        await _due_probes(
+            session,
+            schedule,
+            current,
+            result,
+            ssh_adapter=ssh_adapter,
+            talos_adapter=talos_adapter,
+            sessionmaker=sessionmaker,
+            concurrency=concurrency,
+        )
     if assertions and schedule.assertions:
-        from homelab_helper.engine.assertions import AssertionEngine as _Engine  # noqa: PLC0415
-
-        engine = assertion_engine or _Engine()
-        for item in assertions_due(await plan_assertions(session, schedule, now=current), current):
-            try:
-                run = await engine.run_assertion(session, item.assertion)
-            except Exception as exc:
-                result.errors.append(redact(f"assertion {item.assertion.name}: {exc}"))
-                continue
-            status = getattr(getattr(run, "status", None), "value", "ran")
-            result.assertions_run.append(f"{item.assertion.name}: {status}")
+        await _due_assertions(session, schedule, current, result, assertion_engine)
     return result
 
 
@@ -479,6 +597,7 @@ __all__ = [
     "SCHEDULE_PROBES_LOCK_KEY",
     "DueAssertion",
     "DueProbe",
+    "DueSource",
     "HostSpec",
     "Schedule",
     "ScheduleError",
@@ -490,6 +609,7 @@ __all__ = [
     "parse_interval",
     "plan_assertions",
     "plan_probes",
+    "plan_sources",
     "reconcile_probe_failures",
     "run_due",
 ]

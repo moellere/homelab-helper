@@ -927,3 +927,27 @@ async def test_maintenance_tools_answer_a_bad_run_id_with_an_error(seeded_db: st
         out = await execute_maintenance_run(ref)
         assert "error" in out, out
         assert "no maintenance run" in out["error"]
+
+
+async def test_every_discovery_run_leaves_a_source_run(seeded_db: str, monkeypatch) -> None:
+    from homelab_helper.db.models import SourceRun
+
+    async def ok(session: object) -> dict[str, object]:
+        return {"nodes": 0}
+
+    async def boom(session: object) -> dict[str, object]:
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setitem(mcp_srv._DISCOVERERS, "usage", ok)
+    monkeypatch.setitem(mcp_srv._DISCOVERERS, "versions", boom)
+    await mcp_srv.run_discovery("usage")
+    await mcp_srv.run_discovery("versions")
+    engine = make_engine(seeded_db)
+    try:
+        async with make_sessionmaker(engine)() as s:
+            rows = {r.source: r for r in (await s.execute(select(SourceRun))).scalars()}
+    finally:
+        await engine.dispose()
+    assert rows["usage"].ok is True
+    assert rows["versions"].ok is False
+    assert rows["versions"].error == "ReadTimeout"

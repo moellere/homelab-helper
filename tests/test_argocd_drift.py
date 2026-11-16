@@ -121,16 +121,53 @@ async def test_out_of_sync_but_healthy_is_medium(sessionmaker) -> None:
     assert findings[0].severity == FindingSeverity.MEDIUM
 
 
-async def test_vanished_app_is_not_auto_resolved(sessionmaker) -> None:
-    """An app no longer reported by Argo CD must not silently resolve (invariant #1)."""
+async def test_an_app_gone_from_a_complete_listing_resolves(sessionmaker) -> None:
+    """The listing is the observation: an app it no longer has is gone, not unseen."""
     async with session_scope(sessionmaker) as s:
         await reconcile_argocd_drift(s, [_app("loki", sync="OutOfSync")])
-        # Next run: loki is absent entirely (not reported as healthy — just gone).
         result = await reconcile_argocd_drift(s, [_app("grafana")])
-    assert result.resolved == []  # grafana was never drifted; loki untouched
-    findings = await _findings(sessionmaker)
-    loki = next(f for f in findings if "loki" in f.title)
-    assert loki.status == FindingStatus.OPEN  # still open — absence != resolved
+    assert result.resolved == ["loki"]
+    assert result.gone == ["loki"]
+    loki = next(f for f in await _findings(sessionmaker) if "loki" in f.title)
+    assert loki.status == FindingStatus.RESOLVED
+    assert "no longer in Argo CD" in (loki.description or "")
+
+
+async def test_an_empty_listing_resolves_nothing(sessionmaker) -> None:
+    """No apps at all looks like lost access as much as a deleted fleet (invariant #1)."""
+    async with session_scope(sessionmaker) as s:
+        await reconcile_argocd_drift(s, [_app("loki", sync="OutOfSync")])
+        result = await reconcile_argocd_drift(s, [])
+    assert result.resolved == []
+    loki = next(f for f in await _findings(sessionmaker) if "loki" in f.title)
+    assert loki.status == FindingStatus.OPEN
+
+
+async def test_a_gone_app_that_returns_drifted_reopens(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        await reconcile_argocd_drift(s, [_app("loki", sync="OutOfSync")])
+        await reconcile_argocd_drift(s, [_app("grafana")])
+        result = await reconcile_argocd_drift(s, [_app("loki", health="Degraded")])
+    assert result.reopened == ["loki"]
+
+
+async def test_other_drift_findings_are_not_touched(sessionmaker) -> None:
+    """A DRIFT_CANDIDATE some other source wrote is not this module's to resolve."""
+    async with session_scope(sessionmaker) as s:
+        s.add(
+            ReconciliationFinding(
+                kind=FindingKind.DRIFT_CANDIDATE,
+                severity=FindingSeverity.MEDIUM,
+                fingerprint="someone-elses",
+                title="other drift",
+                description="written by another source",
+                affected=[{"target_type": "argocd-app", "target_id": "loki"}],
+                status=FindingStatus.OPEN,
+            )
+        )
+        await s.flush()
+        result = await reconcile_argocd_drift(s, [_app("grafana")])
+    assert result.resolved == []
 
 
 async def test_out_of_sync_resources_land_in_description(sessionmaker) -> None:

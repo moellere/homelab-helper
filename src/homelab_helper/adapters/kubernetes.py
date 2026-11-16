@@ -230,6 +230,15 @@ class K8sAdapter:
         payload = json.loads(out) if out.strip() else {}
         return (payload.get("serverVersion") or {}).get("gitVersion")
 
+    async def cluster_name(self) -> str:
+        """The configured context, else kubectl's current one; names the Cluster row."""
+        if self.config.context:
+            return self.config.context
+        try:
+            return (await self._run("config", "current-context")).strip() or "kubernetes"
+        except KubeError:
+            return "kubernetes"
+
     async def health_check(self) -> tuple[bool, str | None]:
         try:
             await self.server_version()

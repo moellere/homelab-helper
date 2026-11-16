@@ -167,7 +167,7 @@ def _host_lines(h: Host, rows: _Rows, include_guests: bool) -> tuple[str, ...]:
 
 async def _add_clusters(session: AsyncSession, model: DiagramModel, rows: _Rows) -> None:
     clusters = {c.id: c for c in (await session.execute(select(Cluster))).scalars().all()}
-    membership = await cluster_nodes(session, rows.hosts)
+    membership = await cluster_nodes(session, rows.hosts, kinds=None)  # every kind, k8s too
     for cluster_id, members in sorted(
         membership.by_cluster().items(),
         key=lambda kv: clusters[kv[0]].name if kv[0] in clusters else "",

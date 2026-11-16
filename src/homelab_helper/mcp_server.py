@@ -761,6 +761,7 @@ async def _discover_k8s(session: AsyncSession) -> dict[str, Any]:
         "nodes_seen": result.nodes_seen,
         "hosts_matched": len(result.hosts_matched),
         "hosts_created": len(result.hosts_created),
+        "cluster": result.cluster,
         "workloads_seen": health.seen,
         "workloads_unhealthy": health.unhealthy,
         "workload_findings_resolved": health.resolved,

@@ -11,6 +11,11 @@ shared categorised reconcile, so invariant 1 holds: a category resolves only whe
 - ``printer-failing``: at least ``FAILING_MIN_PRINTS`` prints in the warden's last 7 days and at least
   ``FAILING_RATE`` of them failed (a person's label wins over how the job ended).
 - ``printer-maintenance``: maintenance items the warden reports as due.
+- ``printer-health-<kind>``: one per kind of printer-health finding the warden reports (print-warden 0.8+, the
+  ``health`` field): MCU firmware out of step with Klipper, a pending ``SAVE_CONFIG``, ``printer.cfg`` changed since
+  it was known good, a drifted bed mesh, an update available. A kind this module does not know lands in
+  ``printer-health``. Like failures and maintenance they come from the warden's own record, so they are observed
+  for every printer whose status carries ``health``, connected or not.
 
 A Klipper finding names the shutdown's classified cause and the warden's hint when the status carries
 ``last_shutdown`` (print-warden 0.4+).
@@ -44,14 +49,46 @@ if TYPE_CHECKING:
 KIND = FindingKind.SERVICE_UNHEALTHY
 SERVICE = "print-warden"
 UNREACHABLE = "printwarden-unreachable"
+LEDGER_CATEGORIES = ("printer-failing", "printer-maintenance")
+HEALTH: dict[str, tuple[FindingSeverity, str, str]] = {
+    "firmware_mismatch": (
+        FindingSeverity.MEDIUM,
+        "MCU firmware on {name} is out of step with Klipper",
+        "a board runs a different Klipper release than the host, and Klipper refuses it at the next restart: "
+        "rebuild and flash that board's firmware",
+    ),
+    "save_config_pending": (
+        FindingSeverity.LOW,
+        "SAVE_CONFIG pending on {name}",
+        "Klipper holds changes not yet written to printer.cfg; they are lost at the next restart",
+    ),
+    "config_changed": (
+        FindingSeverity.LOW,
+        "printer.cfg on {name} changed since it was known good",
+        "printer_health on print-warden lists each changed setting; printer_health(accept=True) there takes the "
+        "new config as known good",
+    ),
+    "mesh_drift": (
+        FindingSeverity.MEDIUM,
+        "The bed mesh on {name} has drifted",
+        "a saved mesh's range grew past the warden's limit: the bed or gantry moved, so re-level or re-mesh",
+    ),
+    "update_available": (
+        FindingSeverity.INFO,
+        "A Klipper or Moonraker update is available on {name}",
+        "the printer's update manager has a newer release",
+    ),
+}
+HEALTH_OTHER = "printer-health"
+HEALTH_CATEGORIES = (*(f"{HEALTH_OTHER}-{k.replace('_', '-')}" for k in HEALTH), HEALTH_OTHER)
 PRINTER_CATEGORIES = (
     "printer-offline",
     "printer-klippy",
     "printer-telemetry-stale",
     "printer-failing",
     "printer-maintenance",
+    *HEALTH_CATEGORIES,
 )
-LEDGER_CATEGORIES = ("printer-failing", "printer-maintenance")
 STALE_AFTER_S = 600
 FAILING_MIN_PRINTS = 3
 FAILING_RATE = 0.5
@@ -81,6 +118,7 @@ def printer_issues(status: dict[str, Any]) -> list[CategoryIssue]:
         target = _printer_target(name)
         evidence = {"printer": name, "version": status.get("version"), **p}
         issues += _ledger_issues(name, target, p, evidence)
+        issues += _health_issues(name, target, p, evidence)
         if not p.get("connected"):
             issues.append(
                 CategoryIssue(
@@ -185,6 +223,46 @@ def _ledger_issues(
     return out
 
 
+def _health_issues(
+    name: str, target: str, p: dict[str, Any], evidence: dict[str, Any]
+) -> list[CategoryIssue]:
+    kinds = [str(k) for k in p.get("health") or []]
+    out = []
+    for k in kinds:
+        if k not in HEALTH:
+            continue
+        severity, title, why = HEALTH[k]
+        out.append(
+            CategoryIssue(
+                kind=KIND,
+                category=f"{HEALTH_OTHER}-{k.replace('_', '-')}",
+                target_type="service",
+                target_id=target,
+                severity=severity,
+                title=title.format(name=name),
+                description=f"print-warden's printer health check on {name}: {why}.",
+                evidence=evidence,
+            )
+        )
+    if other := sorted(k for k in kinds if k not in HEALTH):
+        out.append(
+            CategoryIssue(
+                kind=KIND,
+                category=HEALTH_OTHER,
+                target_type="service",
+                target_id=target,
+                severity=FindingSeverity.LOW,
+                title=f"print-warden reports {', '.join(other)} on {name}",
+                description=(
+                    f"print-warden's printer health check on {name} reports {', '.join(other)}; printer_health "
+                    "there has the details."
+                ),
+                evidence=evidence,
+            )
+        )
+    return out
+
+
 async def _removed_printers(session: AsyncSession, names: set[str]) -> set[tuple[str, str]]:
     """Targets of open printer findings whose printer the warden no longer lists."""
     rows = (
@@ -231,13 +309,20 @@ async def reconcile_printwarden(
         for name, p in (status.get("printers") or {}).items()
         if "outcomes_7d" in p
     }
+    checked = {
+        ("service", _printer_target(name))
+        for name, p in (status.get("printers") or {}).items()
+        if "health" in p
+    }
     gone = await _removed_printers(session, set(status.get("printers") or {}))
     connected |= gone
     reporting |= gone
+    checked |= gone
     passes: tuple[tuple[set[str], set[tuple[str, str]] | None], ...] = (
         ({UNREACHABLE, "printer-offline"}, None),
         ({"printer-klippy", "printer-telemetry-stale"}, connected),
         (set(LEDGER_CATEGORIES), reporting),
+        (set(HEALTH_CATEGORIES), checked),
     )
     for observed, targets in passes:
         result = await reconcile_category_findings(

@@ -1386,6 +1386,13 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   - [x] A printer removed from the warden (10/17/2026): the status lists every
     printer, so one that has left it is observed gone and its open findings
     resolve on the next successful read.
+  - [x] Printer health (11/17/2026, print-warden 0.8 `health` field): one
+    `printer-health-<kind>` finding per kind the warden reports, so each
+    opens and resolves on its own. The kinds are `firmware_mismatch` and
+    `mesh_drift` (medium), `save_config_pending` and `config_changed` (low),
+    and `update_available` (info). A kind this source does not know lands in
+    `printer-health`. Like failures and maintenance, it is observed for every
+    printer whose status carries `health`, and never for an older warden.
   - [ ] Follow-ups: live validation against the operator's warden.
 - [x] **JetKVM source** (10/23/2026) — `adapters/jetkvm.py` reads a JetKVM:
   the open `GET /device/status`, `GET /device` after a local-password login,

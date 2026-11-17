@@ -330,3 +330,48 @@ async def test_a_printer_removed_from_the_warden_resolves(
         _, counts = await reconcile_printwarden(s, URL, _status(new=_printer()))
         assert counts["resolved"] == 3
         assert await _open(s) == set()
+
+
+def test_health_kinds_become_findings_each_with_its_own_category():
+    status = _status(
+        x4=_printer(health=["config_changed", "firmware_mismatch", "new_kind"]),
+        x1=_printer(connected=False, health=["mesh_drift"]),
+        ok=_printer(health=[]),
+    )
+    issues = {(i.target_id, i.category): i for i in printer_issues(status)}
+    fw = issues[("print-warden/x4", "printer-health-firmware-mismatch")]
+    assert fw.severity == FindingSeverity.MEDIUM
+    assert "rebuild and flash" in fw.description
+    assert (
+        issues[("print-warden/x4", "printer-health-config-changed")].severity == FindingSeverity.LOW
+    )
+    assert (
+        issues[("print-warden/x4", "printer-health")].title == "print-warden reports new_kind on x4"
+    )
+    assert ("print-warden/x1", "printer-health-mesh-drift") in issues
+    assert not [k for k in issues if k[0] == "print-warden/ok"]
+
+
+async def test_health_findings_resolve_per_kind_and_only_when_reported(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_scope(sessionmaker) as s:
+        await reconcile_printwarden(
+            s, URL, _status(x4=_printer(health=["config_changed", "save_config_pending"]))
+        )
+        assert await _open(s) == {
+            "printer.cfg on x4 changed since it was known good",
+            "SAVE_CONFIG pending on x4",
+        }
+    async with session_scope(sessionmaker) as s:
+        await reconcile_printwarden(s, URL, _status(x4=_printer()))
+        assert len(await _open(s)) == 2, "a warden that does not report health observes nothing"
+    async with session_scope(sessionmaker) as s:
+        _, counts = await reconcile_printwarden(
+            s, URL, _status(x4=_printer(connected=False, health=["config_changed"]))
+        )
+        assert counts["resolved"] == 1
+        assert await _open(s) == {
+            "printer.cfg on x4 changed since it was known good",
+            "Printer x4 is offline to print-warden",
+        }

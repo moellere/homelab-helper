@@ -1445,7 +1445,7 @@ See `roadmap.md` Phase 12. Closes the four structural seams across Kubernetes wo
 - [x] **12.3 Maintenance & playbook ergonomics**
   - [x] Rolling-upgrade playbooks (`pve-updates`, `talos-eol`, `k8s-eol`) draft the single step and, for the first two, name the `helper maintenance plan…` command for the whole run
   - [ ] A playbook that drafts the `MaintenanceRun` itself (a first version was removed: nothing called it), and a maintenance command for a Kubernetes-only upgrade (`plan-talos` needs `--to`)
-  - [x] Proxmox maintenance post-reboot kernel currency check (`uname -r` vs `/lib/modules`) and a Ceph health gate between steps of `maintenance run`: `HEALTH_OK`, or a warning that is only the operator's own flags (`noout`), with no degraded objects; an unreadable status stops the run
+  - [x] Proxmox maintenance post-reboot kernel currency check (`uname -r` vs `/lib/modules`) and a Ceph health gate between steps of `maintenance run`: `HEALTH_OK`, or a warning that is only the operator's own flags (`noout`), with no degraded objects. It waits up to ten minutes for Ceph to settle after a reboot; a cluster still unhealthy, or a status that cannot be read, stops the run
   - [ ] QEMU Guest Agent in-guest memory probing so `engine/rightsizing.py` can propose `mem-grow` for VMs. The rightsizing side accepts a `guest_agent_memory` usage sample; nothing produces one yet (a reader that guessed at Proxmox fields was removed)
 - [x] **12.4 Multi-site depth & time-of-day baselines**
   - [x] Hour-of-day / weekday percentile bands and per-subject `expected_window` declarations in `engine/baselines.py`

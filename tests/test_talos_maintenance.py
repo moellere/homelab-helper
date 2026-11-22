@@ -265,13 +265,27 @@ async def test_cluster_upgrade_playbook_and_ceph_health_gate_and_kernel_check(
             return self._status
 
     def gate(status: dict[str, Any]) -> Any:
-        return proxmox_ceph_health_gate(_FakeCephPve(status))  # type: ignore[arg-type]
+        return proxmox_ceph_health_gate(_FakeCephPve(status), timeout_s=0)  # type: ignore[arg-type]
 
     assert await gate({"health": {"status": "HEALTH_OK"}})() == (True, "HEALTH_OK")
     assert await gate({})() == (True, "no ceph")
     degraded = {"health": {"status": "HEALTH_WARN", "checks": {"PG_DEGRADED": {}}}}
-    assert await gate(degraded)() == (False, "Ceph is HEALTH_WARN (PG_DEGRADED)")
-    assert await gate({"health": {"status": "HEALTH_WARN"}})() == (False, "Ceph is HEALTH_WARN")
+    assert await gate(degraded)() == (False, "Ceph is HEALTH_WARN (PG_DEGRADED) (waited 0 s)")
+    assert (await gate({"health": {"status": "HEALTH_WARN"}})())[0] is False
+
+    # A node just back from its reboot leaves Ceph recovering: the gate waits for it.
+    class _RecoveringPve:
+        def __init__(self) -> None:
+            self.asked = 0
+
+        async def ceph_status(self) -> dict[str, Any]:
+            self.asked += 1
+            return degraded if self.asked < 3 else {"health": {"status": "HEALTH_OK"}}  # noqa: PLR2004
+
+    recovering = _RecoveringPve()
+    settled = proxmox_ceph_health_gate(recovering, timeout_s=30, poll_s=0)  # type: ignore[arg-type]
+    assert await settled() == (True, "HEALTH_OK")
+    assert recovering.asked == 3  # noqa: PLR2004
     # noout during a rolling update is the operator's own flag, not a reason to stop.
     flags = {"health": {"status": "HEALTH_WARN", "checks": {"OSDMAP_FLAGS": {}}}}
     assert await gate(flags)() == (True, "HEALTH_WARN (maintenance flags only)")
@@ -284,7 +298,7 @@ async def test_cluster_upgrade_playbook_and_ceph_health_gate_and_kernel_check(
         async def ceph_status(self) -> dict[str, Any]:
             raise RuntimeError(self._message)
 
-    ok, why = await proxmox_ceph_health_gate(_BrokenPve("read timed out"))()  # type: ignore[arg-type]
+    ok, why = await proxmox_ceph_health_gate(_BrokenPve("read timed out"), timeout_s=0)()  # type: ignore[arg-type]
     assert ok is False
     assert "could not read Ceph status" in why
     no_ceph = proxmox_ceph_health_gate(_BrokenPve("500: binary not installed: /usr/bin/ceph-mon"))  # type: ignore[arg-type]

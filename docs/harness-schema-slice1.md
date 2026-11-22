@@ -475,7 +475,7 @@ class ConfigurationAssertion(Base):
     # file-hash: {"path": "/etc/...", "sha256": "..."}
     # http-check: {"url": "...", "method": "GET" | "HEAD", "expected_status": 200, "body_contains" | "body_regex": "...",
     #              "min_tls_days": 30}
-    # api-query: {"source": "proxmox", "query": "cluster_status", "key": "0.quorate", "predicate": "eq", "value": 1}
+    # api-query: {"source": "proxmox", "query": "cluster_status", "key": "quorate", "predicate": "eq", "value": true}
     # observation-predicate: {"key": "host.network.br6.mac", "predicate": "eq",
     #                        "compare_to_key": "host.network.lan6.mac"}
     # file-hash: {"path": "/etc/systemd/system/e1000e-offload-fix.service",

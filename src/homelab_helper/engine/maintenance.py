@@ -371,31 +371,43 @@ def talos_health_gate(talos: TalosAdapter, control_plane: str) -> HealthCallback
     return _check
 
 
+CEPH_MAINTENANCE_CHECKS = frozenset({"OSDMAP_FLAGS"})
+"""Health checks a rolling update raises on purpose (``noout`` and friends)."""
+
+
 def proxmox_ceph_health_gate(adapter: ProxmoxAdapter) -> HealthCallback:
     """Between-steps check for a Proxmox maintenance run when the cluster runs Ceph.
 
-    A cluster without Ceph passes immediately; a cluster with Ceph requires
-    ``health.status == "HEALTH_OK"`` and no degraded PGs before proceeding.
+    A cluster without Ceph passes. With Ceph the run goes on at ``HEALTH_OK``, or at a
+    ``HEALTH_WARN`` whose only checks are the maintenance flags the operator set, and
+    only with no degraded objects. A status that cannot be read stops the run: the gate
+    never passes on a guess.
     """
 
     async def _check() -> tuple[bool, str]:
         try:
             status = await adapter.ceph_status()
-        except Exception:
-            return True, "no ceph"
-        if not isinstance(status, dict) or not status:
-            return True, "no ceph"
-        health = status.get("health") or {}
-        h_status = str(health.get("status") or "")
+        except Exception as exc:
+            # Proxmox answers a node that has no Ceph with an error naming the missing install.
+            if "not installed" in str(exc).lower() or "not initialized" in str(exc).lower():
+                return True, "no ceph"
+            return False, f"could not read Ceph status: {exc}"
+        health = (status or {}).get("health") if isinstance(status, dict) else None
+        h_status = str((health or {}).get("status") or "")
         if not h_status:
             return True, "no ceph"
-        if h_status != "HEALTH_OK":
-            return False, f"Ceph is {h_status}"
-        pgmap = status.get("pgmap") or {}
-        degraded = int(pgmap.get("degraded_objects") or 0)
+        checks = set((health or {}).get("checks") or {})
+        flags_only = (
+            h_status == "HEALTH_WARN" and bool(checks) and checks <= CEPH_MAINTENANCE_CHECKS
+        )
+        if h_status != "HEALTH_OK" and not flags_only:
+            return False, f"Ceph is {h_status}" + (
+                f" ({', '.join(sorted(checks))})" if checks else ""
+            )
+        degraded = int(((status or {}).get("pgmap") or {}).get("degraded_objects") or 0)
         if degraded > 0:
             return False, f"Ceph has {degraded} degraded object(s)"
-        return True, "HEALTH_OK"
+        return True, h_status if not flags_only else "HEALTH_WARN (maintenance flags only)"
 
     return _check
 

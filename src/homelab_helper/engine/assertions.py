@@ -33,6 +33,7 @@ Stubbed (SKIP with a clear reason) until their adapters land:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shlex
 import ssl
@@ -64,6 +65,7 @@ from homelab_helper.db.models import (
 )
 from homelab_helper.engine.fingerprint import make_fingerprint
 from homelab_helper.engine.reconciler import normalize_arch
+from homelab_helper.secrets import redact
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -360,12 +362,25 @@ async def _tls_days_remaining(url: str, timeout_s: float = 5.0) -> int | None:
             writer.close()
 
 
+SSH_COMMANDS_VAR = "HOMELAB_HELPER_ASSERT_SSH_COMMANDS"
+"""Set to ``1`` to let ``ssh-command`` assertions run. Off by default: the command is whatever
+the assertion says, run with the host's own login, and no trust cell stands in front of it."""
+
+
+def ssh_commands_allowed() -> bool:
+    return os.environ.get(SSH_COMMANDS_VAR, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 async def _verify_ssh_command(
     engine: AssertionEngine,
     session: AsyncSession,
     assertion: ConfigurationAssertion,
 ) -> VerifierResult:
-    """Run a read-only command over KernelSSHAdapter and check exit code / stdout."""
+    """Run the assertion's command over KernelSSHAdapter and check exit code / stdout.
+
+    Nothing here can tell a read from a write, so the verifier is off until the operator
+    sets ``HOMELAB_HELPER_ASSERT_SSH_COMMANDS``; until then every such assertion SKIPs.
+    """
     spec = assertion.verifier_spec or {}
     command = spec.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -373,6 +388,12 @@ async def _verify_ssh_command(
             status=AssertionStatus.SKIP if not spec else AssertionStatus.ERROR,
             evidence={"kind": assertion.kind.value},
             error="verifier_spec missing 'command'",
+        )
+    if not ssh_commands_allowed():
+        return VerifierResult(
+            status=AssertionStatus.SKIP,
+            evidence={"command": command},
+            error=f"ssh-command assertions are off; set {SSH_COMMANDS_VAR}=1 to run them",
         )
     host = await _resolve_target_host(session, assertion)
     if host is None:
@@ -415,7 +436,7 @@ async def _verify_ssh_command(
             "command": command,
             "exit_code": res.exit_code,
             "expected_exit_code": expected_code,
-            "stdout": stdout[:500],
+            "stdout": redact(stdout[:500]),
         },
     )
 
@@ -482,6 +503,10 @@ async def _verify_file_hash(
     )
 
 
+HTTP_CHECK_METHODS: tuple[str, ...] = ("GET", "HEAD")
+"""An assertion observes; it never sends a method that changes the far end."""
+
+
 async def _verify_http_check(
     engine: AssertionEngine,
     session: AsyncSession,
@@ -498,6 +523,12 @@ async def _verify_http_check(
             error="verifier_spec missing 'url'",
         )
     method = str(spec.get("method", "GET")).upper()
+    if method not in HTTP_CHECK_METHODS:
+        return VerifierResult(
+            status=AssertionStatus.ERROR,
+            evidence={"url": url, "method": method},
+            error=f"http-check only sends {' or '.join(HTTP_CHECK_METHODS)}, not {method}",
+        )
     raw_expected = spec.get("expected_status", 200)
     expected_statuses = (
         [int(x) for x in raw_expected] if isinstance(raw_expected, list) else [int(raw_expected)]
@@ -553,24 +584,42 @@ async def _verify_http_check(
     )
 
 
+API_QUERIES: dict[str, str] = {
+    "cluster_status": "cluster_status",
+    "nodes": "list_nodes",
+    "vms": "list_vms",
+    "storage": "list_storage",
+    "applications": "list_applications",
+    "dns_records": "list_dns_records",
+    "networks": "list_networks",
+    "clients": "list_clients",
+    "filesystems": "list_filesystems",
+    "shares": "list_shared_folders",
+    "config": "get_config",
+    "states": "list_states",
+    "workloads": "list_workloads",
+}
+"""The reads an ``api-query`` assertion may ask for. A name outside it is an ERROR, never a
+method lookup: an assertion must not be able to reach an adapter's write methods."""
+
+API_SOURCES: tuple[str, ...] = (
+    "proxmox",
+    "netbox",
+    "k8s",
+    "unifi",
+    "cloudflare",
+    "argocd",
+    "omv",
+    "hass",
+    "mikrotik",
+    "printwarden",
+)
+"""The ``adapters.factories`` builders an ``api-query`` assertion may name."""
+
+
 async def _run_adapter_query(adapter: Any, query: str) -> Any:
-    dispatch: dict[str, str] = {
-        "cluster_status": "cluster_status",
-        "nodes": "list_nodes",
-        "vms": "list_vms",
-        "storage": "list_storage",
-        "applications": "list_applications",
-        "dns_records": "list_dns_records",
-        "networks": "list_networks",
-        "clients": "list_clients",
-        "filesystems": "list_filesystems",
-        "shares": "list_shared_folders",
-        "config": "get_config",
-        "states": "list_states",
-        "workloads": "list_workloads",
-    }
-    method_name = dispatch.get(query, query)
-    fn = getattr(adapter, method_name, None)
+    method_name = API_QUERIES.get(query)
+    fn = getattr(adapter, method_name, None) if method_name else None
     if not callable(fn):
         raise ValueError(f"adapter does not support query {query!r}")
     return await fn()
@@ -599,7 +648,7 @@ async def _verify_api_query(  # noqa: PLR0911
     adapter = (engine.adapters or {}).get(source)
     owns_adapter = False
     if adapter is None:
-        factory = getattr(factories, source, None)
+        factory = getattr(factories, source, None) if source in API_SOURCES else None
         if not callable(factory):
             return VerifierResult(
                 status=AssertionStatus.ERROR,

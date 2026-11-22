@@ -65,3 +65,21 @@ def test_allowed_files_still_exist() -> None:
     """If one of these moves, the allowlist must move with it — not silently pass."""
     for path in ALLOWED:
         assert path.is_file(), path
+
+
+def test_an_api_query_assertion_cannot_name_a_write() -> None:
+    from homelab_helper.engine.assertions import API_QUERIES
+
+    assert set(API_QUERIES.values()).isdisjoint(WRITE_METHODS)
+
+
+def test_only_the_assertion_engine_looks_up_adapter_methods_by_variable() -> None:
+    """A method chosen by a string is a call the name-grep above cannot see."""
+    dynamic = re.compile(r"getattr\(\s*\w*(adapter|factories)\w*\s*,\s*(?![\"'])")
+    allowed = {SRC / "engine" / "assertions.py"}  # bounded by API_QUERIES and API_SOURCES
+    hits = [
+        str(path.relative_to(SRC))
+        for path in sorted(SRC.rglob("*.py"))
+        if path not in allowed and dynamic.search(path.read_text())
+    ]
+    assert hits == []

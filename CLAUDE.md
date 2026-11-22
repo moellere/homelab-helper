@@ -238,6 +238,18 @@ action is authorized. Reversibility is a finding from `engine/rollback.py`,
 never the manifest's `rollback.verified` claim. See `docs/architecture.md` "Trust
 gradient (L2 authorization model)".
 
+### 6. Assertions observe — a verifier is never a write path
+
+`engine/assertions.py` verifiers read. `http-check` sends GET or HEAD only;
+`api-query` reaches the adapter reads named in `API_QUERIES` through the
+factories named in `API_SOURCES`, never a method picked by string (two tests in
+`tests/test_write_isolation.py` hold that); `file-hash` runs `sha256sum`.
+`ssh-command` cannot be made read-only by construction, so it SKIPs unless the
+operator sets `HOMELAB_HELPER_ASSERT_SSH_COMMANDS=1`. Assertions come only from
+the operator's library file (`helper assert load`); no agent or MCP tool
+creates one. Adding a query means adding it to `API_QUERIES`, and it must be a
+read.
+
 ## Test patterns
 
 - **Unit tests** use `make_engine("sqlite+aiosqlite:///:memory:")` plus
@@ -279,7 +291,7 @@ gradient (L2 authorization model)".
   `try/finally` that `await engine.dispose()`. Otherwise the test suite leaks
   connections across runs.
 - **Secret-valued settings are read via `secrets.secret_from_env`**, never
-  `os.environ.get` directly: the value may be a `file:`/`keyring:`/`env:`
+  `os.environ.get` directly: the value may be a `file:`/`keyring:`/`env:`/`op://`/`vault://`
   reference, and reading through the resolver is also what registers the
   value for `redact()`. Non-secret settings keep using `os.environ`.
 - **Paths that ship in the wheel** live under `src/homelab_helper/` (migrations,
@@ -317,6 +329,8 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 | 9 — Road to 1.0 | 9.1: the bundled `asymmetric` lab closes P5-AC4 and P4-AC2's derivation through the real CLI; the rest is operator time on hardware. 9.2 done: placement targets are cluster nodes by one shared rule, daemon defaults follow `helper config`, examples carry no lab names. 9.3 done: mkdocs site, getting-started led by `discover replay` (labs now ship in the wheel), generated CLI reference, trust-gradient explainer, probe/adapter guides, NetBox field reference, strict build in CI. 9.4 done: `docs/stability.md` names every public surface and its promise, with a deprecation policy; CI runs 3.12 and 3.13. 9.5 (last Phase-1 probes), 9.6 (`schedule.yaml` cadences) and 9.7a (status endpoint + `helper status`) done; 9.7b (Web UI) is optional and deliberately unbuilt. 1.0.0rc1 published 10/10/2026, 1.0.0 and 1.0.1 released 10/12/2026, 1.0.2 released 10/15/2026, 1.0.3 released 10/24/2026, 1.0.4 released 10/25/2026, 1.0.5 released 11/06/2026, 1.0.6 released 11/11/2026, 1.0.7 released 11/15/2026, 1.0.8 and 1.0.9 released 11/16/2026 |
 | 10 — Predictive operations | Complete (10/12/2026): disk health from `host.smart` history, capacity trends (time-to-full, memory/CPU lines), per-subject baselines → anomaly findings, maintenance runs (drain → update → reboot → return) with `plan --resume` for a run that stopped after its drain |
 | 11 — Talos as a managed plane | Complete (10/12/2026): `talos-upgrade` (verified inverse: `talosctl rollback`, the first node action that can earn AUTONOMOUS), `k8s-upgrade` (cluster radius, no inverse), Talos maintenance runs (control planes then workers, `talosctl health` between steps), workload usage from metrics-server. Live rows wait on the next upstream release |
+| 12 — Workload depth, live verifiers | Built (11/22/2026), not yet live-validated: Kubernetes workloads kept on the cluster row and rightsized, RAID lineage, the four live assertion verifiers (observe-only; `ssh-command` is off until `HOMELAB_HELPER_ASSERT_SSH_COMMANDS=1`), a Ceph gate between Proxmox maintenance steps, hour-of-day baselines, multi-instance Home Assistant. Open: a playbook-drafted `MaintenanceRun`, guest-agent memory for VM `mem-grow` |
+| 13 — Continuous verification, backup depth | Built (11/22/2026), not yet live-validated: off-site and declared backup targets, `discover restore-drill`, GPU and TLS probe depth, unpinned-image and drive-thermal checks, `guest-start` and `cluster-upgrade` playbooks, `op://` / `vault://` references. Open: `tls-cert-expiring` and appliance-version findings (built, not called), NetBox interface/VLAN/service sync (removed until it has an ownership marker) |
 | 6 — L2 execution & trust gradient | Build complete: schema + `decide()` (A), executor + receipts + Proxmox power write path (B), auto-escalation (C), snapshot/rollback orchestrator (D), elevation windows + kill switch + boundaries (E), per-action override + read-only MCP trust surface (F), agent-side `propose_action` + manifest schema + secret references (agent-access items 4–6). All six ACs implemented; live-fleet validation outstanding |
 
 Live-fleet validation: Phases 4–7 are signed off against the operator's lab

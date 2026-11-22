@@ -1441,11 +1441,12 @@ See `roadmap.md` Phase 12. Closes the four structural seams across Kubernetes wo
   - [x] Render persisted Kubernetes workloads and `--since` host verification staleness in `engine/diagram.py` / `helper diagram` and `helper view service`
 - [x] **12.2 RAID volume lineage (#77) & live assertion verifiers**
   - [x] Link `host.raid` arrays to their member `PhysicalPart` drives (member partition → parent block device → WWN/serial); correlate `engine/disk_health.py` with `engine/raid_health.py` (escalate drive findings in degraded arrays) and show array lineage in `helper host show`
-  - [x] Wire `AssertionKind.HTTP_CHECK` (status code, body regex, TLS certificate expiry days), `SSH_COMMAND`, `FILE_HASH`, and `API_QUERY` in `engine/assertions.py`
+  - [x] Wire `AssertionKind.HTTP_CHECK` (status code, body regex, TLS certificate expiry days), `SSH_COMMAND`, `FILE_HASH`, and `API_QUERY` in `engine/assertions.py`. Verifiers observe only: `HTTP_CHECK` sends GET or HEAD, `API_QUERY` reaches a fixed list of adapter reads, and `SSH_COMMAND` stays off until the operator sets `HOMELAB_HELPER_ASSERT_SSH_COMMANDS=1`
 - [x] **12.3 Maintenance & playbook ergonomics**
-  - [x] Plan-drafting playbooks for rolling upgrades (`pve-updates`, `talos-eol`, `k8s-eol`) so playbooks draft or coordinate with a drain-aware `MaintenanceRun`
-  - [x] Proxmox maintenance post-reboot kernel currency check (`uname -r` vs `/lib/modules`) and Ceph `HEALTH_OK` / clean-PG health gate
-  - [x] QEMU Guest Agent in-guest memory probing so `engine/rightsizing.py` can propose `mem-grow` for VMs when real in-guest memory is constrained
+  - [x] Rolling-upgrade playbooks (`pve-updates`, `talos-eol`, `k8s-eol`) draft the single step and, for the first two, name the `helper maintenance plan…` command for the whole run
+  - [ ] A playbook that drafts the `MaintenanceRun` itself (a first version was removed: nothing called it), and a maintenance command for a Kubernetes-only upgrade (`plan-talos` needs `--to`)
+  - [x] Proxmox maintenance post-reboot kernel currency check (`uname -r` vs `/lib/modules`) and a Ceph health gate between steps of `maintenance run`: `HEALTH_OK`, or a warning that is only the operator's own flags (`noout`), with no degraded objects; an unreadable status stops the run
+  - [ ] QEMU Guest Agent in-guest memory probing so `engine/rightsizing.py` can propose `mem-grow` for VMs. The rightsizing side accepts a `guest_agent_memory` usage sample; nothing produces one yet (a reader that guessed at Proxmox fields was removed)
 - [x] **12.4 Multi-site depth & time-of-day baselines**
   - [x] Hour-of-day / weekday percentile bands and per-subject `expected_window` declarations in `engine/baselines.py`
   - [x] Multi-instance Home Assistant support (`HOMELAB_HELPER_HASS_INSTANCES`) and `device_tracker.*` / device registry identity correlation
@@ -1457,16 +1458,19 @@ See `roadmap.md` Phase 13. Closes the operational follow-ups across off-site/non
 
 - [x] **13.1 Off-site & multi-target backup posture + restore drills**
   - [x] Correlate Home Assistant off-site replication / backup sensors (`backup-offsite-stale`) and operator-declared non-Proxmox backup targets (`HOMELAB_HELPER_BACKUP_TARGETS` → `backup-target-stale` / `backup-target-uncovered`) in `engine/backups.py` and `engine/discoverers.py`
-  - [x] Record auditable restore-drill verifications (`record_restore_drill`, CLI/MCP) that clear `backup-verify` / `backup-unverified` findings
+  - [x] Record auditable restore-drill verifications (`helper discover restore-drill`) that clear `backup-verify` findings
+  - [ ] The same through MCP
 - [x] **13.2 GPU & TLS probe depth + image/firmware currency**
   - [x] Extend `probes/host/gpu.py` and `engine/reconciler.py` with bound driver, VRAM size, and active compute status; use VRAM and busy state in `engine/placement.py` and `engine/suggestions.py`
-  - [x] Extract TLS certificate subject, SANs, issuer, and expiry days on HTTPS ports in `probes/network/fingerprint.py` (`tls-cert-expiring`)
-  - [x] Add unpinned container image tag (`image-tag-unpinned`) and MikroTik/OMV version checks in `engine/versions.py`, plus per-drive temperature baseline departures (`disk-temp-anomaly`) in `engine/disk_health.py`
+  - [x] Extract TLS certificate subject, SANs, issuer, and expiry days on HTTPS ports in `probes/network/fingerprint.py`
+  - [ ] Open `tls-cert-expiring` findings from it (`tls_expiry_issues` builds them; no discovery pass calls it)
+  - [x] Add unpinned container image tag (`image-tag-unpinned`) checks in `engine/versions.py`, plus per-drive temperature baseline departures (`disk-temp-anomaly`) in `engine/disk_health.py`
+  - [ ] MikroTik/OMV version checks (`appliance_version_issues` builds them; `discover versions` does not call it)
 - [x] **13.3 Daemon probe/assertion cadences, power-policy gating & new playbooks**
   - [x] Add `probes:` and `assertions:` cadences to `engine/schedule.py` and `cli/daemon.py` with `OperationalIntent.EXPECTED_OFF` power-policy gating (P2-AC4)
   - [x] Add `guest-stopped` (expected-on guest observed stopped) and post-resize VM `restart` playbooks in `engine/playbooks.py`, plus optional scheduled digest notifications
 - [x] **13.4 NetBox deep sync & secret reference hardening**
-  - [x] Extend `adapters/netbox.py` to sync host NIC interfaces, primary IPs, discovered VLANs/prefixes, and `Service` / `ServiceEndpoint` records
+  - [ ] Extend `adapters/netbox.py` to sync host NIC interfaces, primary IPs, discovered VLANs/prefixes, and `Service` / `ServiceEndpoint` records. A first version was removed: it matched rows by name and patched them, so it would have overwritten operator-entered objects, and no command called it. It needs an ownership marker (as `discovered=True` is for InventoryItems) before it returns
   - [x] Support `op://` and `vault://` secret reference schemes in `secrets.py`, resolve `Host.credentials_ref` through `secrets.py`, and redact CLI-printed adapter errors
 
 ## Not tracked here

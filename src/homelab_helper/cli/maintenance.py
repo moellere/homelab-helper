@@ -37,6 +37,7 @@ from homelab_helper.engine.maintenance import (
     execute_maintenance,
     plan_maintenance,
     plan_talos_maintenance,
+    proxmox_ceph_health_gate,
     talos_health_gate,
 )
 from homelab_helper.engine.notify import notifier_from_env
@@ -256,7 +257,11 @@ def maintenance_run(
                         k8s_adapter=factories.k8s_if_available(),
                         argocd_adapter=factories.argocd_if_configured(),
                         talos_adapter=talos,
-                        health_cb=talos_health_gate(talos, run.node) if talos else None,
+                        health_cb=(
+                            talos_health_gate(talos, run.node)
+                            if talos
+                            else proxmox_ceph_health_gate(adapter)
+                        ),
                         notifier=notifier_from_env(),
                     )
                 except MaintenanceError as exc:

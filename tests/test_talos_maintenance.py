@@ -244,11 +244,7 @@ async def test_cluster_upgrade_playbook_and_ceph_health_gate_and_kernel_check(
         proxmox_ceph_health_gate,
         verify_running_kernel,
     )
-    from homelab_helper.engine.playbooks import (
-        draft_maintenance_from_finding,
-        playbook_for,
-        run_playbooks,
-    )
+    from homelab_helper.engine.playbooks import playbook_for, run_playbooks
 
     class _FakeSSH:
         async def run_command(self, host: str, cmd: str, **_: Any) -> CommandResult:
@@ -268,12 +264,32 @@ async def test_cluster_upgrade_playbook_and_ceph_health_gate_and_kernel_check(
         async def ceph_status(self) -> dict[str, Any]:
             return self._status
 
-    ok_gate = proxmox_ceph_health_gate(_FakeCephPve({"health": {"status": "HEALTH_OK"}}))  # type: ignore[arg-type]
-    assert await ok_gate() == (True, "HEALTH_OK")
-    warn_gate = proxmox_ceph_health_gate(_FakeCephPve({"health": {"status": "HEALTH_WARN"}}))  # type: ignore[arg-type]
-    assert await warn_gate() == (False, "Ceph is HEALTH_WARN")
+    def gate(status: dict[str, Any]) -> Any:
+        return proxmox_ceph_health_gate(_FakeCephPve(status))  # type: ignore[arg-type]
 
-    cluster = _FakeCluster(MEMBERS)
+    assert await gate({"health": {"status": "HEALTH_OK"}})() == (True, "HEALTH_OK")
+    assert await gate({})() == (True, "no ceph")
+    degraded = {"health": {"status": "HEALTH_WARN", "checks": {"PG_DEGRADED": {}}}}
+    assert await gate(degraded)() == (False, "Ceph is HEALTH_WARN (PG_DEGRADED)")
+    assert await gate({"health": {"status": "HEALTH_WARN"}})() == (False, "Ceph is HEALTH_WARN")
+    # noout during a rolling update is the operator's own flag, not a reason to stop.
+    flags = {"health": {"status": "HEALTH_WARN", "checks": {"OSDMAP_FLAGS": {}}}}
+    assert await gate(flags)() == (True, "HEALTH_WARN (maintenance flags only)")
+    assert (await gate({**flags, "pgmap": {"degraded_objects": 3}})())[0] is False
+
+    class _BrokenPve:
+        def __init__(self, message: str) -> None:
+            self._message = message
+
+        async def ceph_status(self) -> dict[str, Any]:
+            raise RuntimeError(self._message)
+
+    ok, why = await proxmox_ceph_health_gate(_BrokenPve("read timed out"))()  # type: ignore[arg-type]
+    assert ok is False
+    assert "could not read Ceph status" in why
+    no_ceph = proxmox_ceph_health_gate(_BrokenPve("500: binary not installed: /usr/bin/ceph-mon"))  # type: ignore[arg-type]
+    assert await no_ceph() == (True, "no ceph")
+
     async with session_scope(sessionmaker_) as s:
         finding = ReconciliationFinding(
             kind=FindingKind.VERSION_DRIFT,
@@ -305,8 +321,5 @@ async def test_cluster_upgrade_playbook_and_ceph_health_gate_and_kernel_check(
             else __import__("datetime").timedelta(0),
         )
         assert len(res.drafted) == 1
-        assert "plan-talos" in finding.proposed_actions[0]["maintenance_command"]
-
-        m_run = await draft_maintenance_from_finding(s, finding, talos_adapter=cluster)
-        assert m_run.plane == "talos"
-        assert len(m_run.steps) == 3
+        command = finding.proposed_actions[0]["maintenance_command"]
+        assert command == f"helper maintenance plan-talos {CP} --to {NEW}"

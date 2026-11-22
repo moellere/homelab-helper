@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -316,7 +317,8 @@ async def test_other_verifier_kinds_skip_with_clear_reason(
     assert result.error
 
 
-async def test_ssh_command_and_file_hash_verifiers(sessionmaker) -> None:
+async def test_ssh_command_and_file_hash_verifiers(sessionmaker, monkeypatch) -> None:
+    monkeypatch.setenv("HOMELAB_HELPER_ASSERT_SSH_COMMANDS", "1")
     from homelab_helper.adapters.kernel_ssh import CommandResult
 
     class _FakeSSH:
@@ -431,6 +433,112 @@ async def test_http_check_and_api_query_verifiers(sessionmaker) -> None:
     assert r_http_tls.status == AssertionStatus.FAIL
     assert r_api.status == AssertionStatus.PASS
     assert r_api.evidence["observed"] is True
+
+
+async def test_ssh_command_is_off_until_the_operator_turns_it_on(sessionmaker, monkeypatch) -> None:
+    monkeypatch.delenv("HOMELAB_HELPER_ASSERT_SSH_COMMANDS", raising=False)
+    ran: list[str] = []
+
+    class _FakeSSH:
+        async def run_command(self, host: str, cmd: str, **_: Any) -> Any:
+            ran.append(cmd)
+            raise AssertionError("the command must not run")
+
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        host.credentials_ref = "ssh:root:/tmp/id_ed25519"
+        a = _make_assertion(
+            "svc-active", host, kind=AssertionKind.SSH_COMMAND, spec={"command": "reboot"}
+        )
+        s.add(a)
+        await s.flush()
+        result = await AssertionEngine(ssh_adapter=_FakeSSH()).run_assertion(s, a)
+
+    assert result.status == AssertionStatus.SKIP
+    assert "HOMELAB_HELPER_ASSERT_SSH_COMMANDS" in (result.error or "")
+    assert ran == []
+    assert result.finding_opened is False
+
+
+async def test_http_check_sends_only_get_or_head(sessionmaker) -> None:
+    sent: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.method)
+        return httpx.Response(200, text="ok")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    try:
+        async with session_scope(sessionmaker) as s:
+            host = await _seed_host(s)
+            rows = {
+                m: _make_assertion(
+                    f"http-{m}",
+                    host,
+                    kind=AssertionKind.HTTP_CHECK,
+                    spec={"url": "https://svc.example/api", "method": m},
+                )
+                for m in ("head", "POST", "DELETE")
+            }
+            s.add_all(rows.values())
+            await s.flush()
+            eng = AssertionEngine(http_client=client)
+            got = {m: await eng.run_assertion(s, a) for m, a in rows.items()}
+    finally:
+        await client.aclose()
+
+    assert got["head"].status == AssertionStatus.PASS
+    assert got["POST"].status == AssertionStatus.ERROR
+    assert got["DELETE"].status == AssertionStatus.ERROR
+    assert sent == ["HEAD"]
+
+
+async def test_api_query_reaches_only_listed_reads(sessionmaker) -> None:
+    called: list[str] = []
+
+    class _FakeProxmox:
+        async def cluster_status(self) -> list[dict[str, Any]]:
+            called.append("cluster_status")
+            return [{"quorate": 1}]
+
+        async def reboot_node(self) -> None:
+            called.append("reboot_node")
+
+        async def aclose(self) -> None:
+            called.append("aclose")
+
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        write = _make_assertion(
+            "sneaky-write",
+            host,
+            kind=AssertionKind.API_QUERY,
+            spec={"source": "proxmox", "query": "reboot_node", "predicate": "exists"},
+        )
+        closer = _make_assertion(
+            "sneaky-close",
+            host,
+            kind=AssertionKind.API_QUERY,
+            spec={"source": "proxmox", "query": "aclose", "predicate": "exists"},
+        )
+        bad_source = _make_assertion(
+            "not-a-factory",
+            host,
+            kind=AssertionKind.API_QUERY,
+            spec={"source": "for_action", "query": "nodes", "predicate": "exists"},
+        )
+        s.add_all([write, closer, bad_source])
+        await s.flush()
+        eng = AssertionEngine(adapters={"proxmox": _FakeProxmox()})
+        r_write = await eng.run_assertion(s, write)
+        r_close = await eng.run_assertion(s, closer)
+        r_source = await eng.run_assertion(s, bad_source)
+
+    assert r_write.status == AssertionStatus.ERROR
+    assert r_close.status == AssertionStatus.ERROR
+    assert r_source.status == AssertionStatus.ERROR
+    assert "unknown adapter source" in (r_source.error or "")
+    assert called == []
 
 
 # ---------------------------------------------------------------------------

@@ -257,6 +257,7 @@ async def test_findings_without_a_playbook_are_left_alone(sessionmaker) -> None:
         "workload-restart",
         "rightsize",
         "node-update",
+        "cluster-upgrade",
     }
 
 

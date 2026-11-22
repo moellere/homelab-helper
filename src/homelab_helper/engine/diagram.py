@@ -18,6 +18,7 @@ import html
 import ipaddress
 import re
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -69,6 +70,8 @@ class DiagramModel:
     nodes: dict[str, DiagramNode] = field(default_factory=dict)
     edges: list[DiagramEdge] = field(default_factory=list)
     stats: dict[str, int] = field(default_factory=dict)
+    stale: list[str] = field(default_factory=list)
+    """Host node ids whose ``last_verified`` is older than ``since`` (or missing)."""
 
 
 def _slug(prefix: str, name: str) -> str:
@@ -151,7 +154,20 @@ async def _read_rows(session: AsyncSession, site: str | None, topology: Topology
     )
 
 
-def _host_lines(h: Host, rows: _Rows, include_guests: bool) -> tuple[str, ...]:
+def _is_stale(h: Host, since: Any) -> bool:
+    if since is None:
+        return False
+    verified = h.last_verified
+    if verified is None:
+        return True
+    if verified.tzinfo is None and since.tzinfo is not None:
+        verified = verified.replace(tzinfo=UTC)
+    return bool(verified < since)
+
+
+def _host_lines(
+    h: Host, rows: _Rows, include_guests: bool, *, stale: bool = False
+) -> tuple[str, ...]:
     lines: list[str] = []
     if h.primary_ip:
         lines.append(h.primary_ip)
@@ -162,10 +178,14 @@ def _host_lines(h: Host, rows: _Rows, include_guests: bool) -> tuple[str, ...]:
         lines.append("guests: " + ", ".join(names) + (f" +{extra} more" if extra else ""))
     if n := rows.findings_on[h.id]:
         lines.append(f"{n} open finding" + ("s" if n != 1 else ""))
+    if stale:
+        lines.append("unverified")
     return tuple(lines)
 
 
-async def _add_clusters(session: AsyncSession, model: DiagramModel, rows: _Rows) -> None:
+async def _add_clusters(
+    session: AsyncSession, model: DiagramModel, rows: _Rows, *, include_guests: bool = True
+) -> None:
     clusters = {c.id: c for c in (await session.execute(select(Cluster))).scalars().all()}
     membership = await cluster_nodes(session, rows.hosts, kinds=None)  # every kind, k8s too
     for cluster_id, members in sorted(
@@ -177,8 +197,20 @@ async def _add_clusters(session: AsyncSession, model: DiagramModel, rows: _Rows)
             continue
         cid = _slug("c", cluster.name)
         count = cluster.node_count if cluster.node_count is not None else len(members)
+        clines: list[str] = [f"{cluster.kind}, {count} nodes"]
+        workloads = sorted(
+            {
+                str(w["name"])
+                for w in ((cluster.attributes or {}).get("workloads") or [])
+                if isinstance(w, dict) and w.get("name")
+            }
+        )
+        if include_guests and workloads:
+            shown = workloads[:MAX_GUESTS_LISTED]
+            extra = len(workloads) - len(shown)
+            clines.append("workloads: " + ", ".join(shown) + (f" +{extra} more" if extra else ""))
         model.nodes[cid] = DiagramNode(
-            id=cid, kind="cluster", label=cluster.name, lines=(f"{cluster.kind}, {count} nodes",)
+            id=cid, kind="cluster", label=cluster.name, lines=tuple(clines)
         )
         for host_id in sorted(members, key=lambda i: rows.node_id_of.get(i, "")):
             if host_id in rows.node_id_of:
@@ -226,24 +258,29 @@ async def build_model(
     include_guests: bool = True,
     topology: Topology | None = None,
     use_topology_file: bool = True,
+    since: Any = None,
 ) -> DiagramModel:
     """The inventory as a graph. ``site`` keeps one site's hosts (and the clusters and
-    services that touch them); ``topology`` overrides the file for tests."""
+    services that touch them); ``topology`` overrides the file for tests; ``since``
+    marks hosts whose ``last_verified`` is older than ``since`` (or missing) as stale."""
     if topology is None and use_topology_file:
         topology = load_topology()
     model = DiagramModel()
     rows = await _read_rows(session, site, topology)
     for h in rows.hosts:
         nid = rows.node_id_of[h.id]
+        stale = _is_stale(h, since)
+        if stale:
+            model.stale.append(nid)
         model.nodes[nid] = DiagramNode(
             id=nid,
             kind="host",
             label=h.hostname,
-            lines=_host_lines(h, rows, include_guests),
+            lines=_host_lines(h, rows, include_guests, stale=stale),
             site=rows.host_site[h.id],
         )
         model.sites.setdefault(rows.host_site[h.id], []).append(nid)
-    await _add_clusters(session, model, rows)
+    await _add_clusters(session, model, rows, include_guests=include_guests)
     services_drawn = await _add_services(session, model, rows) if include_services else 0
     model.stats = {
         "sites": len(model.sites),
@@ -280,6 +317,8 @@ def render_mermaid(model: DiagramModel, *, direction: str = "LR") -> str:
     for e in model.edges:
         arrow = "-.->" if e.style == "dashed" else "-->"
         out.append(f'  {e.src} {arrow}|"{html.escape(e.label, quote=True)}"| {e.dst}')
+    for nid in model.stale:
+        out.append(f"  style {nid} fill:#f0f0f0,stroke:#999,color:#777,stroke-dasharray: 4 2")
     if not model.nodes:
         out.append('  empty["nothing discovered yet — run helper discover"]')
     return "\n".join(out) + "\n"
@@ -312,7 +351,7 @@ def render_html(model: DiagramModel, *, title: str = "Homelab") -> str:
 
 
 def to_dict(model: DiagramModel) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "sites": {site: list(ids) for site, ids in model.sites.items()},
         "nodes": [
             {"id": n.id, "kind": n.kind, "label": n.label, "lines": list(n.lines), "site": n.site}
@@ -323,6 +362,9 @@ def to_dict(model: DiagramModel) -> dict[str, Any]:
         ],
         "stats": dict(model.stats),
     }
+    if model.stale:
+        out["stale"] = list(model.stale)
+    return out
 
 
 __all__ = [

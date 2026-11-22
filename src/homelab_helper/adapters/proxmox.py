@@ -381,6 +381,32 @@ class ProxmoxAdapter:
         """``/cluster/ceph/metadata``: per-daemon metadata incl. ``ceph_version``; ``{}`` without Ceph."""
         return await self._request("GET", "/cluster/ceph/metadata") or {}
 
+    async def ceph_status(self) -> dict[str, Any]:
+        """``/cluster/ceph/status``: cluster health (``HEALTH_OK``, ``pgmap``); ``{}`` without Ceph."""
+        return await self._request("GET", "/cluster/ceph/status") or {}
+
+    async def guest_agent_memory(self, node: str, vmid: int) -> dict[str, int] | None:
+        """Read real in-guest memory usage (excluding page cache) when QEMU Guest Agent reports it.
+
+        Proxmox exposes ``meminfo`` / ``freemem`` under ``/nodes/{node}/qemu/{vmid}/status/current``
+        when ``agent=1`` and the guest agent is running, or via ``/agent/exec`` / memory-block info.
+        Returns ``{"mem_used_bytes": ..., "mem_total_bytes": ...}`` when in-guest free/available
+        memory is reported, or ``None`` when only host balloon metrics exist.
+        """
+        status = await self.vm_current_status(node, vmid, "qemu")
+        total = int(status.get("maxmem") or 0)
+        if not total:
+            return None
+        meminfo = status.get("meminfo")
+        if isinstance(meminfo, dict):
+            avail = meminfo.get("memavailable") or meminfo.get("free_mem") or meminfo.get("freemem")
+            if isinstance(avail, int | float) and 0 <= avail <= total:
+                return {"mem_used_bytes": int(total - avail), "mem_total_bytes": total}
+        freemem = status.get("freemem")
+        if status.get("agent") and isinstance(freemem, int | float) and 0 < freemem <= total:
+            return {"mem_used_bytes": int(total - freemem), "mem_total_bytes": total}
+        return None
+
     async def version(self) -> dict[str, Any]:
         return await self._request("GET", "/version") or {}
 

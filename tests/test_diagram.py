@@ -270,3 +270,47 @@ async def test_mcp_tool(lab: str) -> None:
     got = await diagram_tool(site="siteb", format="json")
     assert list(got["graph"]["sites"]) == ["siteb"]
     assert "error" in await diagram_tool(format="png")
+    assert "error" in await diagram_tool(since="not-an-interval")
+
+
+async def test_diagram_lists_k8s_workloads_and_shades_stale_hosts(lab: str) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    now = datetime.now(UTC)
+    engine = make_engine(lab)
+    try:
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as session:
+            hv0 = (await session.execute(select(Host).where(Host.hostname == "hv0"))).scalar_one()
+            hv0.last_verified = now
+            k8s = Cluster(
+                name="k8s",
+                kind="kubernetes",
+                node_count=1,
+                attributes={
+                    "nodes": ["edge2"],
+                    "workloads": [
+                        {"id": "default/deployment/homepage", "name": "homepage"},
+                        {"id": "monitoring/statefulset/prometheus", "name": "prometheus"},
+                    ],
+                },
+            )
+            session.add(k8s)
+        async with sm() as session:
+            model = await build_model(
+                session,
+                topology=load_topology(),
+                since=now - timedelta(hours=1),
+            )
+    finally:
+        await engine.dispose()
+
+    assert "workloads: homepage, prometheus" in model.nodes["c_k8s"].lines
+    assert "h_hv0" not in model.stale
+    assert "h_hv1" in model.stale
+    assert "unverified" in model.nodes["h_hv1"].lines
+    mermaid = render_mermaid(model)
+    assert "style h_hv1 " in mermaid
+    assert "stale" in to_dict(model)

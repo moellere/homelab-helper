@@ -353,3 +353,44 @@ def test_memory_trend_needs_a_commitment_that_can_cross_the_line() -> None:
     assert [i.category for i in over] == ["memory-headroom"]
     # Unknown commitment (no guest rows): judged on the trend alone.
     assert [i.category for i in node_issues("n", "h", ramp, now=NOW)] == ["memory-headroom"]
+
+
+async def test_mounted_filesystems_from_host_storage_devices(sessionmaker) -> None:
+    from homelab_helper.probes.host.storage import mounted_filesystems_from_devices
+
+    devices = [
+        {
+            "name": "nvme0n1",
+            "type": "disk",
+            "size_bytes": 500 * G,
+            "children": [
+                {
+                    "name": "nvme0n1p1",
+                    "type": "part",
+                    "size_bytes": 100 * G,
+                    "fsavail_bytes": 10 * G,
+                    "mountpoint": "/",
+                },
+                {
+                    "name": "nvme0n1p2",
+                    "type": "part",
+                    "fssize_bytes": 400 * G,
+                    "fsused_bytes": 350 * G,
+                    "mountpoint": "/srv/data",
+                },
+            ],
+        }
+    ]
+    extracted = mounted_filesystems_from_devices(devices)
+    assert [(r["mountpoint"], r["size_bytes"], r["used_bytes"]) for r in extracted] == [
+        ("/", 100 * G, 90 * G),
+        ("/srv/data", 400 * G, 350 * G),
+    ]
+    async with session_scope(sessionmaker) as s:
+        w = await record_filesystem_samples(s, "worker0", extracted, now=NOW)
+        assert w.inserted == 2
+        rows = (await s.execute(select(UsageSample))).scalars().all()
+        assert {r.subject_key: r.disk_used for r in rows} == {
+            "worker0:/": 90 * G,
+            "worker0:/srv/data": 350 * G,
+        }

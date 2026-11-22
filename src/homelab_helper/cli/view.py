@@ -35,6 +35,7 @@ from homelab_helper.db.models import (
     VirtualMachine,
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker
+from homelab_helper.engine.k8s_workloads import persisted_k8s_workloads
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,7 +115,7 @@ def _print_split_brain(endpoints: list[ServiceEndpoint]) -> None:
 async def _print_service_crossrefs(
     session: AsyncSession, service: Service, endpoints: list[ServiceEndpoint]
 ) -> None:
-    """Any VM or Host carrying the service's name (or an endpoint IP)."""
+    """Any VM, Kubernetes workload, or Host carrying the service's name (or an endpoint IP)."""
     vm = (
         await session.execute(select(VirtualMachine).where(VirtualMachine.name == service.name))
     ).scalar_one_or_none()
@@ -125,6 +126,13 @@ async def _print_service_crossrefs(
             f"\n[bold]hosted[/bold]: VM [cyan]{vm.name}[/cyan] "
             f"(cluster {cname}, node {vm.node_name or '?'}, status {vm.status or '?'})"
         )
+
+    for w in await persisted_k8s_workloads(session):
+        if w.get("name") == service.name:
+            console.print(
+                f"\n[bold]workload[/bold]: [cyan]{w['id']}[/cyan] "
+                f"(cluster {w.get('cluster') or '?'}, {w.get('ready', 0)}/{w.get('desired', 0)} ready)"
+            )
 
     endpoint_ips = [ep.ip for ep in endpoints if ep.ip]
     host = (

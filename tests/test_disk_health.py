@@ -268,3 +268,69 @@ async def test_reconciler_opens_disk_findings_per_host_and_resolves_on_replaceme
             .all()
         )
         assert len(still_open) == 2
+
+
+async def test_raid_member_drive_links_to_physical_part_and_escalates_on_degraded_array(
+    sessionmaker,  # noqa: F811
+) -> None:
+    from homelab_helper.db.models import PhysicalPart
+    from homelab_helper.engine.raid_health import parent_disk_name
+
+    assert parent_disk_name("/dev/sda1") == "sda"
+    assert parent_disk_name("nvme0n1p2") == "nvme0n1"
+
+    arrays = [
+        {
+            "name": "md0",
+            "level": "raid5",
+            "state": "active",
+            "raid_disks": 3,
+            "active_disks": 2,
+            "degraded": True,
+            "uuid": "1111:2222",
+            "members": [
+                {"device": "sda1", "slot": 0, "state": "active"},
+                {"device": "sdb1", "slot": 1, "state": "faulty"},
+            ],
+        }
+    ]
+    issues = disk_issues(
+        HOST,
+        "nas",
+        [_drive(name="/dev/sda", serial="S1", health_passed=False)],
+        now=NOW,
+        arrays=arrays,
+    )
+    assert len(issues) == 1
+    assert issues[0].severity is FindingSeverity.CRITICAL
+    assert issues[0].evidence["raid_array"] == "md0"
+    assert issues[0].evidence["raid_degraded"] is True
+    assert ("raid-array", f"{HOST}/md0") in issues[0].also_affects
+
+    async with session_scope(sessionmaker) as s:
+        nas = await _seed_host(s, "nas-raid")
+        run = await _seed_run(s, nas.id, "host.storage")
+        await _record_observations(
+            s,
+            run.id,
+            nas.id,
+            {
+                "host.storage.devices": [
+                    {
+                        "name": "sda",
+                        "type": "disk",
+                        "size_bytes": 1000,
+                        "rotational": True,
+                        "transport": "sata",
+                        "serial": "SER-A",
+                        "wwn": "0x5000c500a1b2c3d4",
+                        "model": "WD Red",
+                    }
+                ],
+                "host.raid.arrays": arrays,
+            },
+        )
+        await Reconciler().reconcile_host(s, nas.id)
+        part = (await s.execute(select(PhysicalPart))).scalar_one()
+        assert part.attributes["raid_array"]["array"] == "md0"
+        assert part.attributes["raid_array"]["device"] == "sda1"

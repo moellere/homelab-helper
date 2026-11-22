@@ -58,7 +58,10 @@ from homelab_helper.engine.jetkvm import (
     snapshot_dir,
 )
 from homelab_helper.engine.k8s_import import discover_k8s_nodes
-from homelab_helper.engine.k8s_workloads import reconcile_workload_health
+from homelab_helper.engine.k8s_workloads import (
+    persisted_k8s_workloads,
+    reconcile_workload_health,
+)
 from homelab_helper.engine.printwarden import reconcile_printwarden
 from homelab_helper.engine.retention import prune_history
 from homelab_helper.engine.retire import retired_host_ids
@@ -76,7 +79,10 @@ from homelab_helper.engine.stray_export import reconcile_stray_exports
 from homelab_helper.engine.suggestions import (
     building_block_issues,
     idle_gpu_issues,
+    image_names,
+    missing_dependency_issues,
     present_names,
+    unit_names,
 )
 from homelab_helper.engine.usage import GUEST_FIELDS as USAGE_GUEST_FIELDS
 from homelab_helper.engine.usage import NODE_EXTRA as USAGE_NODE_EXTRA
@@ -231,7 +237,9 @@ async def _discover_k8s(session: AsyncSession) -> dict[str, Any]:
     adapter = factories.k8s()
     now = datetime.now(UTC)
     result = await discover_k8s_nodes(session, adapter, when=now)
-    health = await reconcile_workload_health(session, await adapter.list_workloads(), when=now)
+    health = await reconcile_workload_health(
+        session, await adapter.list_workloads(), when=now, cluster_name=result.cluster
+    )
     return {
         "nodes_seen": result.nodes_seen,
         "hosts_matched": len(result.hosts_matched),
@@ -313,22 +321,34 @@ async def _discover_printwarden(session: AsyncSession) -> dict[str, Any]:
 
 
 async def _discover_hass(session: AsyncSession) -> dict[str, Any]:
-    adapter = factories.hass()
-    try:
-        config = await adapter.get_config()
-        states = await adapter.list_states()
-        service_domains = await adapter.list_service_domains()
-    finally:
-        await adapter.aclose()
-    result = await import_home_assistant(
-        session,
-        config=config,
-        states=states,
-        service_domains=service_domains,
-        url=adapter.config.url,
-        when=datetime.now(UTC),
-    )
-    return result.as_dict()
+    adapters = factories.hass_all()
+    results = []
+    now = datetime.now(UTC)
+    for adapter in adapters:
+        try:
+            config = await adapter.get_config()
+            states = await adapter.list_states()
+            service_domains = await adapter.list_service_domains()
+        finally:
+            await adapter.aclose()
+        results.append(
+            await import_home_assistant(
+                session,
+                config=config,
+                states=states,
+                service_domains=service_domains,
+                url=adapter.config.url,
+                when=now,
+                service_name=adapter.config.service_name,
+                resolver=adapter.config.resolver,
+            )
+        )
+    if len(results) == 1:
+        return results[0].as_dict()
+    return {
+        **results[0].as_dict(),
+        "instances": [r.as_dict() for r in results],
+    }
 
 
 async def _discover_mikrotik(session: AsyncSession) -> dict[str, Any]:
@@ -446,12 +466,12 @@ async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
     observed |= host_observed
 
     try:
-        hass = factories.hass()
-        try:
-            states = await hass.list_states()
-        finally:
-            await hass.aclose()
-        issues += hass_update_issues("home-assistant", states)
+        for hass in factories.hass_all():
+            try:
+                states = await hass.list_states()
+            finally:
+                await hass.aclose()
+            issues += hass_update_issues(hass.config.service_name, states)
         observed.add("hass-updates")
     except Exception as exc:
         errors["hass"] = redact(str(exc))
@@ -506,10 +526,10 @@ async def _discover_backups(session: AsyncSession) -> dict[str, Any]:
 
 
 async def _discover_suggestions(session: AsyncSession) -> dict[str, Any]:
-    """Phase 8.7: capability the lab owns but does not use, from stored facts only.
+    """Phase 8.7 / 12.1: capability the lab owns but does not use, from stored facts only.
 
     Reads the harness DB and the workload library — no adapter calls, so it
-    cannot fail for a source being down and both categories are always
+    cannot fail for a source being down and all categories are always
     observed.
     """
     retired = await retired_host_ids(session)
@@ -525,15 +545,27 @@ async def _discover_suggestions(session: AsyncSession) -> dict[str, Any]:
     )
     services = (await session.execute(select(Service.name))).scalars().all()
     endpoints = (await session.execute(select(ServiceEndpoint.hostname))).scalars().all()
-    present = present_names(guests, services, endpoints)
+    k8s_workloads = await persisted_k8s_workloads(session)
+    w_names = [str(w["name"]) for w in k8s_workloads if w.get("name")]
+    w_images = image_names(
+        img for w in k8s_workloads for img in (w.get("images") or []) if isinstance(img, str)
+    )
+    h_units = unit_names(
+        u for _hid, _hname, caps in hosts for u in (caps.get("running_services") or [])
+    )
+    present = present_names(guests, services, endpoints, w_names, w_images, h_units)
 
     library = load_workload_library()
-    issues = idle_gpu_issues(hosts, library, present) + building_block_issues(library, present)
+    issues = (
+        idle_gpu_issues(hosts, library, present)
+        + building_block_issues(library, present)
+        + missing_dependency_issues(library, present)
+    )
     result = await reconcile_category_findings(
         session,
         FindingKind.SERVICE_SUGGESTION,
         issues,
-        {"capability-idle-gpu", "building-block-missing"},
+        {"capability-idle-gpu", "building-block-missing", "dependency-missing"},
     )
     return {
         "findings": result.counts(),

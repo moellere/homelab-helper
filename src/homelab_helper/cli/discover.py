@@ -539,7 +539,7 @@ def discover_k8s() -> None:
                 now = datetime.now(UTC)
                 result = await discover_k8s_nodes(session, adapter, when=now)
                 health = await reconcile_workload_health(
-                    session, await adapter.list_workloads(), when=now
+                    session, await adapter.list_workloads(), when=now, cluster_name=result.cluster
                 )
             console.print(
                 f"[green]k8s[/green]: {result.nodes_seen} node(s) — "
@@ -1346,38 +1346,45 @@ def discover_hass(
         help="Upsert the home-assistant Service (+ endpoint) into the harness DB.",
     ),
 ) -> None:
-    """Read a Home Assistant instance (read-only): version, integrations, entities."""
+    """Read Home Assistant instance(s) (read-only): version, integrations, entities."""
 
     async def _go() -> int:
-        adapter = factories.hass()
-        try:
-            ok, err = await adapter.health_check()
-            if not ok:
-                console.print(f"[red]home assistant unreachable:[/red] {err}")
-                return 1
-            config = await adapter.get_config()
-            states = await adapter.list_states()
-            service_domains = await adapter.list_service_domains()
-        finally:
-            await adapter.aclose()
+        adapters = factories.hass_all()
+        reads: list[tuple[Any, dict[str, Any], list[dict[str, Any]], list[str]]] = []
+        for adapter in adapters:
+            try:
+                ok, err = await adapter.health_check()
+                if not ok:
+                    console.print(f"[red]home assistant unreachable:[/red] {err}")
+                    continue
+                config = await adapter.get_config()
+                states = await adapter.list_states()
+                service_domains = await adapter.list_service_domains()
+                reads.append((adapter, config, states, service_domains))
+            finally:
+                await adapter.aclose()
 
-        by_domain = summarize_states(states)
-        integrations = integrations_of_interest(config["components"])
-        console.print(
-            f"[cyan]home assistant[/cyan] {config.get('version') or '?'} "
-            f"at {config.get('location_name') or '?'}: {len(states)} entit(ies) across "
-            f"{len(by_domain)} domain(s), {len(config['components'])} component(s) loaded"
-        )
-        if integrations:
-            console.print(f"[bold]integrations of interest[/bold]: {', '.join(integrations)}")
+        if not reads:
+            return 1
 
-        table = Table(title="entities by domain")
-        for col in ("domain", "entities"):
-            table.add_column(col, no_wrap=True)
-        for domain, count in by_domain.items():
-            table.add_row(domain, str(count))
-        console.print(table)
-        console.print(f"[dim]service domains: {len(service_domains)}[/dim]")
+        for _adapter, config, states, service_domains in reads:
+            by_domain = summarize_states(states)
+            integrations = integrations_of_interest(config["components"])
+            console.print(
+                f"[cyan]home assistant[/cyan] {config.get('version') or '?'} "
+                f"at {config.get('location_name') or '?'}: {len(states)} entit(ies) across "
+                f"{len(by_domain)} domain(s), {len(config['components'])} component(s) loaded"
+            )
+            if integrations:
+                console.print(f"[bold]integrations of interest[/bold]: {', '.join(integrations)}")
+
+            table = Table(title="entities by domain")
+            for col in ("domain", "entities"):
+                table.add_column(col, no_wrap=True)
+            for domain, count in by_domain.items():
+                table.add_row(domain, str(count))
+            console.print(table)
+            console.print(f"[dim]service domains: {len(service_domains)}[/dim]")
 
         if not persist:
             return 0
@@ -1385,21 +1392,28 @@ def discover_hass(
         try:
             sm = make_sessionmaker(engine)
             async with session_scope(sm) as session:
-                result = await import_home_assistant(
-                    session,
-                    config=config,
-                    states=states,
-                    service_domains=service_domains,
-                    url=adapter.config.url,
-                    when=datetime.now(UTC),
-                )
+                now = datetime.now(UTC)
+                results = [
+                    await import_home_assistant(
+                        session,
+                        config=config,
+                        states=states,
+                        service_domains=service_domains,
+                        url=adapter.config.url,
+                        when=now,
+                        service_name=adapter.config.service_name,
+                        resolver=adapter.config.resolver,
+                    )
+                    for adapter, config, states, service_domains in reads
+                ]
         finally:
             await engine.dispose()
-        verb = "created" if result.created else "updated"
-        console.print(
-            f"[green]persisted[/green]: service {result.service!r} {verb}"
-            + (f", endpoint {result.endpoint_hostname}" if result.endpoint_hostname else "")
-        )
+        for result in results:
+            verb = "created" if result.created else "updated"
+            console.print(
+                f"[green]persisted[/green]: service {result.service!r} {verb}"
+                + (f", endpoint {result.endpoint_hostname}" if result.endpoint_hostname else "")
+            )
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))

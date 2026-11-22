@@ -228,3 +228,73 @@ async def test_evaluate_reconciles_and_resolves_when_back_in_band(sessionmaker) 
 
 def test_history_window_is_the_declared_number_of_days() -> None:
     assert BASELINE_DAYS == 28
+
+
+def test_expected_window_detects_nightly_workload_going_silent() -> None:
+    # A nightly backup workload runs at 02:00..04:00 UTC (CPU ~0.6, network ~800 KB/s)
+    # and is idle (0.01 CPU) the rest of the day.
+    end_ts = datetime(2026, 10, 11, 4, 0, tzinfo=UTC)
+    samples = _series(20 * 24, cpu=0.01, net=2 * K, jitter=0.0)
+    base = end_ts.replace(tzinfo=None) - timedelta(hours=len(samples) - 1)
+    for idx, s in enumerate(samples):
+        s.ts = base + timedelta(hours=idx)
+        if 2 <= s.ts.hour <= 4:
+            s.cpu = 0.6
+            s.net_in = s.net_out = 400 * K
+
+    # When the nightly run happens normally, expected_window=(2, 4) raises nothing.
+    issues, judged = subject_issues(
+        "workload",
+        "default/nightly-backup",
+        "nightly-backup",
+        samples,
+        now=end_ts,
+        expected_window=(2, 4),
+    )
+    assert issues == []
+    assert "cpu-below-baseline" in judged
+
+    # When the nightly workload stays silent during its expected window (02:00..04:00),
+    # it triggers cpu-below-baseline and network-below-baseline.
+    for s in samples[-DEPARTURE_HOURS:]:
+        s.cpu = 0.01
+        s.net_in = s.net_out = 1 * K
+    issues, _ = subject_issues(
+        "workload",
+        "default/nightly-backup",
+        "nightly-backup",
+        samples,
+        now=end_ts,
+        expected_window=(2, 4),
+    )
+    assert _cats(issues) == {
+        "cpu-below-baseline": FindingSeverity.LOW,
+        "network-below-baseline": FindingSeverity.LOW,
+    }
+    assert issues[0].evidence["band"]["expected_window"] == [2, 4]
+
+
+def test_hourly_bands_judge_against_time_of_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    from homelab_helper.engine.baselines import expected_windows_from_env, hourly_band_for
+
+    samples = _series(20 * 24, cpu=0.1, net=100 * K, jitter=0.0)
+    for s in samples:
+        if 11 <= s.ts.hour <= 13:
+            s.cpu = 0.5
+    band = hourly_band_for(samples[:-DEPARTURE_HOURS], "cpu", 12)
+    assert band is not None
+    assert band.p50 == pytest.approx(0.5)
+
+    # At 12:00 UTC, CPU=0.5 is normal for midday under hourly_bands=True.
+    issues, _ = subject_issues(
+        "guest",
+        "lab/105",
+        "ha (105)",
+        samples,
+        now=NOW,
+        hourly_bands=True,
+    )
+    assert issues == []
+
+    monkeypatch.setenv("HOMELAB_HELPER_BASELINE_WINDOWS", "lab/105=2-4, default/backup=22-1")
+    assert expected_windows_from_env() == {"lab/105": (2, 4), "default/backup": (22, 1)}

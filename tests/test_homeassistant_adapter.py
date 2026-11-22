@@ -189,3 +189,46 @@ def test_built_client_sends_bearer_header() -> None:
     client = adapter.client
     assert client.headers["Authorization"] == "Bearer tok"
     assert str(client.base_url).rstrip("/") == "http://ha.example.lan:8123"
+
+
+def test_all_from_env_and_extract_device_trackers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from homelab_helper.adapters.homeassistant import extract_device_trackers
+
+    monkeypatch.setenv("HOMELAB_HELPER_HASS_INSTANCES", "main, cabin")
+    monkeypatch.setenv("HOMELAB_HELPER_HASS_MAIN_URL", "http://ha-main.lan:8123")
+    monkeypatch.setenv("HOMELAB_HELPER_HASS_MAIN_TOKEN", "tok-main")
+    monkeypatch.setenv("HOMELAB_HELPER_HASS_CABIN_URL", "https://ha-cabin.lan:8123")
+    monkeypatch.setenv("HOMELAB_HELPER_HASS_CABIN_TOKEN", "tok-cabin")
+    monkeypatch.setenv("HOMELAB_HELPER_HASS_CABIN_VERIFY_SSL", "false")
+    configs = HomeAssistantConfig.all_from_env()
+    assert [(c.name, c.service_name, c.resolver, c.verify_ssl) for c in configs] == [
+        ("main", "home-assistant-main", "home-assistant:main", True),
+        ("cabin", "home-assistant-cabin", "home-assistant:cabin", False),
+    ]
+
+    raw_states = [
+        {
+            "entity_id": "device_tracker.nas_box",
+            "state": "home",
+            "attributes": {
+                "friendly_name": "NAS Box",
+                "ip": "10.0.1.20",
+                "mac": "AA:BB:CC:DD:EE:FF",
+                "host_name": "nas",
+                "source_type": "router",
+            },
+        },
+        STATES_PAYLOAD[0],
+    ]
+    parsed = [parse_state(r) for r in raw_states]
+    trackers = extract_device_trackers(parsed)
+    assert trackers == [
+        {
+            "entity_id": "device_tracker.nas_box",
+            "state": "home",
+            "ip": "10.0.1.20",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "host_name": "nas",
+            "source_type": "router",
+        }
+    ]

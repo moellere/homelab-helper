@@ -322,6 +322,42 @@ class K8sAdapter:
 WORKLOAD_KINDS: tuple[str, ...] = ("deployment", "statefulset", "daemonset")
 
 
+def _template_resources(
+    containers: list[Any], replicas: int
+) -> tuple[list[str], dict[str, float | int | None]]:
+    """Extract container images and replica-scaled resource requests/limits from a pod template."""
+    images: list[str] = []
+    totals: dict[str, float | int] = {
+        "cpu_request": 0.0,
+        "cpu_limit": 0.0,
+        "mem_request": 0,
+        "mem_limit": 0,
+    }
+    unset: set[str] = set()
+    scale = max(replicas, 1)
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        img = c.get("image")
+        if isinstance(img, str) and img and img not in images:
+            images.append(img)
+        res = c.get("resources") or {}
+        for field, source, parse in (
+            ("cpu_request", (res.get("requests") or {}).get("cpu"), parse_cpu_cores),
+            ("cpu_limit", (res.get("limits") or {}).get("cpu"), parse_cpu_cores),
+            ("mem_request", (res.get("requests") or {}).get("memory"), parse_quantity),
+            ("mem_limit", (res.get("limits") or {}).get("memory"), parse_quantity),
+        ):
+            val = parse(source)
+            if val is None:
+                unset.add(field)
+            else:
+                totals[field] += val * scale
+    if not containers:
+        return [], dict.fromkeys(totals)
+    return images, {k: None if k in unset else v for k, v in totals.items()}
+
+
 def parse_workload(raw: dict[str, Any]) -> dict[str, Any]:
     """Shape one workload into ``{namespace, kind, name, desired, ready, settled, ...}``.
 
@@ -355,6 +391,11 @@ def parse_workload(raw: dict[str, Any]) -> dict[str, Any]:
         for c in (status.get("conditions") or [])
         if isinstance(c, dict)
     }
+    pod_spec = ((spec.get("template") or {}).get("spec") or {}) if isinstance(spec, dict) else {}
+    containers = pod_spec.get("containers") if isinstance(pod_spec, dict) else None
+    images, resources = _template_resources(
+        containers if isinstance(containers, list) else [], desired
+    )
     return {
         "namespace": meta.get("namespace"),
         "kind": kind,
@@ -364,6 +405,8 @@ def parse_workload(raw: dict[str, Any]) -> dict[str, Any]:
         "settled": settled,
         "available": conditions.get("Available"),
         "progressing": conditions.get("Progressing"),
+        "images": images,
+        **resources,
     }
 
 
@@ -394,10 +437,10 @@ def workload_usage(
     """Sum metrics-server usage and declared resources per workload.
 
     Per workload: ``cpu_cores`` used, ``mem_bytes`` used, ``cpu_limit`` /
-    ``cpu_request`` and ``mem_limit`` summed over the pods' containers (None
-    when any container leaves it unset), and ``pods`` counted. Pods without a
-    metrics entry (just scheduled, or a node whose kubelet is not answering)
-    contribute their requests but no usage.
+    ``cpu_request`` and ``mem_limit`` / ``mem_request`` summed over the pods'
+    containers (None when any container leaves it unset), and ``pods`` counted.
+    Pods without a metrics entry (just scheduled, or a node whose kubelet is not
+    answering) contribute their requests but no usage.
     """
     usage: dict[tuple[str, str], tuple[float, int]] = {}
     for item in metrics:
@@ -426,6 +469,7 @@ def workload_usage(
                 "cpu_limit": 0.0,
                 "cpu_request": 0.0,
                 "mem_limit": 0,
+                "mem_request": 0,
                 "_unset": set(),
             },
         )
@@ -439,6 +483,7 @@ def workload_usage(
                 ("cpu_limit", (res.get("limits") or {}).get("cpu"), parse_cpu_cores),
                 ("cpu_request", (res.get("requests") or {}).get("cpu"), parse_cpu_cores),
                 ("mem_limit", (res.get("limits") or {}).get("memory"), parse_quantity),
+                ("mem_request", (res.get("requests") or {}).get("memory"), parse_quantity),
             ):
                 value = parse(source)
                 if value is None:

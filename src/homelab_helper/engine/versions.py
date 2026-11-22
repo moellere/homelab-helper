@@ -310,8 +310,33 @@ def _minor(version: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _recommended_version(
+    key: str, minor: str, entry: dict[str, Any], table: dict[str, Any]
+) -> str | None:
+    if isinstance(entry.get("recommended"), str):
+        return str(entry["recommended"])
+    basis = str(entry.get("basis") or "")
+    if key == "talos":
+        m = re.search(r"v\d+\.\d+\.\d+", basis)
+        return m.group(0) if m else None
+    if key == "kubernetes":
+        parts = minor.split(".")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():  # noqa: PLR2004
+            next_minor = f"{parts[0]}.{int(parts[1]) + 1}"
+            if next_minor in (table.get("kubernetes") or {}):
+                return f"{next_minor}.0"
+    return None
+
+
 def _eol_issue(
-    category: str, product: str, minor: str, nodes: list[str], entry: dict[str, Any], today: date
+    category: str,
+    product: str,
+    minor: str,
+    nodes: list[str],
+    entry: dict[str, Any],
+    today: date,
+    *,
+    recommended_version: str | None = None,
 ) -> CategoryIssue | None:
     eol = entry["eol"] if isinstance(entry["eol"], date) else date.fromisoformat(entry["eol"])
     remaining = eol - today
@@ -319,6 +344,15 @@ def _eol_issue(
         return None
     past = remaining.days < 0
     name = f"{product} {minor}"
+    evidence: dict[str, Any] = {
+        "product": product,
+        "minor": minor,
+        "eol": eol.isoformat(),
+        "days_remaining": remaining.days,
+        "nodes": nodes,
+    }
+    if recommended_version:
+        evidence["recommended_version"] = recommended_version
     return VersionIssue(
         category=category,
         target_type="cluster",
@@ -334,13 +368,7 @@ def _eol_issue(
             + ("no longer receives patches." if past else "plan the upgrade before then.")
             + f" Nodes: {', '.join(nodes)}."
         ),
-        evidence={
-            "product": product,
-            "minor": minor,
-            "eol": eol.isoformat(),
-            "days_remaining": remaining.days,
-            "nodes": nodes,
-        },
+        evidence=evidence,
     )
 
 
@@ -373,7 +401,16 @@ def k8s_eol_issues(
         for minor, nodes in sorted(minors.items()):
             entry = (table.get(key) or {}).get(minor)
             if entry:
-                issue = _eol_issue(category, product, minor, sorted(nodes), entry, today)
+                rec = _recommended_version(key, minor, entry, table)
+                issue = _eol_issue(
+                    category,
+                    product,
+                    minor,
+                    sorted(nodes),
+                    entry,
+                    today,
+                    recommended_version=rec,
+                )
                 if issue is not None:
                     issues.append(issue)
     return issues, observed

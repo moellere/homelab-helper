@@ -43,7 +43,8 @@ from homelab_helper.engine.category_findings import (
     CategoryResult,
     reconcile_category_findings,
 )
-from homelab_helper.engine.usage import HOUR, summarize_many
+from homelab_helper.engine.k8s_workloads import persisted_k8s_workloads
+from homelab_helper.engine.usage import HOUR, WORKLOAD, summarize_many
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,8 +66,8 @@ IDLE_NET_BYTES = 2048.0
 _GIB = 1024**3
 
 
-def _issue(**kw: Any) -> CategoryIssue:
-    return CategoryIssue(kind=FindingKind.RIGHTSIZING, target_type="guest", **kw)
+def _issue(*, target_type: str = "guest", **kw: Any) -> CategoryIssue:
+    return CategoryIssue(kind=FindingKind.RIGHTSIZING, target_type=target_type, **kw)
 
 
 def _gib(x: float) -> str:
@@ -100,6 +101,110 @@ def guest_issues(
         )
         for i in issues
     ]
+
+
+def workload_issues(
+    key: str, name: str, s: dict[str, Any], window_days: int
+) -> list[CategoryIssue]:
+    """Rules for one Kubernetes workload's summary (Phase 12.1).
+
+    Pod working-set memory from metrics-server does not include host balloon page
+    cache, so ``mem-grow`` and ``mem-shrink`` both apply when a memory allocation
+    (limit or request) was recorded.
+    """
+    issues: list[CategoryIssue] = []
+    label = f"{name} ({key})"
+    cpus, cpu_p95, cpu_peak = s.get("cpus"), s.get("cpu_p95"), s.get("cpu_peak")
+    if cpus and cpu_p95 is not None and cpu_peak is not None:
+        evidence = {
+            "allocated_cores": cpus,
+            "cpu_p95": round(cpu_p95, 3),
+            "cpu_peak": round(cpu_peak, 3),
+            "window_days": window_days,
+            "workload": key,
+            "name": name,
+        }
+        if cpu_p95 >= CPU_GROW_P95:
+            step = 0.25 if cpus < 1.0 else 1.0
+            proposed = round(max(cpus + step, cpus * cpu_p95 / CPU_TARGET), 2)
+            hot = cpu_p95 >= CPU_HOT_P95 or cpu_peak >= 1.0
+            issues.append(
+                _issue(
+                    target_type="workload",
+                    category="cpu-grow",
+                    target_id=key,
+                    severity=FindingSeverity.MEDIUM if hot else FindingSeverity.LOW,
+                    title=f"{label}: CPU-bound on {cpus:g} core(s) — propose {proposed:g}",
+                    description=(
+                        f"Over {window_days} days workload {label} used {cpu_p95:.0%} of its {cpus:g} core(s) "
+                        f"at p95 and peaked at {cpu_peak:.0%}. {proposed:g} core(s) would put the p95 "
+                        f"near {CPU_TARGET:.0%}."
+                    ),
+                    evidence={**evidence, "proposed_cores": proposed},
+                )
+            )
+        elif cpus >= 0.5 and cpu_peak < CPU_SHRINK_PEAK:  # noqa: PLR2004
+            proposed = max(0.25, round(cpus * cpu_peak / CPU_SHRINK_TARGET, 2))
+            if proposed < cpus:
+                issues.append(
+                    _issue(
+                        target_type="workload",
+                        category="cpu-shrink",
+                        target_id=key,
+                        severity=FindingSeverity.LOW,
+                        title=f"{label}: {cpus:g} cores, never above {cpu_peak:.0%} — propose {proposed:g}",
+                        description=(
+                            f"Over {window_days} days workload {label} peaked at {cpu_peak:.0%} of {cpus:g} core(s) "
+                            f"(p95 {cpu_p95:.0%}). {proposed:g} core(s) would cover that peak with headroom."
+                        ),
+                        evidence={**evidence, "proposed_cores": proposed},
+                    )
+                )
+
+    total, mem_p95, mem_peak = s.get("mem_total"), s.get("mem_p95"), s.get("mem_peak")
+    if total and mem_peak is not None and mem_p95 is not None:
+        evidence = {
+            "allocated_bytes": total,
+            "mem_p95_bytes": round(mem_p95),
+            "mem_peak_bytes": round(mem_peak),
+            "window_days": window_days,
+            "workload": key,
+            "name": name,
+        }
+        proposed_mem = _round_up(mem_peak * MEM_HEADROOM, MEM_STEP)
+        if total - proposed_mem >= MEM_MIN_SAVING and total >= MEM_SHRINK_RATIO * proposed_mem:
+            issues.append(
+                _issue(
+                    target_type="workload",
+                    category="mem-shrink",
+                    target_id=key,
+                    severity=FindingSeverity.LOW,
+                    title=f"{label}: {_gib(total)} allocated, peak {_gib(mem_peak)} — propose {_gib(proposed_mem)}",
+                    description=(
+                        f"Over {window_days} days workload {label} peaked at {_gib(mem_peak)} (p95 {_gib(mem_p95)}) "
+                        f"of {_gib(total)}. {_gib(proposed_mem)} keeps {MEM_HEADROOM - 1:.0%} above the peak "
+                        f"and frees {_gib(total - proposed_mem)}."
+                    ),
+                    evidence={**evidence, "proposed_bytes": proposed_mem},
+                )
+            )
+        elif mem_p95 >= MEM_GROW_P95 * total:
+            grown = _round_up(max(mem_peak, mem_p95) * MEM_HEADROOM, MEM_STEP)
+            issues.append(
+                _issue(
+                    target_type="workload",
+                    category="mem-grow",
+                    target_id=key,
+                    severity=FindingSeverity.MEDIUM,
+                    title=f"{label}: memory at {mem_p95 / total:.0%} p95 — propose {_gib(grown)}",
+                    description=(
+                        f"Over {window_days} days workload {label} used {_gib(mem_p95)} at p95 "
+                        f"(peak {_gib(mem_peak)}) of {_gib(total)}."
+                    ),
+                    evidence={**evidence, "proposed_bytes": grown},
+                )
+            )
+    return issues
 
 
 def _guest_rules(
@@ -179,8 +284,11 @@ def _guest_rules(
                     evidence={**evidence, "proposed_bytes": proposed_mem},
                 )
             )
-        elif kind == "lxc" and mem_p95 >= MEM_GROW_P95 * total:
+        elif (
+            kind == "lxc" or bool(s.get("guest_agent_memory"))
+        ) and mem_p95 >= MEM_GROW_P95 * total:
             grown = _round_up(max(mem_peak, mem_p95) * MEM_HEADROOM, MEM_STEP)
+            label_kind = "VM (in-guest via QEMU Guest Agent)" if kind == "qemu" else "container"
             issues.append(
                 _issue(
                     category="mem-grow",
@@ -188,10 +296,18 @@ def _guest_rules(
                     severity=FindingSeverity.MEDIUM,
                     title=f"{label}: memory at {mem_p95 / total:.0%} p95 — propose {_gib(grown)}",
                     description=(
-                        f"Over {window_days} days container {label} used {_gib(mem_p95)} at p95 "
+                        f"Over {window_days} days {label_kind} {label} used {_gib(mem_p95)} at p95 "
                         f"(peak {_gib(mem_peak)}) of {_gib(total)}."
                     ),
-                    evidence={**evidence, "proposed_bytes": grown},
+                    evidence={
+                        **evidence,
+                        "proposed_bytes": grown,
+                        **(
+                            {"guest_agent_memory": True}
+                            if kind == "qemu" and s.get("guest_agent_memory")
+                            else {}
+                        ),
+                    },
                 )
             )
 
@@ -225,7 +341,7 @@ def _guest_rules(
 async def evaluate(
     session: AsyncSession, *, window: timedelta = timedelta(days=30), now: datetime | None = None
 ) -> tuple[list[CategoryIssue], set[tuple[str, str]], list[str]]:
-    """``(issues, evaluated targets, skipped guest labels)`` over running guests."""
+    """``(issues, evaluated targets, skipped labels)`` over running guests and Kubernetes workloads."""
     rows = (
         await session.execute(
             select(VirtualMachine, Cluster).join(Cluster, Cluster.id == VirtualMachine.cluster_id)
@@ -263,6 +379,37 @@ async def evaluate(
             continue
         evaluated.add(("guest", key))
         issues += guest_issues(key, vm.name or key, vm.kind or "qemu", s, days, vm.node_name)
+
+    persisted_by_id = {
+        str(w["id"]): w for w in await persisted_k8s_workloads(session) if w.get("id")
+    }
+    w_summaries = await summarize_many(
+        session,
+        subject_type=WORKLOAD,
+        subject_keys=None,
+        window=window,
+        resolution=HOUR,
+        now=now,
+    )
+    for key in sorted(w_summaries):
+        s = w_summaries[key]
+        pw = persisted_by_id.get(key) or {}
+        if pw and int(pw.get("desired", 1)) == 0:
+            continue
+        name = str(pw.get("name") or s.get("label") or key.rsplit("/", 1)[-1])
+        if (s.get("samples") or 0) < MIN_SAMPLES:
+            changed = s.get("allocation_changed_at")
+            if changed:
+                evaluated.add(("workload", key))
+                skipped.append(
+                    f"{name} ({key}): resized {changed[:10]}, "
+                    f"{s.get('samples', 0)} hourly bucket(s) since"
+                )
+            else:
+                skipped.append(f"{name} ({key}): {s.get('samples', 0)} hourly bucket(s)")
+            continue
+        evaluated.add(("workload", key))
+        issues += workload_issues(key, name, s, days)
     return issues, evaluated, skipped
 
 
@@ -321,4 +468,5 @@ __all__ = [
     "guest_issues",
     "reconcile_rightsizing",
     "rightsizing_report",
+    "workload_issues",
 ]

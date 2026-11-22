@@ -313,7 +313,124 @@ async def test_other_verifier_kinds_skip_with_clear_reason(
         result = await AssertionEngine().run_assertion(s, a)
 
     assert result.status == AssertionStatus.SKIP
-    assert "not yet implemented" in (result.error or "")
+    assert result.error
+
+
+async def test_ssh_command_and_file_hash_verifiers(sessionmaker) -> None:
+    from homelab_helper.adapters.kernel_ssh import CommandResult
+
+    class _FakeSSH:
+        async def run_command(self, host: str, cmd: str, **_: Any) -> CommandResult:
+            del host
+            if "sha256sum" in cmd:
+                return CommandResult(
+                    command=cmd,
+                    stdout="abc123def  /etc/resolv.conf\n",
+                    stderr="",
+                    exit_code=0,
+                )
+            return CommandResult(command=cmd, stdout="active\n", stderr="", exit_code=0)
+
+    async with session_scope(sessionmaker) as s:
+        host = await _seed_host(s)
+        host.credentials_ref = "ssh:root:/tmp/id_ed25519"
+        ssh_a = _make_assertion(
+            "e1000e-active",
+            host,
+            kind=AssertionKind.SSH_COMMAND,
+            spec={"command": "systemctl is-active e1000e-fix.service", "stdout_eq": "active"},
+        )
+        hash_pass = _make_assertion(
+            "resolv-hash",
+            host,
+            kind=AssertionKind.FILE_HASH,
+            spec={"path": "/etc/resolv.conf", "sha256": "ABC123DEF"},
+        )
+        hash_fail = _make_assertion(
+            "resolv-hash-bad",
+            host,
+            kind=AssertionKind.FILE_HASH,
+            spec={"path": "/etc/resolv.conf", "sha256": "deadbeef"},
+        )
+        s.add_all([ssh_a, hash_pass, hash_fail])
+        await s.flush()
+
+        eng = AssertionEngine(ssh_adapter=_FakeSSH())
+        r_ssh = await eng.run_assertion(s, ssh_a)
+        r_hp = await eng.run_assertion(s, hash_pass)
+        r_hf = await eng.run_assertion(s, hash_fail)
+
+    assert r_ssh.status == AssertionStatus.PASS
+    assert r_hp.status == AssertionStatus.PASS
+    assert r_hf.status == AssertionStatus.FAIL
+    assert r_hf.finding_opened is True
+
+
+async def test_http_check_and_api_query_verifiers(sessionmaker) -> None:
+    import httpx
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="Home Assistant API running.")
+
+    class _FakeProxmox:
+        async def cluster_status(self) -> dict[str, Any]:
+            return {"name": "lab", "quorate": True, "node_count": 4}
+
+    async def _tls_days(_url: str) -> int:
+        return 45
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    try:
+        async with session_scope(sessionmaker) as s:
+            host = await _seed_host(s)
+            http_pass = _make_assertion(
+                "ha-http-ok",
+                host,
+                kind=AssertionKind.HTTP_CHECK,
+                spec={
+                    "url": "https://ha.lan:8123/api/",
+                    "expected_status": 200,
+                    "body_contains": "API running",
+                    "min_tls_days": 14,
+                },
+            )
+            http_tls_fail = _make_assertion(
+                "ha-tls-soon",
+                host,
+                kind=AssertionKind.HTTP_CHECK,
+                spec={"url": "https://ha.lan:8123/api/", "min_tls_days": 60},
+            )
+            api_pass = _make_assertion(
+                "pve-quorate",
+                host,
+                kind=AssertionKind.API_QUERY,
+                spec={
+                    "source": "proxmox",
+                    "query": "cluster_status",
+                    "key": "quorate",
+                    "predicate": "eq",
+                    "value": True,
+                },
+            )
+            s.add_all([http_pass, http_tls_fail, api_pass])
+            await s.flush()
+
+            eng = AssertionEngine(
+                http_client=client,
+                adapters={"proxmox": _FakeProxmox()},
+                tls_days_fn=_tls_days,
+            )
+            r_http_ok = await eng.run_assertion(s, http_pass)
+            r_http_tls = await eng.run_assertion(s, http_tls_fail)
+            r_api = await eng.run_assertion(s, api_pass)
+    finally:
+        await client.aclose()
+
+    assert r_http_ok.status == AssertionStatus.PASS
+    assert r_http_ok.evidence["tls_days_remaining"] == 45
+    assert r_http_tls.status == AssertionStatus.FAIL
+    assert r_api.status == AssertionStatus.PASS
+    assert r_api.evidence["observed"] is True
 
 
 # ---------------------------------------------------------------------------

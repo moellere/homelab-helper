@@ -25,6 +25,8 @@ LSBLK_COLUMNS: tuple[str, ...] = (
     "TYPE",
     "SIZE",
     "FSTYPE",
+    "FSSIZE",
+    "FSUSED",
     "FSAVAIL",
     "MOUNTPOINT",
     "MOUNTPOINTS",
@@ -51,6 +53,9 @@ class BlockDevice(BaseModel):
     name: str
     type: str | None = None  # disk / part / lvm / raid / loop / rom / ...
     size_bytes: int | None = None
+    fssize_bytes: int | None = None
+    fsused_bytes: int | None = None
+    fsavail_bytes: int | None = None
     fstype: str | None = None
     mountpoint: str | None = None
     model: str | None = None
@@ -103,6 +108,9 @@ def _node_to_device(node: dict[str, Any], parent: str | None = None) -> BlockDev
         name=node.get("name", ""),
         type=node.get("type"),
         size_bytes=_coerce_int(node.get("size")),
+        fssize_bytes=_coerce_int(node.get("fssize")),
+        fsused_bytes=_coerce_int(node.get("fsused")),
+        fsavail_bytes=_coerce_int(node.get("fsavail")),
         fstype=node.get("fstype"),
         mountpoint=mp,
         model=(node.get("model") or "").strip() or None,
@@ -130,6 +138,60 @@ def parse_lsblk_json(content: str) -> list[BlockDevice]:
         for node in blocks:
             devices.append(_node_to_device(node))
     return devices
+
+
+def mounted_filesystems_from_devices(
+    devices: list[dict[str, Any]] | list[BlockDevice],
+) -> list[dict[str, Any]]:
+    """Extract mounted filesystem usage records (``mountpoint``, ``size_bytes``, ``used_bytes``)
+    from a ``host.storage.devices`` tree for ``record_filesystem_samples``."""
+    out: dict[str, dict[str, Any]] = {}
+
+    def _walk(items: list[Any]) -> None:
+        for raw in items:
+            node = raw.model_dump() if isinstance(raw, BlockDevice) else raw
+            if not isinstance(node, dict):
+                continue
+            mp = node.get("mountpoint")
+            if isinstance(mp, str) and mp.startswith("/"):
+                size = _coerce_int(
+                    node.get("fssize_bytes")
+                    or node.get("fssize")
+                    or node.get("size_bytes")
+                    or node.get("size")
+                )
+                used = _coerce_int(
+                    node.get("fsused_bytes")
+                    if node.get("fsused_bytes") is not None
+                    else node.get("fsused")
+                    if node.get("fsused") is not None
+                    else node.get("used_bytes")
+                )
+                avail = _coerce_int(
+                    node.get("fsavail_bytes")
+                    if node.get("fsavail_bytes") is not None
+                    else node.get("fsavail")
+                )
+                if used is None and size is not None and avail is not None and 0 <= avail <= size:
+                    used = size - avail
+                if size is not None and size > 0 and used is not None and 0 <= used <= size:
+                    name = str(node.get("name") or mp)
+                    out.setdefault(
+                        mp,
+                        {
+                            "mountpoint": mp,
+                            "device": name,
+                            "label": name,
+                            "size_bytes": size,
+                            "used_bytes": used,
+                        },
+                    )
+            children = node.get("children")
+            if isinstance(children, list) and children:
+                _walk(children)
+
+    _walk(list(devices))
+    return list(out.values())
 
 
 class HostStorageOutput(BaseModel):
@@ -235,5 +297,6 @@ __all__ = [
     "BlockDevice",
     "HostStorageOutput",
     "HostStorageProbe",
+    "mounted_filesystems_from_devices",
     "parse_lsblk_json",
 ]

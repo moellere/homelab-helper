@@ -606,14 +606,51 @@ and rollback as everything else, with a one-command undo.
 
 ---
 
-## Post-roadmap (Phase 12+)
+## Phase 12 — Workload Depth, Live Verifiers & Operational Maturity
+
+Phases 1 to 11 built the inventory, the multi-source adapters, the planners, the trust gradient, predictive operations, and Talos as a managed plane. Four structural seams remain where one half of the framework records facts that another half cannot yet consume: Kubernetes workloads are checked for health and sampled for usage but never persisted as inventory rows; four of five `AssertionKind` verifiers are still stubbed despite their adapters existing; `host.raid` arrays are not yet linked to their member `PhysicalPart` drives (#77); and rolling maintenance / baseline checks still carry first-generation rough edges from live runs. Phase 12 closes those four seams.
+
+### Goals
+
+- Make Kubernetes workloads first-class persisted inventory alongside Proxmox guests so rightsizing, service suggestions, views, and diagrams see what actually runs on the cluster.
+- Link RAID arrays to their member `PhysicalPart` drives and wire the remaining four live `AssertionKind` verifiers (`HTTP_CHECK`, `SSH_COMMAND`, `FILE_HASH`, `API_QUERY`).
+- Let playbooks draft multi-step maintenance plans for rolling upgrades, add post-reboot kernel and Ceph health gates to Proxmox maintenance runs, and use QEMU Guest Agent in-guest memory for VM rightsizing.
+- Deepen multi-site and longitudinal operations: hour-of-day / expected-window baselines, multi-instance Home Assistant + device-tracker identity, and host filesystem capacity trends outside Proxmox/OMV.
+
+### Slices, in delivery order
+
+| # | Slice | Delivers |
+|---|---|---|
+| 12.1 | **First-class workload inventory & container rightsizing** | Persist Kubernetes workloads during `discover k8s` (namespace, kind, name, images, requests/limits; reaped on removal from a non-empty listing); extend `engine/rightsizing.py` to evaluate 11.4 `workload` usage samples against K8s requests/limits; match `engine/suggestions.py` against container images, `host.services` systemd units, and `depends_on` chains; render persisted workloads and `--since` staleness shading in `engine/diagram.py` and `helper view service`. |
+| 12.2 | **RAID volume lineage (#77) & live assertion verifiers** | Link `host.raid` arrays to their member `PhysicalPart` drives (partition → parent disk → WWN/serial) so `engine/disk_health.py` and `engine/raid_health.py` correlate failing drives with array redundancy and `helper host show` renders array lineage; wire `HTTP_CHECK` (status, regex, TLS cert expiry days), `SSH_COMMAND`, `FILE_HASH`, and `API_QUERY` in `engine/assertions.py`. |
+| 12.3 | **Maintenance & playbook ergonomics** | Plan-drafting playbooks for rolling upgrades (`pve-updates`, `talos-eol`, `k8s-eol` → `MaintenanceRun` or linked drain-aware plan); Proxmox maintenance post-reboot kernel check (`uname -r` vs `/lib/modules`) and Ceph `HEALTH_OK` / clean-PG health gate; QEMU Guest Agent in-guest memory reading so `engine/rightsizing.py` can safely propose `mem-grow` for VMs. |
+| 12.4 | **Multi-site depth & time-of-day baselines** | Hour-of-day / weekday bands and per-subject `expected_window` in `engine/baselines.py`; multi-instance Home Assistant (`HOMELAB_HELPER_HASS_INSTANCES`) + `device_tracker.*` / device registry identity correlation; host filesystem usage (`host.storage` `fsavail`/`fssize`) recorded into daily `filesystem` `UsageSample` rows so `engine/capacity.py` projects time-to-full for all probed hosts. |
+
+### Acceptance criteria
+
+1. **`discover k8s` persists Kubernetes workloads and reaps removed ones**, `helper plan rightsize` evaluates `workload` usage against K8s CPU/memory requests, `discover suggestions` matches running images and systemd units, and `helper diagram` renders workloads and `--since` staleness.
+2. **A failing drive in an mdraid array names its array and redundancy state**, escalating to `CRITICAL` when the array is already degraded, and all five `AssertionKind` verifiers execute against their adapters/transports without stubbed `SKIP`s.
+3. **A rolling-upgrade playbook drafts a drain-aware maintenance run**, Proxmox maintenance verifies the running kernel and Ceph health between steps, and a QEMU VM with Guest Agent memory readings receives `mem-grow` rightsizing when starved.
+4. **A nightly workload silent during its `expected_window` raises an anomaly finding**, multiple Home Assistant instances and `device_tracker` identities reconcile cleanly, and non-Proxmox probed hosts receive filesystem time-to-full projections.
+
+### Effort
+
+**6–10 weeks.** 12.1 and 12.2 complete existing data models and engine dispatch tables; 12.3 refines maintenance sequencing and rightsizing inputs; 12.4 extends history and multi-site adapters.
+
+### Stop-here value
+
+Every half of the harness consumes what the other halves already collect — containers, arrays, verifiers, maintenance runs, and baselines all operate at full depth across the whole fleet.
+
+---
+
+## Post-roadmap (Phase 13+)
 
 These are real future phases, deliberately not committed in this roadmap:
 
 - **Multi-tenant + hosted service**. The Nabu-Casa-style subscription tier — managed LLM access, off-site backup, remote access, mobile push, community template marketplace.
 - **Heterogeneous architecture support beyond Linux**. FreeBSD probes (TrueNAS Core, pfSense/OPNsense), macOS probes (Mac mini servers), Windows probes (Windows hosts in mixed labs).
 
-Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–11). Predictive operations became Phase 10; Talos as a managed plane became Phase 11.
+Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–12). Predictive operations became Phase 10; Talos as a managed plane became Phase 11; workload depth, live verifiers, and operational maturity became Phase 12.
 
 ---
 

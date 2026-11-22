@@ -90,6 +90,10 @@ def test_memory_shrink_needs_a_real_saving() -> None:
 def test_vm_memory_never_grows_but_a_full_container_does() -> None:
     full = _summary(mem_total=12 * G, mem_p95=11.5 * G, mem_peak=11.6 * G)
     assert "mem-grow" not in _cats(guest_issues("lab/105", "ha", "qemu", full, 30))
+    qga = _cats(guest_issues("lab/105", "ha", "qemu", {**full, "guest_agent_memory": True}, 30))
+    assert qga["mem-grow"].severity is FindingSeverity.MEDIUM
+    assert qga["mem-grow"].evidence["guest_agent_memory"] is True
+    assert "QEMU Guest Agent" in qga["mem-grow"].description
     lxc = _cats(guest_issues("lab/200", "ct", "lxc", full, 30))
     assert lxc["mem-grow"].severity is FindingSeverity.MEDIUM
     assert lxc["mem-grow"].evidence["proposed_bytes"] > 12 * G
@@ -244,3 +248,59 @@ async def test_resize_inside_the_window_closes_the_finding_and_restarts_history(
         assert "5 hourly bucket(s) since" in skipped[0]
         rows = (await s.execute(select(ReconciliationFinding))).scalars().all()
         assert [r.status for r in rows] == [FindingStatus.RESOLVED]
+
+
+async def test_kubernetes_workload_rightsizing_evaluates_cpu_and_memory(sessionmaker) -> None:
+    from homelab_helper.engine.k8s_workloads import reconcile_workload_health
+    from homelab_helper.engine.usage import WORKLOAD
+
+    async with session_scope(sessionmaker) as s:
+        await reconcile_workload_health(
+            s,
+            [
+                {
+                    "namespace": "apps",
+                    "kind": "deployment",
+                    "name": "homepage",
+                    "desired": 1,
+                    "ready": 1,
+                    "settled": True,
+                    "images": ["ghcr.io/gethomepage/homepage:v0.9"],
+                    "cpu_limit": 0.5,
+                    "mem_limit": 2 * G,
+                }
+            ],
+            cluster_name="k8s-lab",
+        )
+        start = (NOW - timedelta(hours=MIN_SAMPLES + 4)).replace(tzinfo=None)
+        buckets = [
+            Bucket(
+                ts=start + timedelta(hours=h),
+                values={
+                    "cpu": 0.85,
+                    "cpu_max": 0.95,
+                    "cpus": 0.5,
+                    "mem_used": int(1.9 * G),
+                    "mem_used_max": int(1.95 * G),
+                    "mem_total": 2 * G,
+                },
+            )
+            for h in range(MIN_SAMPLES + 4)
+        ]
+        await record_usage(
+            s,
+            subject_type=WORKLOAD,
+            subject_key="apps/deployment/homepage",
+            label="homepage",
+            resolution=HOUR,
+            buckets=buckets,
+        )
+        result, issues, skipped = await reconcile_rightsizing(s, now=NOW)
+        assert skipped == []
+        cats = {i.category: i for i in issues}
+        assert set(cats) == {"cpu-grow", "mem-grow"}
+        assert cats["cpu-grow"].target_type == "workload"
+        assert cats["cpu-grow"].target_id == "apps/deployment/homepage"
+        assert cats["cpu-grow"].evidence["proposed_cores"] > 0.5
+        assert cats["mem-grow"].evidence["proposed_bytes"] > 2 * G
+        assert result.counts()["opened"] == 2

@@ -39,11 +39,18 @@ from sqlalchemy import select
 from homelab_helper.db.enums import FindingKind, FindingStatus, ProposalOutcome
 from homelab_helper.db.models import ProposalLog, ReconciliationFinding
 from homelab_helper.engine.category_findings import category_of
+from homelab_helper.engine.maintenance import (
+    MaintenanceError,
+    plan_maintenance,
+    plan_talos_maintenance,
+)
 from homelab_helper.engine.manifest import (
     ManifestError,
     build_argocd_artifact,
     build_artifact,
+    build_k8s_upgrade_artifact,
     build_node_artifact,
+    build_talos_artifact,
     build_workload_artifact,
 )
 
@@ -60,6 +67,8 @@ class Draft:
     title: str
     blast_radius: str
     summary: str
+    maintenance_command: str | None = None
+    """Optional ``helper maintenance plan ...`` CLI command for rolling multi-step execution."""
 
 
 Builder = Callable[[ReconciliationFinding], Draft | None]
@@ -179,7 +188,7 @@ def _rightsize(finding: ReconciliationFinding) -> Draft | None:
 
 
 def _node_update(finding: ReconciliationFinding) -> Draft | None:
-    """A node with packages pending → an executable node update.
+    """A node with packages pending → an executable node update (and maintenance plan command).
 
     Only ``pve-updates``: a *mixed-versions* finding names the cluster, and the
     fix is updating each node, which this playbook already drafts one at a
@@ -210,7 +219,50 @@ def _node_update(finding: ReconciliationFinding) -> Draft | None:
             "(migrate its guests off) — the executor refuses an undrained node. There is no "
             "rollback: a package upgrade has no inverse, so this never runs unattended."
         ),
+        maintenance_command=f"helper maintenance plan {node}",
     )
+
+
+def _cluster_upgrade(finding: ReconciliationFinding) -> Draft | None:
+    """A ``talos-eol`` or ``k8s-eol`` finding → an upgrade draft + ``maintenance plan-talos`` command."""
+    cat = category_of(finding)
+    if cat not in ("talos-eol", "k8s-eol"):
+        return None
+    ev: dict[str, Any] = next(
+        (dict(r) for r in finding.evidence_refs or [] if r.get("type") == "evidence"), {}
+    )
+    nodes = [str(n) for n in (ev.get("nodes") or []) if n]
+    target_version = ev.get("recommended_version")
+    if not nodes or not isinstance(target_version, str) or not target_version:
+        return None
+    first = nodes[0]
+    try:
+        if cat == "talos-eol":
+            artifact = build_talos_artifact(
+                node=first, version=target_version, hostnames=tuple(nodes)
+            )
+            return Draft(
+                artifact=artifact,
+                title=f"Upgrade Talos node {first} -> {target_version}",
+                blast_radius="single-host",
+                summary=(
+                    f"Upgrade Talos on {first} to {target_version} "
+                    f"(or plan the full rolling run across {', '.join(nodes)})."
+                ),
+                maintenance_command=f"helper maintenance plan-talos {first} --to {target_version}",
+            )
+        artifact = build_k8s_upgrade_artifact(control_plane=first, version=target_version)
+        return Draft(
+            artifact=artifact,
+            title=f"Upgrade Kubernetes -> {target_version} via {first}",
+            blast_radius="cluster",
+            summary=f"k8s-upgrade: upgrade Kubernetes control plane via {first} to {target_version}",
+            maintenance_command=(
+                f"helper maintenance plan-talos {first} --kubernetes {target_version}"
+            ),
+        )
+    except ManifestError:
+        return None
 
 
 PLAYBOOKS: tuple[Playbook, ...] = (
@@ -242,6 +294,13 @@ PLAYBOOKS: tuple[Playbook, ...] = (
         target_type="host",
         build=_node_update,
         description="A node has packages pending → apt dist-upgrade it, once drained.",
+    ),
+    Playbook(
+        name="cluster-upgrade",
+        finding_kind=FindingKind.VERSION_DRIFT,
+        target_type="cluster",
+        build=_cluster_upgrade,
+        description="Talos or Kubernetes minor is past/near EOL → draft the upgrade and rolling maintenance plan.",
     ),
 )
 
@@ -403,21 +462,61 @@ async def run_playbooks(
         )
         session.add(proposal)
         await session.flush()
+        action_entry: dict[str, Any] = {
+            "summary": draft.summary,
+            "playbook": pb.name,
+            "proposal_id": str(proposal.id),
+        }
+        if draft.maintenance_command:
+            action_entry["maintenance_command"] = draft.maintenance_command
         finding.proposed_actions = [
             *[a for a in (finding.proposed_actions or []) if a.get("playbook") != pb.name],
-            {"summary": draft.summary, "playbook": pb.name, "proposal_id": str(proposal.id)},
+            action_entry,
         ]
         result.drafted.append(f"{pb.name} → {proposal.id}")
     await session.flush()
     return result
 
 
+async def draft_maintenance_from_finding(
+    session: AsyncSession,
+    finding: ReconciliationFinding,
+    *,
+    proxmox_adapter: Any = None,
+    talos_adapter: Any = None,
+    actor: str = "playbook",
+) -> Any:
+    """Draft a multi-step ``MaintenanceRun`` directly from a ``pve-updates`` or ``talos-eol`` finding."""
+    cat = category_of(finding)
+    ev: dict[str, Any] = next(
+        (dict(r) for r in finding.evidence_refs or [] if r.get("type") == "evidence"), {}
+    )
+    if cat == "pve-updates":
+        node = _target(finding, "host")
+        if not node or proxmox_adapter is None:
+            raise MaintenanceError(
+                "pve-updates maintenance planning requires a node and proxmox_adapter"
+            )
+        return await plan_maintenance(session, proxmox_adapter, node, actor=actor)
+    if cat == "talos-eol":
+        nodes = [str(n) for n in (ev.get("nodes") or []) if n]
+        version = ev.get("recommended_version")
+        if not nodes or not isinstance(version, str) or talos_adapter is None:
+            raise MaintenanceError(
+                "talos-eol maintenance planning requires nodes, recommended_version, and talos_adapter"
+            )
+        return await plan_talos_maintenance(session, talos_adapter, nodes[0], version, actor=actor)
+    raise MaintenanceError(f"finding category {cat!r} does not map to a maintenance run")
+
+
 __all__ = [
     "DEFAULT_COOLDOWN",
     "DEFAULT_MIN_AGE",
     "PLAYBOOKS",
+    "Draft",
     "Playbook",
     "PlaybookResult",
+    "draft_maintenance_from_finding",
     "playbook_for",
     "run_playbooks",
 ]

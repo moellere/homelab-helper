@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -17,6 +18,7 @@ from rich.console import Console
 from homelab_helper.config import database_url
 from homelab_helper.db.session import make_engine, make_sessionmaker
 from homelab_helper.engine.diagram import build_model, render_html, render_mermaid, to_dict
+from homelab_helper.engine.schedule import ScheduleError, parse_interval
 
 diagram_app = typer.Typer(
     name="diagram", help="Draw what runs where: sites, hosts, clusters, guests, services."
@@ -33,19 +35,33 @@ def diagram(
     site: str | None = typer.Option(None, "--site", help="Only this site (topology name or /24)."),
     services: bool = typer.Option(True, "--services/--no-services", help="Draw service endpoints."),
     guests: bool = typer.Option(True, "--guests/--no-guests", help="List guests inside each node."),
+    since: str | None = typer.Option(
+        None, "--since", help="Grey hosts not verified within this interval (e.g. 24h, 7d)."
+    ),
     title: str = typer.Option("Homelab", "--title", help="Page title for --format html."),
 ) -> None:
     """Render the inventory as a diagram."""
     if fmt not in _FORMATS:
         console.print(f"[red]--format must be one of {', '.join(_FORMATS)}[/red]")
         raise typer.Exit(code=2)
+    cutoff: datetime | None = None
+    if since is not None:
+        try:
+            cutoff = datetime.now(UTC) - parse_interval(since)
+        except ScheduleError as exc:
+            console.print(f"[red]--since:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
 
     async def _go() -> str:
         engine = make_engine(database_url())
         try:
             async with make_sessionmaker(engine)() as session:
                 model = await build_model(
-                    session, site=site, include_services=services, include_guests=guests
+                    session,
+                    site=site,
+                    include_services=services,
+                    include_guests=guests,
+                    since=cutoff,
                 )
         finally:
             await engine.dispose()

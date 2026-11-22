@@ -284,7 +284,6 @@ async def reconcile_jetkvm(
             host_issues,
             {HOST_UNREACHABLE},
             when=now,
-            observed_targets={("host", attached.host_id)},
         )
         for k, v in result.counts().items():
             counts[k] = counts.get(k, 0) + v

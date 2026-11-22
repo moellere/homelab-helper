@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import typer
+from rich.markup import escape
 from rich.table import Table
 from sqlalchemy import select
 
@@ -34,6 +35,7 @@ from homelab_helper.db.enums import DiscoverySource, FindingKind, FindingSeverit
 from homelab_helper.db.models import Host, Observation, ReconciliationFinding
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
+from homelab_helper.engine.backups import record_restore_drill
 from homelab_helper.engine.capacity import record_filesystem_samples
 from homelab_helper.engine.discoverers import run_discovery
 from homelab_helper.engine.dns_reconcile import (
@@ -1506,6 +1508,40 @@ def discover_capacity() -> None:
 def discover_backups() -> None:
     """Backup posture (Phase 8.2): uncovered, stale or unverified guests; orphans; capacity."""
     raise typer.Exit(code=_category_discovery("backups", FindingKind.BACKUP_GAP, "backup gaps"))
+
+
+@discover_app.command(name="restore-drill")
+def discover_restore_drill(
+    target: str = typer.Argument(
+        ...,
+        help="What was restored: a guest id as `discover backups` names it, or a declared target.",
+    ),
+    notes: str = typer.Option(
+        "", "--notes", help="What was restored, where to, and how it was checked."
+    ),
+) -> None:
+    """Record that a restore from backup was tried and worked (Phase 13.1).
+
+    The record is what the backup posture reads as a verified restore: it resolves the target's
+    open `backup-verify` finding, and `discover backups` counts it on later passes.
+    """
+
+    async def _go() -> int:
+        engine = make_engine(_database_url())
+        try:
+            async with session_scope(make_sessionmaker(engine)) as session:
+                result = await record_restore_drill(session, target, notes=notes or None)
+        finally:
+            await engine.dispose()
+        console.print(
+            f"[green]restore drill recorded[/green] for {escape(result['target_id'])} "
+            f"at {result['verified_at']}"
+        )
+        for fp in result["resolved_findings"]:
+            console.print(f"  resolved finding {fp}")
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
 
 
 @discover_app.command(name="usage")

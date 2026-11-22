@@ -62,7 +62,7 @@ The flow is top-down for user-driven interactions, bottom-up for observations. A
 
 - **Harness DB** — SQLAlchemy 2.0 models per `harness-schema-slice1.md`. SQLite by default for low-friction install; Postgres optional for users who want it or who run multi-process workers. Alembic migrations.
 - **NetBox** — separate stack the user runs (via netbox-docker, or NetBox Cloud, or any deployment). The harness depends on it being reachable; if it's not, write operations queue and reads fall back to cached state.
-- **Secrets** — never in harness DB. Every secret-valued setting is a literal or a *reference* resolved by `homelab_helper/secrets.py` with the operator's own tooling: `file:<path>#<key>` (plain, `age`, or `sops`), `keyring:<service>/<user>`, `env:VAR`. Vault / 1Password are future schemes. Harness DB only holds *references* (`credentials_ref` columns).
+- **Secrets** — never in harness DB. Every secret-valued setting is a literal or a *reference* resolved by `homelab_helper/secrets.py` with the operator's own tooling: `file:<path>#<key>` (plain, `age`, or `sops`), `keyring:<service>/<user>`, `env:VAR`, `op://<vault>/<item>/<field>` (1Password CLI), `vault://<mount>/<path>#<field>` (Vault CLI). Harness DB only holds *references* (`credentials_ref` columns).
 - **Observation store** — conceptually distinct because it's append-only time-series; physically lives in the harness DB Observation table. May graduate to a dedicated TSDB if scale demands.
 
 ### Adapter layer
@@ -337,7 +337,8 @@ helper-server stays at the primary site (Covington). Agents at Wyola post observ
 ### Credentials
 
 - **Never in harness DB.** Only `credentials_ref` columns pointing to the secrets store.
-- **Secret references** (`secrets.py`): `file:` (plain / age / sops, decrypted by the operator's binary, never written to disk), `keyring:` (OS keyring, optional extra), `env:`. Every resolved value is registered for `redact()`, which scrubs MCP error strings. Vault / 1Password / Bitwarden are future schemes.
+- **Secret references** (`secrets.py`): `file:` (plain / age / sops, decrypted by the operator's binary, never written to disk), `keyring:` (OS keyring, optional extra), `env:`, `op://` and `vault://` (each through the operator's own CLI). Every resolved value is registered for `redact()`, which scrubs MCP error strings. Bitwarden is a future scheme.
+- **Assertion verifiers observe.** `http-check` sends GET or HEAD, `api-query` reaches a fixed list of adapter reads (never a method chosen by name), `file-hash` runs `sha256sum`. `ssh-command` runs whatever command the assertion carries with the host's login, so it is not an L1 read and no trust cell gates it: it stays off until the operator sets `HOMELAB_HELPER_ASSERT_SSH_COMMANDS=1`, and assertions are loaded only from the operator's own library file, never drafted by an agent.
 - **SSH credentials**: helper-server holds the SSH key(s) for probe access; helper-agent doesn't need SSH (it runs locally).
 - **API tokens** (NetBox, Proxmox, K8s, UniFi, Cloudflare, Argo CD, OMV, Home Assistant): scoped read+limited-write per L1 policy. NetBox token has write scope to Devices, Custom Fields, InventoryItems, Services. Everything else: read-only.
 - **Agent enrollment**: `helper agent enroll <hostname>` generates a per-host bearer token. Token gives the agent permission to post observations *for that specific host only*; can't post observations claiming to be from another host.

@@ -470,9 +470,12 @@ class ConfigurationAssertion(Base):
 
     kind: Mapped[AssertionKind]
     # Verifier specification. Structure depends on kind.
-    # ssh-command: {"command": "...", "expected_exit": 0, "expected_stdout_regex": "..."}
-    # http-check: {"url": "...", "expected_status": 200, "expected_body_regex": "..."}
-    # api-query: {"adapter": "proxmox", "query": {...}, "expected": {...}}
+    # ssh-command: {"command": "...", "expected_exit_code": 0, "stdout_eq" | "stdout_contains" | "stdout_regex": "..."}
+    #   (runs only with HOMELAB_HELPER_ASSERT_SSH_COMMANDS=1)
+    # file-hash: {"path": "/etc/...", "sha256": "..."}
+    # http-check: {"url": "...", "method": "GET" | "HEAD", "expected_status": 200, "body_contains" | "body_regex": "...",
+    #              "min_tls_days": 30}
+    # api-query: {"source": "proxmox", "query": "cluster_status", "key": "quorate", "predicate": "eq", "value": true}
     # observation-predicate: {"key": "host.network.br6.mac", "predicate": "eq",
     #                        "compare_to_key": "host.network.lan6.mac"}
     # file-hash: {"path": "/etc/systemd/system/e1000e-offload-fix.service",

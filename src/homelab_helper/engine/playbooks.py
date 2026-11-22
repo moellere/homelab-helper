@@ -39,11 +39,6 @@ from sqlalchemy import select
 from homelab_helper.db.enums import FindingKind, FindingStatus, ProposalOutcome
 from homelab_helper.db.models import ProposalLog, ReconciliationFinding
 from homelab_helper.engine.category_findings import category_of
-from homelab_helper.engine.maintenance import (
-    MaintenanceError,
-    plan_maintenance,
-    plan_talos_maintenance,
-)
 from homelab_helper.engine.manifest import (
     ManifestError,
     build_argocd_artifact,
@@ -257,9 +252,6 @@ def _cluster_upgrade(finding: ReconciliationFinding) -> Draft | None:
             title=f"Upgrade Kubernetes -> {target_version} via {first}",
             blast_radius="cluster",
             summary=f"k8s-upgrade: upgrade Kubernetes control plane via {first} to {target_version}",
-            maintenance_command=(
-                f"helper maintenance plan-talos {first} --kubernetes {target_version}"
-            ),
         )
     except ManifestError:
         return None
@@ -519,37 +511,6 @@ async def run_playbooks(
     return result
 
 
-async def draft_maintenance_from_finding(
-    session: AsyncSession,
-    finding: ReconciliationFinding,
-    *,
-    proxmox_adapter: Any = None,
-    talos_adapter: Any = None,
-    actor: str = "playbook",
-) -> Any:
-    """Draft a multi-step ``MaintenanceRun`` directly from a ``pve-updates`` or ``talos-eol`` finding."""
-    cat = category_of(finding)
-    ev: dict[str, Any] = next(
-        (dict(r) for r in finding.evidence_refs or [] if r.get("type") == "evidence"), {}
-    )
-    if cat == "pve-updates":
-        node = _target(finding, "host")
-        if not node or proxmox_adapter is None:
-            raise MaintenanceError(
-                "pve-updates maintenance planning requires a node and proxmox_adapter"
-            )
-        return await plan_maintenance(session, proxmox_adapter, node, actor=actor)
-    if cat == "talos-eol":
-        nodes = [str(n) for n in (ev.get("nodes") or []) if n]
-        version = ev.get("recommended_version")
-        if not nodes or not isinstance(version, str) or talos_adapter is None:
-            raise MaintenanceError(
-                "talos-eol maintenance planning requires nodes, recommended_version, and talos_adapter"
-            )
-        return await plan_talos_maintenance(session, talos_adapter, nodes[0], version, actor=actor)
-    raise MaintenanceError(f"finding category {cat!r} does not map to a maintenance run")
-
-
 __all__ = [
     "DEFAULT_COOLDOWN",
     "DEFAULT_MIN_AGE",
@@ -557,7 +518,6 @@ __all__ = [
     "Draft",
     "Playbook",
     "PlaybookResult",
-    "draft_maintenance_from_finding",
     "playbook_for",
     "run_playbooks",
 ]

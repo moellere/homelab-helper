@@ -72,7 +72,7 @@ every option.
 | `diagram` | — |
 | `diff` | `git-vs-cluster` |
 | `digest` | `history` `send` `show` |
-| `discover` | `anomalies` `argocd` `backups` `capacity` `cloudflare` `hass` `host` `import` `jetkvm` `k8s` `mikrotik` `network` `omv` `printwarden` `proxmox` `replay` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
+| `discover` | `anomalies` `argocd` `backups` `capacity` `cloudflare` `hass` `host` `import` `jetkvm` `k8s` `mikrotik` `network` `omv` `printwarden` `proxmox` `replay` `restore-drill` `show` `storage` `suggestions` `talos` `unifi` `usage` `versions` |
 | `exec` | `accept` `list` `receipts` `reject` `rollback` `run` |
 | `findings` | `ack` `list` `narrate` `resolve` `show` `suppress` |
 | `host` | `intent` `retire` `show` |
@@ -204,7 +204,14 @@ release that works on one and not the other does not ship.
   a warning in `helper config`, for a release.
 - A secret-valued variable accepts a literal or a reference —
   `env:NAME`, `file:/path#key` (plain, sops- or age-encrypted),
-  `keyring:service/user` — and the reference syntax is stable.
+  `keyring:service/user`, `op://vault/item/field` (the 1Password CLI),
+  `vault://mount/path#field` (the Vault CLI) — and the reference syntax is
+  stable.
+- `HOMELAB_HELPER_ASSERT_SSH_COMMANDS=1` turns on `ssh-command` assertions.
+  They are off by default because the command is whatever the assertion
+  says, run with the host's own login, outside the trust gradient. The other
+  verifier kinds only read: `http-check` sends GET or HEAD, `api-query`
+  reaches a fixed list of adapter reads, `file-hash` runs `sha256sum`.
 - Locations: the database under the XDG data dir, the config file under the
   XDG config dir, both overridable together by `HOMELAB_HELPER_HOME`.
   Precedence, lowest to highest: `~/.env`, the per-user config file, a

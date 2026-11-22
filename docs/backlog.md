@@ -1463,12 +1463,13 @@ See `roadmap.md` Phase 13. Closes the operational follow-ups across off-site/non
 - [x] **13.2 GPU & TLS probe depth + image/firmware currency**
   - [x] Extend `probes/host/gpu.py` and `engine/reconciler.py` with bound driver, VRAM size, and active compute status; use VRAM and busy state in `engine/placement.py` and `engine/suggestions.py`
   - [x] Extract TLS certificate subject, SANs, issuer, and expiry days on HTTPS ports in `probes/network/fingerprint.py`
-  - [ ] Open `tls-cert-expiring` findings from it (`tls_expiry_issues` builds them; no discovery pass calls it)
+  - [ ] Open `tls-cert-expiring` findings from it (`tls_expiry_issues` builds them; no discovery pass calls it). The reconcile must be scoped to the addresses scanned in that run, or a one-host scan would resolve every other host's finding
   - [x] Add unpinned container image tag (`image-tag-unpinned`) checks in `engine/versions.py`, plus per-drive temperature baseline departures (`disk-temp-anomaly`) in `engine/disk_health.py`
   - [ ] MikroTik/OMV version checks (`appliance_version_issues` builds them; `discover versions` does not call it)
 - [x] **13.3 Daemon probe/assertion cadences, power-policy gating & new playbooks**
   - [x] Add `probes:` and `assertions:` cadences to `engine/schedule.py` and `cli/daemon.py` with `OperationalIntent.EXPECTED_OFF` power-policy gating (P2-AC4)
   - [x] Add `guest-stopped` (expected-on guest observed stopped) and post-resize VM `restart` playbooks in `engine/playbooks.py`, plus optional scheduled digest notifications
+  - [ ] A pass that opens `guest-stopped` / `guest-restart-pending` findings: nothing does yet, so the `guest-start` playbook has nothing to act on
 - [x] **13.4 NetBox deep sync & secret reference hardening**
   - [ ] Extend `adapters/netbox.py` to sync host NIC interfaces, primary IPs, discovered VLANs/prefixes, and `Service` / `ServiceEndpoint` records. A first version was removed: it matched rows by name and patched them, so it would have overwritten operator-entered objects, and no command called it. It needs an ownership marker (as `discovered=True` is for InventoryItems) before it returns
   - [x] Support `op://` and `vault://` secret reference schemes in `secrets.py`, resolve `Host.credentials_ref` through `secrets.py`, and redact CLI-printed adapter errors

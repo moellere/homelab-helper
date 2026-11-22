@@ -32,11 +32,9 @@ Stubbed (SKIP with a clear reason) until their adapters land:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 import shlex
-import ssl
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -66,6 +64,7 @@ from homelab_helper.db.models import (
 from homelab_helper.engine.fingerprint import make_fingerprint
 from homelab_helper.engine.reconciler import normalize_arch
 from homelab_helper.secrets import redact
+from homelab_helper.tlsinfo import inspect_tls
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -334,32 +333,15 @@ async def _run_ssh_command(
 
 
 async def _tls_days_remaining(url: str, timeout_s: float = 5.0) -> int | None:
-    """Connect with TLS and return remaining certificate validity in whole days."""
+    """Whole days left on the certificate an ``https`` URL presents, valid chain or not."""
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
         return None
-    port = parsed.port or 443
-    ctx = ssl.create_default_context()
-    writer = None
-    try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                parsed.hostname, port, ssl=ctx, server_hostname=parsed.hostname
-            ),
-            timeout=timeout_s,
-        )
-        ssl_obj = writer.get_extra_info("ssl_object")
-        cert = ssl_obj.getpeercert() if ssl_obj is not None else None
-        not_after = cert.get("notAfter") if isinstance(cert, dict) else None
-        if not isinstance(not_after, str):
-            return None
-        expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=UTC)
-        return (expires - datetime.now(UTC)).days
-    except Exception:
-        return None
-    finally:
-        if writer is not None:
-            writer.close()
+    info = await inspect_tls(
+        parsed.hostname, parsed.port or 443, timeout_s, server_name=parsed.hostname
+    )
+    days = (info or {}).get("days_remaining")
+    return days if isinstance(days, int) else None
 
 
 SSH_COMMANDS_VAR = "HOMELAB_HELPER_ASSERT_SSH_COMMANDS"

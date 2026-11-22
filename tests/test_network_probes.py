@@ -358,3 +358,93 @@ async def test_tls_certificate_parsing_and_expiry_issues() -> None:
     assert len(issues) == 1
     assert issues[0].category == "tls-cert-expiring"
     assert issues[0].severity is FindingSeverity.HIGH
+
+
+async def test_a_self_signed_certificate_is_read_without_an_injected_inspector(
+    tmp_path, monkeypatch
+) -> None:
+    """The default inspector must see a certificate no public CA signed, on a real TLS socket."""
+    import ipaddress
+    import ssl
+    from datetime import UTC, datetime, timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    from homelab_helper.probes.network import fingerprint as fp
+    from homelab_helper.tlsinfo import inspect_tls
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "internal.example")])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=9, hours=1))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName("internal.example"),
+                    x509.IPAddress(ipaddress.ip_address("10.0.1.10")),
+                ]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_file, key_file = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(cert_file, key_file)
+
+    async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.close()
+
+    server = await asyncio.start_server(_handler, "127.0.0.1", 0, ssl=server_ctx)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        info = await inspect_tls("127.0.0.1", port, 2.0)
+        assert info is not None
+        assert info["subject"] == "internal.example"
+        assert info["issuer"] == "internal.example"
+        assert info["sans"] == ["internal.example", "10.0.1.10"]
+        assert info["days_remaining"] == 9
+
+        monkeypatch.setattr(fp, "_TLS_PORTS", frozenset({port}))
+        res = await NetworkFingerprintProbe(ports=[port], timeout_s=2.0).run(_ctx_host("127.0.0.1"))
+        service = res.raw_payload["services"][0]
+        assert service["hint"] == "https"
+        assert service["evidence"]["tls"]["subject"] == "internal.example"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_a_port_that_does_not_speak_tls_yields_no_certificate() -> None:
+    from homelab_helper.tlsinfo import inspect_tls
+
+    async def _plain(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(_plain, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        assert await inspect_tls("127.0.0.1", port, 1.0) is None
+    finally:
+        server.close()
+        await server.wait_closed()

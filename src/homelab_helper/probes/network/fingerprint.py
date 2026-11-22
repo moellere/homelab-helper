@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import ssl
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -40,6 +39,7 @@ from pydantic import BaseModel
 from homelab_helper.db.enums import FindingKind, FindingSeverity, PrivilegeLevel
 from homelab_helper.engine.category_findings import CategoryIssue
 from homelab_helper.probes.base import ObservationData, Probe, ProbeContext, ProbeResult
+from homelab_helper.tlsinfo import inspect_tls, parse_tls_der
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -129,25 +129,7 @@ def parse_tls_cert(cert: dict[str, Any], *, now: datetime | None = None) -> dict
 
 
 async def _default_tls_inspector(ip: str, port: int, timeout_s: float) -> dict[str, Any] | None:
-    ctx = ssl.create_default_context()
-    writer = None
-    try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port, ssl=ctx, server_hostname=ip),
-            timeout=timeout_s,
-        )
-        ssl_obj = writer.get_extra_info("ssl_object")
-        cert = ssl_obj.getpeercert() if ssl_obj is not None else None
-        if isinstance(cert, dict) and cert:
-            return parse_tls_cert(cert)
-    except Exception:
-        return None
-    finally:
-        if writer is not None:
-            writer.close()
-            with contextlib.suppress(OSError):
-                await writer.wait_closed()
-    return None
+    return await inspect_tls(ip, port, timeout_s)
 
 
 def tls_expiry_issues(
@@ -280,7 +262,9 @@ class NetworkFingerprintProbe(Probe):
 
     async def _fingerprint_port(self, ip: str, port: int) -> ServiceFingerprint | None:
         """Return a ServiceFingerprint or ``None`` if nothing responded."""
-        if self._tls_inspector is not None and port in _TLS_PORTS:
+        # A TLS port is asked for its certificate first: many HTTPS servers answer a plain
+        # request with a readable 400, which would otherwise pass for an HTTP service.
+        if port in _TLS_PORTS:
             tls_info = await self._inspect_tls(ip, port)
             if tls_info is not None:
                 return ServiceFingerprint(
@@ -448,6 +432,8 @@ __all__ = [
     "NetworkFingerprintOutput",
     "NetworkFingerprintProbe",
     "ServiceFingerprint",
+    "inspect_tls",
     "parse_tls_cert",
+    "parse_tls_der",
     "tls_expiry_issues",
 ]

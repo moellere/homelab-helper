@@ -32,6 +32,7 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "apscheduler>=3.10.4",
     "asyncssh>=2.14.2",
+    "cryptography>=42",
     "uuid6>=2024.7.10",
     "python-dotenv>=1.0.1",
     "pyyaml>=6.0.1",

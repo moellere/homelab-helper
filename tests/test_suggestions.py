@@ -184,3 +184,83 @@ async def test_the_pass_needs_no_adapter(suggestions_db) -> None:
 
     assert result["errors"] == {}
     assert result["findings"]["opened"] == len(BUILDING_BLOCKS)
+
+
+async def test_k8s_container_images_systemd_units_and_peer_dependencies(suggestions_db) -> None:
+    from homelab_helper.engine.k8s_workloads import reconcile_workload_health
+    from homelab_helper.engine.suggestions import (
+        image_names,
+        missing_dependency_issues,
+        unit_names,
+    )
+
+    assert image_names(
+        ["ghcr.io/immich-app/immich-server:v1.118.2", "lscr.io/linuxserver/plex@sha256:abc"]
+    ) == ["immich-server", "plex"]
+    assert unit_names(["ollama.service", {"name": "prometheus.service"}]) == [
+        "ollama",
+        "prometheus",
+    ]
+    deps = missing_dependency_issues(LIBRARY, present_names(["zigbee2mqtt"]))
+    assert [d.target_id for d in deps] == ["dep:mosquitto"]
+
+    async with session_scope(suggestions_db) as session:
+        session.add(
+            Host(
+                hostname="hv0",
+                capabilities={
+                    "gpu_count": 1,
+                    "gpu_vendors": ["Intel"],
+                    "running_services": ["ollama"],
+                },
+            )
+        )
+        await reconcile_workload_health(
+            session,
+            [
+                {
+                    "namespace": "media",
+                    "kind": "deployment",
+                    "name": "media-app",
+                    "desired": 1,
+                    "ready": 1,
+                    "settled": True,
+                    "images": ["lscr.io/linuxserver/jellyfin:latest"],
+                },
+                {
+                    "namespace": "iot",
+                    "kind": "deployment",
+                    "name": "z2m",
+                    "desired": 1,
+                    "ready": 1,
+                    "settled": True,
+                    "images": ["koenkk/zigbee2mqtt:1.40.0"],
+                },
+            ],
+            cluster_name="k8s-lab",
+        )
+        await session.flush()
+
+        await discoverers._discover_suggestions(session)  # noqa: SLF001
+        findings = (
+            (
+                await session.execute(
+                    select(ReconciliationFinding).where(
+                        ReconciliationFinding.kind == FindingKind.SERVICE_SUGGESTION
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    cats = {
+        category_of(f): [x.title for x in findings if category_of(x) == category_of(f)]
+        for f in findings
+    }
+    assert "capability-idle-gpu" not in cats, "jellyfin image on k8s uses the GPU capability"
+    assert not any("local-llm" in t for t in cats.get("building-block-missing", [])), (
+        "ollama.service on hv0 satisfies local-llm"
+    )
+    assert any("mosquitto" in t for t in cats.get("dependency-missing", [])), (
+        "zigbee2mqtt image without mosquitto flags dependency-missing"
+    )

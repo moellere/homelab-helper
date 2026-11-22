@@ -43,6 +43,7 @@ from homelab_helper.engine.category_findings import (
     CategoryResult,
     reconcile_category_findings,
 )
+from homelab_helper.engine.raid_health import parent_disk_name
 from homelab_helper.engine.trust import as_utc
 
 if TYPE_CHECKING:
@@ -182,24 +183,48 @@ def _hot_issue(
     temp = dev.get("temperature_c")
     if not isinstance(temp, int | float):
         return None
-    peak = max([temp, *(v for _, v in _series(history, identity, "temperature_c"))])
+    past_temps = [float(v) for _, v in _series(history, identity, "temperature_c")]
+    peak = max([temp, *past_temps])
     warn, high = HOT_HDD if _rotational(dev) else HOT_SSD
-    if peak < warn:
-        return None
-    severity = FindingSeverity.HIGH if peak >= high else FindingSeverity.MEDIUM
-    kind = "spinning drive" if _rotational(dev) else "flash drive"
-    return _issue(
-        host_id,
-        identity,
-        "disk-hot",
-        severity,
-        title=f"{label}: {int(peak)} °C peak ({int(temp)} °C now)",
-        description=(
-            f"{label} peaked at {int(peak)} °C in the window and reads {int(temp)} °C now; "
-            f"a {kind} should stay under {warn} °C. Check airflow and the drive's neighbours."
-        ),
-        evidence={"temperature_c": temp, "peak_c": peak, "warn_c": warn, "high_c": high},
-    )
+    if peak >= warn:
+        severity = FindingSeverity.HIGH if peak >= high else FindingSeverity.MEDIUM
+        kind = "spinning drive" if _rotational(dev) else "flash drive"
+        return _issue(
+            host_id,
+            identity,
+            "disk-hot",
+            severity,
+            title=f"{label}: {int(peak)} °C peak ({int(temp)} °C now)",
+            description=(
+                f"{label} peaked at {int(peak)} °C in the window and reads {int(temp)} °C now; "
+                f"a {kind} should stay under {warn} °C. Check airflow and the drive's neighbours."
+            ),
+            evidence={"temperature_c": temp, "peak_c": peak, "warn_c": warn, "high_c": high},
+        )
+    if len(past_temps) >= 5:  # noqa: PLR2004
+        ordered = sorted(past_temps)
+        baseline_c = ordered[len(ordered) // 2]
+        delta_c = float(temp) - baseline_c
+        if delta_c >= 10.0:  # noqa: PLR2004
+            return _issue(
+                host_id,
+                identity,
+                "disk-hot",
+                FindingSeverity.LOW,
+                title=f"{label}: {int(temp)} °C (+{int(delta_c)} °C above its {int(baseline_c)} °C baseline)",
+                description=(
+                    f"{label} reads {int(temp)} °C, {int(delta_c)} °C warmer than its own historical "
+                    f"median of {int(baseline_c)} °C over {len(past_temps)} reading(s) (still below "
+                    f"the {warn} °C ceiling). Check for a stalled fan or blocked intake."
+                ),
+                evidence={
+                    "temperature_c": temp,
+                    "baseline_c": round(baseline_c, 1),
+                    "delta_c": round(delta_c, 1),
+                    "warn_c": warn,
+                },
+            )
+    return None
 
 
 def _wear_issue(
@@ -263,6 +288,50 @@ def _aged_issue(
     )
 
 
+def _array_by_disk(arrays: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for arr in arrays or []:
+        for m in arr.get("members") or []:
+            dev = str(m.get("device") or "")
+            if dev:
+                out[parent_disk_name(dev)] = arr
+                out[dev.removeprefix("/dev/")] = arr
+    return out
+
+
+def _annotate_raid_member(issue: CategoryIssue, host_id: str, arr: dict[str, Any]) -> CategoryIssue:
+    name = str(arr.get("name") or "md?")
+    level = arr.get("level") or "md"
+    faulty = any(m.get("state") == "faulty" for m in arr.get("members") or [])
+    degraded = bool(arr.get("degraded")) or faulty
+    no_redundancy = degraded or level in ("raid0", "linear")
+    severity = (
+        FindingSeverity.CRITICAL
+        if issue.severity is FindingSeverity.HIGH and no_redundancy
+        else issue.severity
+    )
+    state_note = "degraded" if degraded else str(arr.get("state") or "active")
+    suffix = f" Member of RAID array {name} ({level}, {state_note})" + (
+        " — redundancy is already lost, so failure here risks data loss." if no_redundancy else "."
+    )
+    return CategoryIssue(
+        kind=issue.kind,
+        category=issue.category,
+        target_type=issue.target_type,
+        target_id=issue.target_id,
+        severity=severity,
+        title=issue.title,
+        description=issue.description + suffix,
+        evidence={
+            **issue.evidence,
+            "raid_array": name,
+            "raid_level": arr.get("level"),
+            "raid_degraded": degraded,
+        },
+        also_affects=(*issue.also_affects, ("raid-array", f"{host_id}/{name}")),
+    )
+
+
 def disk_issues(
     host_id: str,
     hostname: str,
@@ -270,16 +339,21 @@ def disk_issues(
     history: History | None = None,
     *,
     now: datetime | None = None,
+    arrays: list[dict[str, Any]] | None = None,
 ) -> list[CategoryIssue]:
-    """Rules for one host's newest ``host.smart.devices`` against its history."""
+    """Rules for one host's newest ``host.smart.devices`` against its history and RAID arrays."""
     moment = as_utc(now or datetime.now(UTC))
     past = [(as_utc(w), d) for w, d in (history or []) if moment - as_utc(w) <= HISTORY_WINDOW]
+    by_disk = _array_by_disk(arrays)
     issues: list[CategoryIssue] = []
     for dev in devices:
         identity = drive_identity(dev)
         label = _label(hostname, dev)
+        disk_key = parent_disk_name(str(dev.get("name") or ""))
+        arr = by_disk.get(disk_key)
+        dev_issues: list[CategoryIssue] = []
         if dev.get("health_passed") is False:
-            issues.append(
+            dev_issues.append(
                 _issue(
                     host_id,
                     identity,
@@ -301,7 +375,9 @@ def disk_issues(
             _aged_issue(host_id, label, identity, dev),
         ):
             if issue is not None:
-                issues.append(issue)
+                dev_issues.append(issue)
+        for issue in dev_issues:
+            issues.append(_annotate_raid_member(issue, host_id, arr) if arr is not None else issue)
     return issues
 
 
@@ -313,11 +389,12 @@ async def reconcile_disk_health(
     history: History | None = None,
     *,
     when: datetime | None = None,
+    arrays: list[dict[str, Any]] | None = None,
 ) -> CategoryResult:
     return await reconcile_category_findings(
         session,
         FindingKind.STORAGE_HEALTH,
-        disk_issues(host_id, hostname, devices, history, now=when),
+        disk_issues(host_id, hostname, devices, history, now=when, arrays=arrays),
         set(CATEGORIES),
         when=when,
         observed_targets={("host", host_id)},

@@ -26,6 +26,7 @@ history (or stale samples) is not judged and resolves nothing.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -54,6 +55,8 @@ CATEGORIES = (
 )
 BASELINE_DAYS = 28
 MIN_HISTORY_HOURS = 14 * 24
+HOURLY_MIN_SAMPLES = 14
+_MAX_HOUR = 23
 DEPARTURE_HOURS = 3
 SUSTAINED_HOURS = 6
 MAX_SAMPLE_AGE = timedelta(hours=6)
@@ -97,14 +100,63 @@ def _fmt(metric: str, value: float) -> str:
     return f"{value / 1024:.0f} KB/s"
 
 
-def band_for(history: Sequence[float], metric: str) -> Band | None:
-    if len(history) < MIN_HISTORY_HOURS:
+def _in_hour_window(hour: int, window: tuple[int, int]) -> bool:
+    """True when ``hour`` (0..23) falls inside ``(start_hour, end_hour)`` inclusive."""
+    start, end = window
+    if start <= end:
+        return start <= hour <= end
+    return hour >= start or hour <= end
+
+
+def expected_windows_from_env() -> dict[str, tuple[int, int]]:
+    """Parse ``HOMELAB_HELPER_BASELINE_WINDOWS`` (``key=start-end,...``) into hour ranges."""
+    raw = os.environ.get("HOMELAB_HELPER_BASELINE_WINDOWS") or ""
+    out: dict[str, tuple[int, int]] = {}
+    for entry in raw.split(","):
+        item = entry.strip()
+        if not item or "=" not in item:
+            continue
+        key, _, span = item.partition("=")
+        start_s, sep, end_s = span.strip().partition("-")
+        if not key.strip() or not sep:
+            continue
+        try:
+            start_h, end_h = int(start_s), int(end_s)
+        except ValueError:
+            continue
+        if 0 <= start_h <= _MAX_HOUR and 0 <= end_h <= _MAX_HOUR:
+            out[key.strip()] = (start_h, end_h)
+    return out
+
+
+def band_for(
+    history: Sequence[float], metric: str, *, min_samples: int = MIN_HISTORY_HOURS
+) -> Band | None:
+    if len(history) < min_samples:
         return None
     values = list(history)
     p10, p50, p95 = (percentile(values, q) for q in (0.10, 0.50, 0.95))
     if p10 is None or p50 is None or p95 is None:
         return None
     return Band(metric, p10, p50, p95, len(values))
+
+
+def hourly_band_for(
+    samples: Sequence[UsageSample],
+    metric: str,
+    hour: int,
+    *,
+    window_hours: int = 1,
+    min_samples: int = HOURLY_MIN_SAMPLES,
+) -> Band | None:
+    """Percentile band from history samples within ``±window_hours`` of ``hour`` (UTC)."""
+    matching = [
+        v
+        for s in samples
+        if min((s.ts.hour - hour) % 24, (hour - s.ts.hour) % 24) <= window_hours
+        and (v := _metric_value(s, metric)) is not None
+    ]
+    return band_for(matching, metric, min_samples=min_samples)
 
 
 def _departure(recent: Sequence[float], band: Band) -> tuple[str, float] | None:
@@ -131,6 +183,24 @@ def _sustained(series: Sequence[float], direction: str, line: float) -> int:
     return count
 
 
+def _select_band(
+    active_samples: Sequence[UsageSample],
+    history: Sequence[float],
+    metric: str,
+    hour: int,
+    *,
+    hourly_bands: bool,
+    expected_window: tuple[int, int] | None,
+) -> Band | None:
+    if expected_window is not None:
+        return band_for(history, metric, min_samples=HOURLY_MIN_SAMPLES)
+    if hourly_bands:
+        return hourly_band_for(active_samples[:-DEPARTURE_HOURS], metric, hour) or band_for(
+            history, metric
+        )
+    return band_for(history, metric)
+
+
 def subject_issues(
     target_type: str,
     target_id: str,
@@ -139,22 +209,42 @@ def subject_issues(
     *,
     now: datetime,
     also_affects: tuple[tuple[str, str], ...] = (),
+    hourly_bands: bool = False,
+    expected_window: tuple[int, int] | None = None,
 ) -> tuple[list[CategoryIssue], set[str]]:
     """``(issues, categories judged)`` for one subject's hourly samples, oldest first."""
     issues: list[CategoryIssue] = []
     judged: set[str] = set()
-    if len(samples) < MIN_HISTORY_HOURS + DEPARTURE_HOURS:
+    min_required = HOURLY_MIN_SAMPLES if expected_window is not None else MIN_HISTORY_HOURS
+    if len(samples) < min_required + DEPARTURE_HOURS:
         return issues, judged
     newest = samples[-1].ts
     newest_utc = newest if newest.tzinfo else newest.replace(tzinfo=UTC)
     if now - newest_utc > MAX_SAMPLE_AGE:
         return issues, judged  # stale history is not an anomaly, and not a verdict either
+    active_samples: Sequence[UsageSample] = (
+        [
+            s
+            for s in samples
+            if _in_hour_window(s.ts.hour, expected_window)
+            == _in_hour_window(newest.hour, expected_window)
+        ]
+        if expected_window is not None
+        else samples
+    )
     for metric in METRICS:
-        series = [v for s in samples if (v := _metric_value(s, metric)) is not None]
-        if len(series) < MIN_HISTORY_HOURS + DEPARTURE_HOURS:
+        series = [v for s in active_samples if (v := _metric_value(s, metric)) is not None]
+        if len(series) < min_required + DEPARTURE_HOURS:
             continue
         recent, history = series[-DEPARTURE_HOURS:], series[:-DEPARTURE_HOURS]
-        band = band_for(history, metric)
+        band = _select_band(
+            active_samples,
+            history,
+            metric,
+            newest.hour,
+            hourly_bands=hourly_bands,
+            expected_window=expected_window,
+        )
         if band is None:
             continue
         judged.add(f"{metric}-above-baseline")
@@ -189,6 +279,17 @@ def subject_issues(
                 f"{_fmt(metric, band.p10)} (median {_fmt(metric, band.p50)}). A job that stopped, "
                 "a client that went away, or a service that is no longer being asked."
             )
+        band_ev: dict[str, int | float | list[int] | bool] = {
+            "p10": round(band.p10, 3),
+            "p50": round(band.p50, 3),
+            "p95": round(band.p95, 3),
+            "samples": band.samples,
+            "days": BASELINE_DAYS,
+        }
+        if expected_window is not None:
+            band_ev["expected_window"] = list(expected_window)
+        if hourly_bands:
+            band_ev["hourly"] = True
         issues.append(
             CategoryIssue(
                 kind=FindingKind.ANOMALY,
@@ -204,13 +305,7 @@ def subject_issues(
                     "line": round(line, 3),
                     "recent": [round(v, 3) for v in recent],
                     "hours": hours,
-                    "band": {
-                        "p10": round(band.p10, 3),
-                        "p50": round(band.p50, 3),
-                        "p95": round(band.p95, 3),
-                        "samples": band.samples,
-                        "days": BASELINE_DAYS,
-                    },
+                    "band": band_ev,
                     "newest_sample": newest.isoformat(),
                 },
                 also_affects=also_affects,
@@ -240,11 +335,16 @@ async def _hourly(
 
 
 async def evaluate(
-    session: AsyncSession, *, now: datetime | None = None
+    session: AsyncSession,
+    *,
+    now: datetime | None = None,
+    hourly_bands: bool = False,
+    expected_windows: dict[str, tuple[int, int]] | None = None,
 ) -> tuple[list[CategoryIssue], set[str], set[tuple[str, str]]]:
     """``(issues, categories observed, subjects judged)`` over every subject with history."""
     moment = now or datetime.now(UTC)
     since = moment.replace(tzinfo=None) - timedelta(days=BASELINE_DAYS)
+    windows = expected_windows if expected_windows is not None else expected_windows_from_env()
     hosts = {h.hostname: h for h in (await session.execute(select(Host))).scalars().all()}
     clusters = {c.name: c for c in (await session.execute(select(Cluster))).scalars().all()}
     issues: list[CategoryIssue] = []
@@ -264,8 +364,16 @@ async def evaluate(
             target = ("guest", key)
             label = (samples[-1].label or key) + f" ({vmid})"
             extra = (("cluster", cluster_name),) if cluster_name in clusters else ()
+        window = windows.get(key) or windows.get(f"{subject_type}:{key}")
         found, categories = subject_issues(
-            target[0], target[1], label, samples, now=moment, also_affects=extra
+            target[0],
+            target[1],
+            label,
+            samples,
+            now=moment,
+            also_affects=extra,
+            hourly_bands=hourly_bands,
+            expected_window=window,
         )
         if categories:
             judged.add(target)
@@ -295,10 +403,13 @@ __all__ = [
     "CATEGORIES",
     "DEPARTURE_HOURS",
     "FLOORS",
+    "HOURLY_MIN_SAMPLES",
     "METRICS",
     "Band",
     "band_for",
     "evaluate",
+    "expected_windows_from_env",
+    "hourly_band_for",
     "reconcile_anomaly_findings",
     "subject_issues",
 ]

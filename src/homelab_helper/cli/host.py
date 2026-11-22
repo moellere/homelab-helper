@@ -272,17 +272,24 @@ async def _print_placements(session: AsyncSession, host: Host) -> None:
     table.add_column("manufacturer")
     table.add_column("model", overflow="fold")
     table.add_column("size")
+    has_raid = any((p.attributes or {}).get("raid_array") for _, p in rows)
+    if has_raid:
+        table.add_column("raid", no_wrap=True)
     for placement, part in rows:
         identity = part.wwid or part.serial or "—"
         size_str = _format_bytes(part.capacity_bytes) if part.capacity_bytes else "—"
-        table.add_row(
+        row_cells = [
             part.kind.value,
             placement.slot,
             identity,
             part.manufacturer or "—",
             part.model or "—",
             size_str,
-        )
+        ]
+        if has_raid:
+            r = (part.attributes or {}).get("raid_array") or {}
+            row_cells.append(f"{r['array']} ({r.get('level') or 'md'})" if r.get("array") else "—")
+        table.add_row(*row_cells)
     console.print(table)
 
 

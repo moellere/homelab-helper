@@ -146,3 +146,48 @@ async def test_import_ip_literal_url_fills_ip_and_preserves_foreign_attributes(
         assert endpoints[0].ip == "10.0.1.5"
     finally:
         await engine.dispose()
+
+
+async def test_import_correlates_device_trackers_with_hosts(tmp_path: Path) -> None:
+    from homelab_helper.adapters.homeassistant import parse_state
+    from homelab_helper.db.models import Host
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'hass-trackers.db'}"
+    engine = make_engine(url)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        sm = make_sessionmaker(engine)
+        async with session_scope(sm) as s:
+            s.add(Host(hostname="nas", primary_ip=None))
+        states = [
+            parse_state(
+                {
+                    "entity_id": "device_tracker.nas",
+                    "state": "home",
+                    "attributes": {
+                        "ip": "10.0.1.50",
+                        "mac": "11:22:33:44:55:66",
+                        "host_name": "nas.lan",
+                    },
+                }
+            )
+        ]
+        async with session_scope(sm) as s:
+            result = await import_home_assistant(
+                s,
+                config={"version": "2026.9.0", "components": ["unifi"]},
+                states=states,
+                service_domains=[],
+                url="http://ha-cabin.lan:8123",
+                service_name="home-assistant-cabin",
+                resolver="home-assistant:cabin",
+            )
+            host = (await s.execute(select(Host).where(Host.hostname == "nas"))).scalar_one()
+            assert host.primary_ip == "10.0.1.50"
+            assert host.capabilities["hass_device_tracker"]["mac"] == "11:22:33:44:55:66"
+        assert result.service == "home-assistant-cabin"
+        assert result.device_trackers == 1
+        assert result.matched_hosts == ["nas"]
+    finally:
+        await engine.dispose()

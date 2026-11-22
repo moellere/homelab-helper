@@ -1407,9 +1407,9 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   failed snapshot is absent evidence and never raises. `run_discovery("jetkvm")`,
   a `SOURCES` entry (the daemon picks it up), the MCP `console_snapshot` tool,
   `helper discover jetkvm [--persist] [--dry-run] [--snapshot PATH]`.
-  - [ ] Follow-ups: live validation; a `host-unreachable` finding for a host the
-    KVM was moved away from stays open until resolved by hand (only the
-    currently attached host is observed).
+  - [x] Follow-ups: live validation; a `host-unreachable` finding for a host the
+    KVM was moved away from resolves when the KVM is observed attached to a new
+    host.
 
 - [x] **Diagram of the lab** (10/26/2026) — `engine/diagram.py` builds a graph
   from persisted rows: hosts grouped by site (topology file, else the /24),
@@ -1418,7 +1418,7 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   findings per host. `render_mermaid`, `render_html` (mermaid.js pinned from a
   CDN), `to_dict`. `helper diagram [--format mermaid|html|json] [--out] [--site]
   [--no-services] [--no-guests]` and the MCP `diagram` tool. Reads only.
-  - [ ] Follow-ups: workloads once they are persisted; a `--since` that greys
+  - [x] Follow-ups: workloads once they are persisted; a `--since` that greys
     hosts not verified recently.
 - [x] **Kubernetes cluster row** — `discover k8s` upserts one
   `Cluster(kind="kubernetes")` per kubeconfig context (the configured one, else
@@ -1430,8 +1430,47 @@ See `roadmap.md` Phase 11. The Kubernetes nodes join the gradient through the
   as non-nodes rather than empty hypervisors; `helper diagram` asks for every
   kind and draws a `node of` edge from each Kubernetes node.
 
+## Phase 12 — Workload Depth, Live Verifiers & Operational Maturity
+
+See `roadmap.md` Phase 12. Closes the four structural seams across Kubernetes workloads, live assertion verifiers & RAID lineage, maintenance ergonomics, and multi-site/temporal depth.
+
+- [x] **12.1 First-class workload inventory & container rightsizing**
+  - [x] Persist Kubernetes workloads (`Cluster.attributes["workloads"]` or `Workload` rows) during `discover k8s`, with container images and CPU/memory requests & limits; reap removed workloads on a non-empty listing
+  - [x] Extend `engine/rightsizing.py` to evaluate 11.4 `workload` usage samples against K8s CPU/memory requests & limits (`k8s-cpu-grow`, `k8s-cpu-shrink`, `k8s-mem-grow`, `k8s-mem-shrink`)
+  - [x] Upgrade `engine/suggestions.py` to match against persisted K8s container images, LXC templates/names, `host.services` systemd unit names, and `WorkloadProfile.depends_on` chains
+  - [x] Render persisted Kubernetes workloads and `--since` host verification staleness in `engine/diagram.py` / `helper diagram` and `helper view service`
+- [x] **12.2 RAID volume lineage (#77) & live assertion verifiers**
+  - [x] Link `host.raid` arrays to their member `PhysicalPart` drives (member partition → parent block device → WWN/serial); correlate `engine/disk_health.py` with `engine/raid_health.py` (escalate drive findings in degraded arrays) and show array lineage in `helper host show`
+  - [x] Wire `AssertionKind.HTTP_CHECK` (status code, body regex, TLS certificate expiry days), `SSH_COMMAND`, `FILE_HASH`, and `API_QUERY` in `engine/assertions.py`
+- [x] **12.3 Maintenance & playbook ergonomics**
+  - [x] Plan-drafting playbooks for rolling upgrades (`pve-updates`, `talos-eol`, `k8s-eol`) so playbooks draft or coordinate with a drain-aware `MaintenanceRun`
+  - [x] Proxmox maintenance post-reboot kernel currency check (`uname -r` vs `/lib/modules`) and Ceph `HEALTH_OK` / clean-PG health gate
+  - [x] QEMU Guest Agent in-guest memory probing so `engine/rightsizing.py` can propose `mem-grow` for VMs when real in-guest memory is constrained
+- [x] **12.4 Multi-site depth & time-of-day baselines**
+  - [x] Hour-of-day / weekday percentile bands and per-subject `expected_window` declarations in `engine/baselines.py`
+  - [x] Multi-instance Home Assistant support (`HOMELAB_HELPER_HASS_INSTANCES`) and `device_tracker.*` / device registry identity correlation
+  - [x] Project `host.storage` filesystem usage (`fsavail`/`fssize`) into daily `filesystem` `UsageSample` rows so `engine/capacity.py` projects time-to-full for all probed hosts
+
+## Phase 13 — Continuous Verification, Backup Depth & Fleet Hygiene
+
+See `roadmap.md` Phase 13. Closes the operational follow-ups across off-site/non-Proxmox backup posture, deep GPU & TLS probes, image/firmware/thermal currency, daemon probe & assertion cadences, and NetBox deep sync + secret reference schemes.
+
+- [x] **13.1 Off-site & multi-target backup posture + restore drills**
+  - [x] Correlate Home Assistant off-site replication / backup sensors (`backup-offsite-stale`) and operator-declared non-Proxmox backup targets (`HOMELAB_HELPER_BACKUP_TARGETS` → `backup-target-stale` / `backup-target-uncovered`) in `engine/backups.py` and `engine/discoverers.py`
+  - [x] Record auditable restore-drill verifications (`record_restore_drill`, CLI/MCP) that clear `backup-verify` / `backup-unverified` findings
+- [x] **13.2 GPU & TLS probe depth + image/firmware currency**
+  - [x] Extend `probes/host/gpu.py` and `engine/reconciler.py` with bound driver, VRAM size, and active compute status; use VRAM and busy state in `engine/placement.py` and `engine/suggestions.py`
+  - [x] Extract TLS certificate subject, SANs, issuer, and expiry days on HTTPS ports in `probes/network/fingerprint.py` (`tls-cert-expiring`)
+  - [x] Add unpinned container image tag (`image-tag-unpinned`) and MikroTik/OMV version checks in `engine/versions.py`, plus per-drive temperature baseline departures (`disk-temp-anomaly`) in `engine/disk_health.py`
+- [x] **13.3 Daemon probe/assertion cadences, power-policy gating & new playbooks**
+  - [x] Add `probes:` and `assertions:` cadences to `engine/schedule.py` and `cli/daemon.py` with `OperationalIntent.EXPECTED_OFF` power-policy gating (P2-AC4)
+  - [x] Add `guest-stopped` (expected-on guest observed stopped) and post-resize VM `restart` playbooks in `engine/playbooks.py`, plus optional scheduled digest notifications
+- [x] **13.4 NetBox deep sync & secret reference hardening**
+  - [x] Extend `adapters/netbox.py` to sync host NIC interfaces, primary IPs, discovered VLANs/prefixes, and `Service` / `ServiceEndpoint` records
+  - [x] Support `op://` and `vault://` secret reference schemes in `secrets.py`, resolve `Host.credentials_ref` through `secrets.py`, and redact CLI-printed adapter errors
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but
-deliberately deferred — Phase 7 slice 2 picks it up as the scheduler. Post-roadmap
-(Phase 11+) items are deliberately not tracked.
+deliberately deferred — Phase 7 slice 2 and Phase 13 slice 3 pick it up as the
+scheduler. Post-roadmap (Phase 14+) items are deliberately not tracked.

@@ -231,8 +231,9 @@ def workload_bucket(row: dict[str, Any], now: datetime) -> Bucket:
         "mem_used": int(row.get("mem_bytes") or 0),
         "mem_used_max": int(row.get("mem_bytes") or 0),
     }
-    if row.get("mem_limit"):
-        values["mem_total"] = int(row["mem_limit"])
+    mem_alloc = row.get("mem_limit") or row.get("mem_request")
+    if mem_alloc:
+        values["mem_total"] = int(mem_alloc)
     return Bucket(ts=_bucket_start(now.timestamp(), BUCKET_SECONDS[HOUR]), values=values)
 
 
@@ -416,7 +417,7 @@ def _summary(subject_key: str, rows: list[UsageSample], resolution: str) -> dict
     cpu_peak = [r.cpu_max for r in rows if r.cpu_max is not None]
     mem = [float(v) for r in rows if (v := r.mem_used_max or r.mem_used)]
     net = [(r.net_in or 0.0) + (r.net_out or 0.0) for r in rows if r.net_in is not None]
-    return {
+    out: dict[str, Any] = {
         "subject": subject_key,
         "label": latest.label,
         "resolution": resolution,
@@ -433,6 +434,9 @@ def _summary(subject_key: str, rows: list[UsageSample], resolution: str) -> dict
         "mem_peak": max(mem) if mem else None,
         "net_mean": sum(net) / len(net) if net else None,
     }
+    if (latest.extra or {}).get("guest_agent_memory"):
+        out["guest_agent_memory"] = True
+    return out
 
 
 __all__ = [

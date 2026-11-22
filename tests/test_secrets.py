@@ -184,3 +184,43 @@ def test_config_reports_reference_scheme_not_value(
     assert row["set"] is True
     assert row["value"] is None
     assert row["reference"] == "keyring"
+
+
+def test_op_and_vault_schemes_and_ssh_credentials_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+    from homelab_helper.secrets import resolve_ssh_credentials_ref
+
+    calls: list[Sequence[str]] = []
+
+    def fake_runner(argv: Sequence[str]) -> str:
+        calls.append(list(argv))
+        if argv[0] == "op":
+            return "op-secret-token\n"
+        if argv[0] == "vault":
+            return "vault-secret-token\n"
+        return ""
+
+    assert is_reference("op://Homelab/Proxmox/token")
+    assert reference_scheme("op://Homelab/Proxmox/token") == "op"
+    assert resolve_secret("op://Homelab/Proxmox/token", runner=fake_runner) == "op-secret-token"
+    assert redact("leaked op-secret-token") == "leaked ***"
+
+    assert is_reference("vault://secret/homelab/netbox#token")
+    assert reference_scheme("vault://secret/homelab/netbox#token") == "vault"
+    assert (
+        resolve_secret("vault://secret/homelab/netbox#token", runner=fake_runner)
+        == "vault-secret-token"
+    )
+    assert redact("leaked vault-secret-token") == "leaked ***"
+
+    with pytest.raises(SecretError, match="op reference needs"):
+        resolve_secret("op://only-one", runner=fake_runner)
+    with pytest.raises(SecretError, match="vault reference needs"):
+        resolve_secret("vault://no-field", runner=fake_runner)
+
+    monkeypatch.setenv("TEST_SSH_KEY_PATH", "/home/op/.ssh/id_ed25519")
+    assert resolve_ssh_credentials_ref("ssh:root:env:TEST_SSH_KEY_PATH") == (
+        "root",
+        "/home/op/.ssh/id_ed25519",
+    )
+    assert resolve_ssh_credentials_ref("ssh:root:/tmp/key") == ("root", "/tmp/key")
+    assert resolve_ssh_credentials_ref(None) is None

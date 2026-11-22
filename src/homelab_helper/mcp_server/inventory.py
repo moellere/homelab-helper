@@ -25,8 +25,10 @@ from homelab_helper.db.models import (
 )
 from homelab_helper.db.session import make_engine, make_sessionmaker, session_scope
 from homelab_helper.engine import diagram as diagram_engine
+from homelab_helper.engine.k8s_workloads import persisted_k8s_workloads
 from homelab_helper.engine.retire import is_retired, retired_host_ids
 from homelab_helper.engine.retire import retire_host as _retire_host
+from homelab_helper.engine.schedule import ScheduleError, parse_interval
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -260,7 +262,7 @@ async def get_service(name: str) -> dict[str, Any]:
             vm = (
                 await session.execute(select(VirtualMachine).where(VirtualMachine.name == svc.name))
             ).scalar_one_or_none()
-            hosted = None
+            hosted: dict[str, Any] | None = None
             if vm is not None:
                 cluster = await session.get(Cluster, vm.cluster_id)
                 hosted = {
@@ -269,6 +271,22 @@ async def get_service(name: str) -> dict[str, Any]:
                     "node": vm.node_name,
                     "status": vm.status,
                 }
+            else:
+                match = next(
+                    (
+                        w
+                        for w in await persisted_k8s_workloads(session)
+                        if w.get("name") == svc.name
+                    ),
+                    None,
+                )
+                if match is not None:
+                    hosted = {
+                        "workload": match["id"],
+                        "cluster": match.get("cluster"),
+                        "ready": match.get("ready"),
+                        "desired": match.get("desired"),
+                    }
             return {
                 "name": svc.name,
                 "endpoints": [_endpoint_dict(e) for e in eps],
@@ -317,17 +335,26 @@ async def audit_summary() -> dict[str, Any]:
 
 
 @server.tool()
-async def diagram(site: str | None = None, format: str = "mermaid") -> dict[str, Any]:
+async def diagram(
+    site: str | None = None, format: str = "mermaid", since: str | None = None
+) -> dict[str, Any]:
     """The inventory as a diagram: sites, hosts (with guests and open findings),
     clusters, and the services that resolve to each host. A read over the harness
     DB; nothing is contacted. `format` is "mermaid" (default, paste into docs or a
-    page), "html" (a standalone page) or "json" (the graph). `site` keeps one site."""
+    page), "html" (a standalone page) or "json" (the graph). `site` keeps one site;
+    `since` greys hosts not verified within that interval (e.g. "24h")."""
     if format not in ("mermaid", "html", "json"):
         return {"error": "format must be mermaid, html or json"}
+    cutoff: datetime | None = None
+    if since is not None:
+        try:
+            cutoff = datetime.now(UTC) - parse_interval(since)
+        except ScheduleError as exc:
+            return {"error": str(exc)}
     engine = make_engine(database_url())
     try:
         async with make_sessionmaker(engine)() as session:
-            model = await diagram_engine.build_model(session, site=site)
+            model = await diagram_engine.build_model(session, site=site, since=cutoff)
     finally:
         await engine.dispose()
     if format == "json":

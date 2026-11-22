@@ -74,10 +74,12 @@ from homelab_helper.db.models import (
     Placement,
     ReconciliationFinding,
 )
+from homelab_helper.engine.capacity import record_filesystem_samples
 from homelab_helper.engine.disk_health import HISTORY_WINDOW, reconcile_disk_health
 from homelab_helper.engine.fingerprint import make_fingerprint
-from homelab_helper.engine.raid_health import reconcile_raid_health
+from homelab_helper.engine.raid_health import reconcile_raid_health, resolve_host_raid_volumes
 from homelab_helper.engine.stray_export import host_exports, reconcile_stray_exports
+from homelab_helper.probes.host.storage import mounted_filesystems_from_devices
 
 if TYPE_CHECKING:
     import uuid
@@ -305,6 +307,9 @@ _NETWORK_RULES: tuple[HostProjectionRule, ...] = (
 _GPU_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.gpu.count", capability="gpu_count"),
     HostProjectionRule(key="host.gpu.vendors", capability="gpu_vendors"),
+    HostProjectionRule(key="host.gpu.drivers", capability="gpu_drivers"),
+    HostProjectionRule(key="host.gpu.vram_mb", capability="gpu_vram_mb"),
+    HostProjectionRule(key="host.gpu.busy", capability="gpu_busy"),
 )
 
 # RAID: a compact per-array summary from host.raid. Health findings for
@@ -313,6 +318,27 @@ _GPU_RULES: tuple[HostProjectionRule, ...] = (
 _RAID_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.raid.array_count", capability="raid_array_count"),
     HostProjectionRule(key="host.raid.summary", capability="raid"),
+)
+
+
+def _running_service_names(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for item in raw:
+        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(name, str) and name:
+            names.append(name.removesuffix(".service"))
+    return sorted(set(names))
+
+
+_SERVICES_RULES: tuple[HostProjectionRule, ...] = (
+    HostProjectionRule(
+        key="host.services.running",
+        capability="running_services",
+        transform=_running_service_names,
+    ),
+    HostProjectionRule(key="host.services.failed_names", capability="failed_services"),
 )
 
 _K8S_RULES: tuple[HostProjectionRule, ...] = (
@@ -330,6 +356,7 @@ _HOST_RULES: tuple[HostProjectionRule, ...] = (
     + _NETWORK_RULES
     + _GPU_RULES
     + _RAID_RULES
+    + _SERVICES_RULES
     + _K8S_RULES
 )
 
@@ -466,7 +493,7 @@ class Reconciler:
         # Phase 3: Auto-resolve findings whose conditions are no longer present.
         await self._auto_resolve_findings(session, host_id, ledger)
 
-        # Phase 4 / 10.1: RAID and drive health, each scoped per host.
+        # Phase 4 / 10.1 / 12.4: RAID, drive health, and mounted filesystem usage.
         storage_seen = await self._reconcile_storage_health(
             session,
             host_id,
@@ -474,6 +501,7 @@ class Reconciler:
             ledger,
             found.get(_RAID_ARRAYS_KEY),
             found.get(_SMART_DEVICES_KEY),
+            storage_raw,
         )
 
         # Phase 5: host shares → the same stray-export check OMV gets, scoped to
@@ -582,6 +610,7 @@ class Reconciler:
         ledger: dict[str, Any],
         raid_raw: Any,
         smart_raw: Any,
+        storage_raw: Any = None,
     ) -> bool:
         """RAID arrays and SMART drives → ``storage-health`` findings, per host.
 
@@ -589,23 +618,32 @@ class Reconciler:
         per host, never from another host's silence. Returns whether either
         probe has ever reported here.
         """
+        if isinstance(storage_raw, list) and (
+            fs_rows := mounted_filesystems_from_devices(storage_raw)
+        ):
+            await record_filesystem_samples(session, host.hostname, fs_rows)
         # Phase 4: RAID health. Only when host.raid has reported for this host —
         # its findings resolve per host, never from another host's silence.
         if isinstance(raid_raw, list):
+            await resolve_host_raid_volumes(session, host_id, raid_raw)
             raid = await reconcile_raid_health(session, str(host_id), host.hostname, raid_raw)
             ledger["findings_opened"] += raid.fingerprints["opened"] + raid.fingerprints["reopened"]
             ledger["findings_updated"] += raid.fingerprints["updated"]
             ledger["findings_resolved"] += raid.fingerprints["resolved"]
 
-        # Phase 10.1: drive health from host.smart, judged against the host's own
-        # earlier observations so a moving counter outranks a static one. Same
-        # per-host scoping as RAID: silence resolves nothing.
+        # Phase 10.1 / 12.2: drive health from host.smart, judged against the host's
+        # own earlier observations and correlated with RAID array membership.
         if isinstance(smart_raw, list):
             history = await self._observation_history(
                 session, host_id, _SMART_DEVICES_KEY, since=datetime.now(UTC) - HISTORY_WINDOW
             )
             disk = await reconcile_disk_health(
-                session, str(host_id), host.hostname, smart_raw, history
+                session,
+                str(host_id),
+                host.hostname,
+                smart_raw,
+                history,
+                arrays=raid_raw if isinstance(raid_raw, list) else None,
             )
             ledger["findings_opened"] += disk.fingerprints["opened"] + disk.fingerprints["reopened"]
             ledger["findings_updated"] += disk.fingerprints["updated"]

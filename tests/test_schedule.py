@@ -672,3 +672,59 @@ def test_schedule_cli_shows_source_cadences(tmp_path, monkeypatch, fakes) -> Non
     assert "source cadences" in result.output
     assert "usage" in result.output
     assert "other sources: every 4h" in result.output
+
+
+async def test_expected_off_hosts_are_skipped_by_probes_and_assertions(
+    tmp_path, sessionmaker, fakes
+) -> None:
+    from homelab_helper.db.enums import IntentState, PowerState
+    from homelab_helper.db.models import OperationalIntent
+
+    schedule = load_schedule(_write(tmp_path, SCHEDULE))
+    t0 = datetime.now(UTC)
+    async with session_scope(sessionmaker) as s:
+        host = Host(
+            hostname="nas0",
+            primary_ip="10.0.0.9",
+            expected_power_state=PowerState.OFF,
+        )
+        s.add(host)
+        await s.flush()
+        s.add(
+            ConfigurationAssertion(
+                name="nas0.check",
+                scope=AssertionScope.HOST,
+                scope_target=str(host.id),
+                description="check nas0",
+                kind=AssertionKind.OBSERVATION_PREDICATE,
+                verifier_spec={"key": "host.cpu.cores", "value": 8},
+                severity_on_fail=FindingSeverity.LOW,
+            )
+        )
+        await s.flush()
+        run = await run_due(s, schedule, now=t0, ssh_adapter=_FakeSSH())
+        assert run.probes_run == []
+        assert run.assertions_run == []
+        assert run.skipped_expected_off == ["nas0", "assertion:nas0.check"]
+
+        # Flip host back to ON, but add an active STOPPED_BY_DESIGN OperationalIntent
+        host.expected_power_state = PowerState.ON
+        s.add(
+            OperationalIntent(
+                target_type=IntentTargetType.HOST,
+                target_id=str(host.id),
+                intent=IntentState.STOPPED_BY_DESIGN,
+                declared_by="op",
+                review_at=t0 + timedelta(hours=2),
+            )
+        )
+        await s.flush()
+        run2 = await run_due(s, schedule, now=t0, ssh_adapter=_FakeSSH())
+        assert run2.probes_run == []
+        assert run2.skipped_expected_off == ["nas0", "assertion:nas0.check"]
+
+        # Past review_at, the intent expires and probes/assertions run normally
+        run3 = await run_due(s, schedule, now=t0 + timedelta(hours=3), ssh_adapter=_FakeSSH())
+        assert run3.probes_run == ["nas0: host.fast, host.slow"]
+        assert len(run3.assertions_run) == 1
+        assert run3.skipped_expected_off == []

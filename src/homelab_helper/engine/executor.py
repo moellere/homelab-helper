@@ -646,8 +646,13 @@ def _ssh_credentials(host: Host) -> tuple[str, str | None]:
 
     The ref is the only place a node's login lives; a node the operator never
     onboarded has none, and a node update is refused rather than guessed at.
+    Either ``credentials_ref`` itself or its ``<key-path>`` segment may be a
+    secret reference (``env:``, ``file:``, ``keyring:``, ``op://``, ``vault://``).
     """
-    ref = host.credentials_ref or ""
+    from homelab_helper.secrets import is_reference, resolve_secret  # noqa: PLC0415
+
+    raw = host.credentials_ref or ""
+    ref = (resolve_secret(raw) or "") if is_reference(raw) else raw
     if not ref.startswith("ssh:"):
         raise ValueError(
             f"host {host.hostname} has no ssh credentials_ref "
@@ -657,7 +662,10 @@ def _ssh_credentials(host: Host) -> tuple[str, str | None]:
     user, _, key_path = rest.partition(":")
     if not user:
         raise ValueError(f"host {host.hostname} credentials_ref names no user")
-    return user, key_path or None
+    resolved_key = (
+        (resolve_secret(key_path) or "") if is_reference(key_path) else key_path
+    ) or None
+    return user, resolved_key
 
 
 REBOOT_TIMEOUT_S = 900
@@ -722,6 +730,39 @@ async def _node_is_back(
     return ok
 
 
+async def verify_running_kernel(
+    ssh: Any,
+    host: str,
+    *,
+    user: str,
+    key_path: Any = None,
+) -> tuple[bool, str, str]:
+    """Compare ``uname -r`` against the newest installed kernel under ``/lib/modules``.
+
+    Returns ``(is_current, running_kernel, newest_installed_kernel)``.
+    """
+    cmd = "uname -r && ls -1 /lib/modules 2>/dev/null | sort -V | tail -n 1"
+    run_cmd = getattr(ssh, "run_command", None)
+    if callable(run_cmd):
+        res = await run_cmd(host, cmd, user=user, key_path=key_path)
+    elif callable(getattr(ssh, "session", None)):
+        try:
+            async with ssh.session(host, user=user, key_path=key_path) as sess:
+                res = await sess.run(cmd)
+        except Exception:
+            return True, "", ""
+    else:
+        return True, "", ""
+    if not getattr(res, "ok", False):
+        return True, "", ""
+    lines = [line.strip() for line in str(res.stdout).splitlines() if line.strip()]
+    if not lines:
+        return True, "", ""
+    running = lines[0]
+    newest = lines[-1] if len(lines) > 1 else running
+    return running == newest, running, newest
+
+
 async def _dispatch_node_reboot(
     manifest: ActionManifest,
     adapter: ProxmoxAdapter,
@@ -753,7 +794,15 @@ async def _dispatch_node_reboot(
         await asyncio.sleep(REBOOT_POLL_S)
     while time.monotonic() - started < REBOOT_TIMEOUT_S:
         if await _node_is_back(adapter, ssh, host, node, user, key_path):
-            return "reboot", {"came_back_s": int(time.monotonic() - started)}
+            detail: dict[str, Any] = {"came_back_s": int(time.monotonic() - started)}
+            current, running_k, newest_k = await verify_running_kernel(
+                ssh, host.primary_ip or node, user=user, key_path=key_path
+            )
+            if running_k:
+                detail["running_kernel"] = running_k
+                detail["newest_kernel"] = newest_k
+                detail["kernel_current"] = current
+            return "reboot", detail
         await asyncio.sleep(REBOOT_POLL_S)
     raise ValueError(
         f"{node} did not come back within {REBOOT_TIMEOUT_S} s of the reboot — "

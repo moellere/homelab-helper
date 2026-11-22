@@ -120,6 +120,19 @@ def _named_unifi_controllers() -> list[str]:
     return ready
 
 
+def _named_hass_instances() -> list[str]:
+    """Home Assistant instance names that carry a complete per-instance credential set."""
+    raw = os.environ.get("HOMELAB_HELPER_HASS_INSTANCES") or ""
+    ready = []
+    for name in (n.strip() for n in raw.split(",")):
+        if not name:
+            continue
+        prefix = f"HOMELAB_HELPER_HASS_{name.upper().replace('-', '_')}_"
+        if os.environ.get(prefix + "URL") and os.environ.get(prefix + "TOKEN"):
+            ready.append(name)
+    return ready
+
+
 @dataclass(frozen=True)
 class SourceConfig:
     """The environment contract for one discovery source."""
@@ -215,9 +228,10 @@ SOURCES: tuple[SourceConfig, ...] = (
     SourceConfig(
         name="hass",
         required=("HOMELAB_HELPER_HASS_URL", "HOMELAB_HELPER_HASS_TOKEN"),
-        optional=("HOMELAB_HELPER_HASS_VERIFY_SSL",),
+        optional=("HOMELAB_HELPER_HASS_VERIFY_SSL", "HOMELAB_HELPER_HASS_INSTANCES"),
         secret=frozenset({"HOMELAB_HELPER_HASS_TOKEN"}),
         note="Home Assistant; a long-lived access token",
+        alt_check=lambda: bool(_named_hass_instances()),
     ),
     SourceConfig(
         name="printwarden",
@@ -324,6 +338,10 @@ def source_status(source: SourceConfig) -> dict[str, Any]:
         controllers = _named_unifi_controllers()
         if controllers:
             extra["controllers"] = controllers
+    elif source.name == "hass":
+        instances = _named_hass_instances()
+        if instances:
+            extra["instances"] = instances
     return {
         "source": source.name,
         "configured": source.configured(),

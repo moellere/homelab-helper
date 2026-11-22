@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from homelab_helper.adapters.argocd import ArgoCDAdapter, ArgoCDConfigError
 from homelab_helper.adapters.cloudflare import CloudflareAdapter
-from homelab_helper.adapters.homeassistant import HomeAssistantAdapter
+from homelab_helper.adapters.homeassistant import HomeAssistantAdapter, HomeAssistantConfig
 from homelab_helper.adapters.jetkvm import JetKVMAdapter
 from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.adapters.kubernetes import K8sAdapter
@@ -99,6 +99,15 @@ def hass() -> HomeAssistantAdapter:
     return HomeAssistantAdapter.from_env()
 
 
+def hass_all() -> list[HomeAssistantAdapter]:
+    """Every configured Home Assistant instance; the single-instance factory unless
+    ``HOMELAB_HELPER_HASS_INSTANCES`` names one or more."""
+    raw = os.environ.get("HOMELAB_HELPER_HASS_INSTANCES") or ""
+    if not [n for n in raw.split(",") if n.strip()]:
+        return [hass()]
+    return [HomeAssistantAdapter(cfg) for cfg in HomeAssistantConfig.all_from_env()]
+
+
 def mikrotik() -> MikroTikAdapter:
     return MikroTikAdapter.from_env()
 
@@ -162,6 +171,7 @@ __all__ = [
     "cloudflare",
     "for_action",
     "hass",
+    "hass_all",
     "jetkvm",
     "k8s",
     "k8s_if_available",

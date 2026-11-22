@@ -91,6 +91,17 @@ class HomeAssistantConfig:
     token: str
     verify_ssl: bool = True
     timeout_s: float = 10.0
+    name: str = "default"
+    """Instance label. Distinguishes hubs in a multi-site lab, and lands in the
+    Service name and endpoint resolver tag so two instances never collide."""
+
+    @property
+    def service_name(self) -> str:
+        return "home-assistant" if self.name == "default" else f"home-assistant-{self.name}"
+
+    @property
+    def resolver(self) -> str:
+        return "home-assistant" if self.name == "default" else f"home-assistant:{self.name}"
 
     @classmethod
     def from_env(cls) -> HomeAssistantConfig:
@@ -102,7 +113,34 @@ class HomeAssistantConfig:
                 "HOMELAB_HELPER_HASS_TOKEN (a long-lived access token)."
             )
         verify = os.environ.get("HOMELAB_HELPER_HASS_VERIFY_SSL", "true").lower() not in _FALSEY
-        return cls(url=url, token=token, verify_ssl=verify)
+        name = os.environ.get("HOMELAB_HELPER_HASS_NAME") or "default"
+        return cls(url=url, token=token, verify_ssl=verify, name=name)
+
+    @classmethod
+    def all_from_env(cls) -> list[HomeAssistantConfig]:
+        """Every configured Home Assistant instance, for labs with more than one hub.
+
+        ``HOMELAB_HELPER_HASS_INSTANCES=main,cabin`` opts in; each name then reads
+        ``HOMELAB_HELPER_HASS_<NAME>_URL`` / ``_TOKEN`` (and optional ``_VERIFY_SSL``).
+        With the list unset this is the single unsuffixed instance.
+        """
+        raw = os.environ.get("HOMELAB_HELPER_HASS_INSTANCES") or ""
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+        if not names:
+            return [cls.from_env()]
+        configs: list[HomeAssistantConfig] = []
+        for name in names:
+            prefix = f"HOMELAB_HELPER_HASS_{name.upper().replace('-', '_')}_"
+            url = os.environ.get(prefix + "URL")
+            token = secret_from_env(prefix + "TOKEN")
+            if not url or not token:
+                raise HomeAssistantConfigError(
+                    f"Home Assistant instance {name!r} is listed in "
+                    f"HOMELAB_HELPER_HASS_INSTANCES but needs {prefix}URL and {prefix}TOKEN."
+                )
+            verify = os.environ.get(prefix + "VERIFY_SSL", "true").lower() not in _FALSEY
+            configs.append(cls(url=url, token=token, verify_ssl=verify, name=name))
+        return configs
 
 
 def parse_config(raw: dict[str, Any]) -> dict[str, Any]:
@@ -134,7 +172,51 @@ def parse_state(raw: dict[str, Any]) -> dict[str, Any]:
         # Version currency (Phase 8.1) needs what is installed and what is offered.
         for key in ("installed_version", "latest_version", "title"):
             shaped[key] = attributes.get(key)
+    elif shaped["domain"] == "device_tracker":
+        ip = attributes.get("ip") or attributes.get("ip_address")
+        mac = attributes.get("mac")
+        host_name = attributes.get("host_name") or attributes.get("hostname")
+        if ip:
+            shaped["ip"] = str(ip).strip()
+        if mac:
+            shaped["mac"] = str(mac).strip().lower()
+        if host_name:
+            shaped["host_name"] = str(host_name).strip()
+        if attributes.get("source_type"):
+            shaped["source_type"] = str(attributes["source_type"])
     return shaped
+
+
+def extract_device_trackers(states: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalized ``device_tracker.*`` entries carrying ``ip``, ``mac``, or ``host_name``."""
+    trackers: list[dict[str, Any]] = []
+    for raw in states:
+        row = raw if "domain" in raw else parse_state(raw)
+        if row.get("domain") != "device_tracker":
+            continue
+        raw_attrs = raw.get("attributes")
+        attrs: dict[str, Any] = raw_attrs if isinstance(raw_attrs, dict) else {}
+        ip = row.get("ip") or attrs.get("ip") or attrs.get("ip_address")
+        mac = row.get("mac") or attrs.get("mac")
+        host_name = (
+            row.get("host_name")
+            or attrs.get("host_name")
+            or attrs.get("hostname")
+            or row.get("name")
+        )
+        if not (ip or mac or host_name):
+            continue
+        trackers.append(
+            {
+                "entity_id": row.get("entity_id"),
+                "state": row.get("state"),
+                "ip": str(ip).strip() if ip else None,
+                "mac": str(mac).strip().lower() if mac else None,
+                "host_name": str(host_name).strip() if host_name else None,
+                "source_type": row.get("source_type") or attrs.get("source_type"),
+            }
+        )
+    return sorted(trackers, key=lambda t: str(t.get("entity_id") or ""))
 
 
 def summarize_states(states: list[dict[str, Any]]) -> dict[str, int]:
@@ -239,6 +321,7 @@ __all__ = [
     "HomeAssistantAdapter",
     "HomeAssistantConfig",
     "HomeAssistantConfigError",
+    "extract_device_trackers",
     "integrations_of_interest",
     "parse_config",
     "parse_state",

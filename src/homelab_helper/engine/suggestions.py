@@ -61,8 +61,34 @@ def normalize(name: str) -> str:
     return _SPLIT.sub("-", name.strip().lower()).strip("-")
 
 
+def image_names(images: Iterable[str]) -> list[str]:
+    """Extract repository basenames from container image strings.
+
+    ``"ghcr.io/immich-app/immich-server:v1.118.2"`` → ``"immich-server"``,
+    ``"lscr.io/linuxserver/plex@sha256:abc"`` → ``"plex"``.
+    """
+    out: list[str] = []
+    for raw in images:
+        if not raw or not raw.strip():
+            continue
+        base = raw.strip().split("@", 1)[0].rsplit("/", 1)[-1].split(":", 1)[0]
+        if base:
+            out.append(base)
+    return out
+
+
+def unit_names(units: Iterable[Any]) -> list[str]:
+    """Extract systemd service basenames from ``host.services`` unit strings or dicts."""
+    out: list[str] = []
+    for item in units:
+        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(name, str) and name.strip():
+            out.append(name.strip().removesuffix(".service"))
+    return out
+
+
 def present_names(*sources: Iterable[str]) -> set[str]:
-    """Every normalised name the lab knows, from guests, services and endpoints."""
+    """Every normalised name the lab knows, from guests, services, endpoints, images, and units."""
     return {normalize(n) for source in sources for n in source if n and n.strip()}
 
 
@@ -104,12 +130,27 @@ def idle_gpu_issues(
     issues: list[CategoryIssue] = []
     for host_id, hostname, capabilities in hosts:
         count = capabilities.get("gpu_count") or 0
-        if not count:
+        if not count or capabilities.get("gpu_busy"):
             continue
         vendors = capabilities.get("gpu_vendors") or []
         vendor_label = ", ".join(str(v) for v in vendors) if vendors else "unknown vendor"
-        offers = sorted(candidates.items())[:4]
+        vram_mb = capabilities.get("gpu_vram_mb")
+        drivers = capabilities.get("gpu_drivers") or []
+        offers = [
+            (name, profile)
+            for name, profile in sorted(candidates.items())
+            if not isinstance(vram_mb, int) or profile.ram_mb <= max(vram_mb * 2, 2048)
+        ][:4] or sorted(candidates.items())[:4]
         suggestions = "; ".join(f"{name} ({profile.gpu_purpose})" for name, profile in offers)
+        evidence: dict[str, Any] = {
+            "gpu_count": count,
+            "gpu_vendors": list(vendors),
+            "candidates": [name for name, _ in offers],
+        }
+        if vram_mb is not None:
+            evidence["gpu_vram_mb"] = vram_mb
+        if drivers:
+            evidence["gpu_drivers"] = list(drivers)
         issues.append(
             _issue(
                 category="capability-idle-gpu",
@@ -123,11 +164,7 @@ def idle_gpu_issues(
                     f"Candidates: {suggestions}. Matched on names only, so a guest named for "
                     "something else that already uses the GPU would not show up here."
                 ),
-                evidence={
-                    "gpu_count": count,
-                    "gpu_vendors": list(vendors),
-                    "candidates": [name for name, _ in offers],
-                },
+                evidence=evidence,
             )
         )
     return issues
@@ -162,10 +199,57 @@ def building_block_issues(
     return issues
 
 
+_BUNDLED_DB_DEPS = frozenset({"postgres", "redis", "mariadb"})
+"""Databases/caches commonly bundled inside a compose or Helm stack rather than
+deployed as separate top-level services; excluded from peer-dependency suggestions."""
+
+
+def missing_dependency_issues(
+    library: Mapping[str, WorkloadProfile], present: set[str]
+) -> list[CategoryIssue]:
+    """Peer workloads that a present workload declares in ``depends_on`` but that are absent.
+
+    For example, ``zigbee2mqtt`` or ``frigate`` running without ``mosquitto``,
+    or ``tautulli`` running without ``plex``.
+    """
+    needed_by: dict[str, list[str]] = {}
+    for name, profile in sorted(library.items()):
+        if not _matches(name, present):
+            continue
+        for dep in profile.depends_on:
+            if dep in _BUNDLED_DB_DEPS or dep not in library:
+                continue
+            if not _matches(dep, present):
+                needed_by.setdefault(dep, []).append(name)
+    issues: list[CategoryIssue] = []
+    for dep, callers in sorted(needed_by.items()):
+        dep_profile = library[dep]
+        callers_str = ", ".join(callers)
+        issues.append(
+            _issue(
+                category="dependency-missing",
+                target_type="lab",
+                target_id=f"dep:{dep}",
+                severity=FindingSeverity.INFO,
+                title=f"No {dep}: required by {callers_str}",
+                description=(
+                    f"{callers_str} depends on {dep} ({dep_profile.description}), "
+                    f"which does not appear to be running ({dep_profile.ram_mb} MiB RAM baseline). "
+                    "Matched on names, container images, and systemd units."
+                ),
+                evidence={"dependency": dep, "required_by": callers},
+            )
+        )
+    return issues
+
+
 __all__ = [
     "BUILDING_BLOCKS",
     "building_block_issues",
     "idle_gpu_issues",
+    "image_names",
+    "missing_dependency_issues",
     "normalize",
     "present_names",
+    "unit_names",
 ]

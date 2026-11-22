@@ -32,14 +32,21 @@ Stubbed (SKIP with a clear reason) until their adapters land:
 
 from __future__ import annotations
 
+import asyncio
 import re
+import shlex
+import ssl
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
+import httpx
 from sqlalchemy import select
 
+from homelab_helper.adapters import factories
+from homelab_helper.adapters.kernel_ssh import KernelSSHAdapter
 from homelab_helper.db.enums import (
     AssertionKind,
     AssertionScope,
@@ -272,31 +279,391 @@ async def _verify_observation_predicate(
     )
 
 
-async def _verify_not_implemented(
+def _extract_path(data: Any, path: str | None) -> tuple[bool, Any]:
+    """Traverse a dotted key/index path (``"quorate"``, ``"0.status"``) into ``data``."""
+    if not path:
+        return True, data
+    cur = data
+    for part in path.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        else:
+            return False, None
+    return True, cur
+
+
+async def _resolve_target_host(
+    session: AsyncSession, assertion: ConfigurationAssertion
+) -> Host | None:
+    spec = assertion.verifier_spec or {}
+    raw = spec.get("scope_target_id") or assertion.scope_target
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        hid = uuid.UUID(raw)
+        host = (await session.execute(select(Host).where(Host.id == hid))).scalar_one_or_none()
+        if host is not None:
+            return host
+    except ValueError:
+        pass
+    return (await session.execute(select(Host).where(Host.hostname == raw))).scalar_one_or_none()
+
+
+def _resolve_ssh_creds(host: Host, spec: dict[str, Any]) -> tuple[str, str | None] | None:
+    from homelab_helper.secrets import resolve_ssh_credentials_ref  # noqa: PLC0415
+
+    user = spec.get("ssh_user")
+    key_path = spec.get("ssh_key_path")
+    if isinstance(user, str) and user:
+        return user, str(key_path) if key_path else None
+    return resolve_ssh_credentials_ref(host.credentials_ref)
+
+
+async def _run_ssh_command(
+    adapter: Any, address: str, command: str, *, user: str, key_path: str | None
+) -> Any:
+    run_cmd = getattr(adapter, "run_command", None)
+    if callable(run_cmd):
+        return await run_cmd(address, command, user=user, key_path=key_path)
+    async with adapter.session(address, user=user, key_path=key_path) as ssh:
+        return await ssh.run(command)
+
+
+async def _tls_days_remaining(url: str, timeout_s: float = 5.0) -> int | None:
+    """Connect with TLS and return remaining certificate validity in whole days."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    port = parsed.port or 443
+    ctx = ssl.create_default_context()
+    writer = None
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                parsed.hostname, port, ssl=ctx, server_hostname=parsed.hostname
+            ),
+            timeout=timeout_s,
+        )
+        ssl_obj = writer.get_extra_info("ssl_object")
+        cert = ssl_obj.getpeercert() if ssl_obj is not None else None
+        not_after = cert.get("notAfter") if isinstance(cert, dict) else None
+        if not isinstance(not_after, str):
+            return None
+        expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=UTC)
+        return (expires - datetime.now(UTC)).days
+    except Exception:
+        return None
+    finally:
+        if writer is not None:
+            writer.close()
+
+
+async def _verify_ssh_command(
+    engine: AssertionEngine,
     session: AsyncSession,
     assertion: ConfigurationAssertion,
 ) -> VerifierResult:
-    del session  # unused — the stub doesn't query anything
+    """Run a read-only command over KernelSSHAdapter and check exit code / stdout."""
+    spec = assertion.verifier_spec or {}
+    command = spec.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return VerifierResult(
+            status=AssertionStatus.SKIP if not spec else AssertionStatus.ERROR,
+            evidence={"kind": assertion.kind.value},
+            error="verifier_spec missing 'command'",
+        )
+    host = await _resolve_target_host(session, assertion)
+    if host is None:
+        return VerifierResult(
+            status=AssertionStatus.SKIP,
+            evidence={"command": command},
+            error="target host not found for ssh-command assertion",
+        )
+    creds = _resolve_ssh_creds(host, spec)
+    if creds is None:
+        return VerifierResult(
+            status=AssertionStatus.SKIP,
+            evidence={"host": host.hostname, "command": command},
+            error=f"host {host.hostname!r} has no ssh credentials configured",
+        )
+    user, key_path = creds
+    adapter = engine.ssh_adapter or KernelSSHAdapter()
+    address = host.primary_ip or host.hostname
+    try:
+        res = await _run_ssh_command(adapter, address, command, user=user, key_path=key_path)
+    except Exception as exc:
+        return VerifierResult(
+            status=AssertionStatus.SKIP,
+            evidence={"host": host.hostname, "command": command},
+            error=f"ssh connection failed: {exc}",
+        )
+    expected_code = int(spec.get("expected_exit_code", 0))
+    stdout = res.stdout.strip()
+    passed = res.exit_code == expected_code
+    if passed and "stdout_eq" in spec:
+        passed = stdout == str(spec["stdout_eq"]).strip()
+    if passed and "stdout_contains" in spec:
+        passed = str(spec["stdout_contains"]) in stdout
+    if passed and "stdout_regex" in spec:
+        passed = _pred_regex(stdout, str(spec["stdout_regex"]))
     return VerifierResult(
-        status=AssertionStatus.SKIP,
-        evidence={"kind": assertion.kind.value},
-        error=(
-            f"verifier for kind {assertion.kind.value!r} not yet implemented; "
-            "wires in with its adapter slice"
-        ),
+        status=AssertionStatus.PASS if passed else AssertionStatus.FAIL,
+        evidence={
+            "host": host.hostname,
+            "command": command,
+            "exit_code": res.exit_code,
+            "expected_exit_code": expected_code,
+            "stdout": stdout[:500],
+        },
     )
 
 
-_VERIFIERS: dict[
-    AssertionKind,
-    Callable[[AsyncSession, ConfigurationAssertion], Any],
-] = {
-    AssertionKind.OBSERVATION_PREDICATE: _verify_observation_predicate,
-    AssertionKind.SSH_COMMAND: _verify_not_implemented,
-    AssertionKind.HTTP_CHECK: _verify_not_implemented,
-    AssertionKind.API_QUERY: _verify_not_implemented,
-    AssertionKind.FILE_HASH: _verify_not_implemented,
-}
+async def _verify_file_hash(
+    engine: AssertionEngine,
+    session: AsyncSession,
+    assertion: ConfigurationAssertion,
+) -> VerifierResult:
+    """Verify a remote file's SHA-256 digest over SSH via ``sha256sum``."""
+    spec = assertion.verifier_spec or {}
+    path = spec.get("path")
+    expected_hash = spec.get("sha256")
+    if (
+        not isinstance(path, str)
+        or not path
+        or not isinstance(expected_hash, str)
+        or not expected_hash
+    ):
+        return VerifierResult(
+            status=AssertionStatus.SKIP if not spec else AssertionStatus.ERROR,
+            evidence={"kind": assertion.kind.value},
+            error="verifier_spec requires 'path' and 'sha256'",
+        )
+    host = await _resolve_target_host(session, assertion)
+    if host is None:
+        return VerifierResult(
+            status=AssertionStatus.SKIP,
+            evidence={"path": path},
+            error="target host not found for file-hash assertion",
+        )
+    creds = _resolve_ssh_creds(host, spec)
+    if creds is None:
+        return VerifierResult(
+            status=AssertionStatus.SKIP,
+            evidence={"host": host.hostname, "path": path},
+            error=f"host {host.hostname!r} has no ssh credentials configured",
+        )
+    user, key_path = creds
+    adapter = engine.ssh_adapter or KernelSSHAdapter()
+    address = host.primary_ip or host.hostname
+    try:
+        res = await _run_ssh_command(
+            adapter, address, f"sha256sum -- {shlex.quote(path)}", user=user, key_path=key_path
+        )
+    except Exception as exc:
+        return VerifierResult(
+            status=AssertionStatus.SKIP,
+            evidence={"host": host.hostname, "path": path},
+            error=f"ssh connection failed: {exc}",
+        )
+    observed = res.stdout.strip().split()[0].lower() if res.ok and res.stdout.strip() else None
+    expected_norm = expected_hash.strip().lower()
+    passed = observed == expected_norm
+    return VerifierResult(
+        status=AssertionStatus.PASS if passed else AssertionStatus.FAIL,
+        evidence={
+            "host": host.hostname,
+            "path": path,
+            "expected_sha256": expected_norm,
+            "observed_sha256": observed,
+            "exit_code": res.exit_code,
+        },
+    )
+
+
+async def _verify_http_check(
+    engine: AssertionEngine,
+    session: AsyncSession,
+    assertion: ConfigurationAssertion,
+) -> VerifierResult:
+    """Verify an HTTP(S) endpoint's status code, body content, and optional TLS expiry window."""
+    del session
+    spec = assertion.verifier_spec or {}
+    url = spec.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return VerifierResult(
+            status=AssertionStatus.SKIP if not spec else AssertionStatus.ERROR,
+            evidence={"kind": assertion.kind.value},
+            error="verifier_spec missing 'url'",
+        )
+    method = str(spec.get("method", "GET")).upper()
+    raw_expected = spec.get("expected_status", 200)
+    expected_statuses = (
+        [int(x) for x in raw_expected] if isinstance(raw_expected, list) else [int(raw_expected)]
+    )
+    timeout_s = float(spec.get("timeout_s", 10.0))
+    verify_ssl = bool(spec.get("verify_ssl", True))
+
+    client = engine.http_client
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(verify=verify_ssl, timeout=timeout_s)
+    try:
+        resp = await client.request(method, url)
+    except Exception as exc:
+        if spec.get("skip_on_unreachable"):
+            return VerifierResult(
+                status=AssertionStatus.SKIP,
+                evidence={"url": url},
+                error=f"http request failed: {exc}",
+            )
+        return VerifierResult(
+            status=AssertionStatus.FAIL,
+            evidence={"url": url, "error": str(exc)},
+        )
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    passed = resp.status_code in expected_statuses
+    body = resp.text
+    if passed and "body_contains" in spec:
+        passed = str(spec["body_contains"]) in body
+    if passed and "body_regex" in spec:
+        passed = _pred_regex(body, str(spec["body_regex"]))
+
+    evidence: dict[str, Any] = {
+        "url": url,
+        "status_code": resp.status_code,
+        "expected_status": expected_statuses,
+    }
+    min_tls_days = spec.get("min_tls_days")
+    if min_tls_days is not None:
+        tls_fn = engine.tls_days_fn or _tls_days_remaining
+        days = await tls_fn(url)
+        evidence["tls_days_remaining"] = days
+        evidence["min_tls_days"] = int(min_tls_days)
+        if days is None or days < int(min_tls_days):
+            passed = False
+
+    return VerifierResult(
+        status=AssertionStatus.PASS if passed else AssertionStatus.FAIL,
+        evidence=evidence,
+    )
+
+
+async def _run_adapter_query(adapter: Any, query: str) -> Any:
+    dispatch: dict[str, str] = {
+        "cluster_status": "cluster_status",
+        "nodes": "list_nodes",
+        "vms": "list_vms",
+        "storage": "list_storage",
+        "applications": "list_applications",
+        "dns_records": "list_dns_records",
+        "networks": "list_networks",
+        "clients": "list_clients",
+        "filesystems": "list_filesystems",
+        "shares": "list_shared_folders",
+        "config": "get_config",
+        "states": "list_states",
+        "workloads": "list_workloads",
+    }
+    method_name = dispatch.get(query, query)
+    fn = getattr(adapter, method_name, None)
+    if not callable(fn):
+        raise ValueError(f"adapter does not support query {query!r}")
+    return await fn()
+
+
+async def _verify_api_query(  # noqa: PLR0911
+    engine: AssertionEngine,
+    session: AsyncSession,
+    assertion: ConfigurationAssertion,
+) -> VerifierResult:
+    """Query a management-plane adapter and apply a predicate to the response."""
+    del session
+    spec = assertion.verifier_spec or {}
+    source = spec.get("source") or spec.get("adapter")
+    query = spec.get("query") or spec.get("resource")
+    if not isinstance(source, str) or not source or not isinstance(query, str) or not query:
+        return VerifierResult(
+            status=AssertionStatus.SKIP if not spec else AssertionStatus.ERROR,
+            evidence={"kind": assertion.kind.value},
+            error="verifier_spec requires 'source' and 'query'",
+        )
+    predicate = str(spec.get("predicate", "eq"))
+    expected = spec.get("value")
+    key_path = spec.get("key")
+
+    adapter = (engine.adapters or {}).get(source)
+    owns_adapter = False
+    if adapter is None:
+        factory = getattr(factories, source, None)
+        if not callable(factory):
+            return VerifierResult(
+                status=AssertionStatus.ERROR,
+                evidence={"source": source, "query": query},
+                error=f"unknown adapter source {source!r}",
+            )
+        try:
+            adapter = factory()
+            owns_adapter = True
+        except Exception as exc:
+            return VerifierResult(
+                status=AssertionStatus.SKIP,
+                evidence={"source": source, "query": query},
+                error=f"adapter {source!r} is not configured: {exc}",
+            )
+    try:
+        payload = await _run_adapter_query(adapter, query)
+    except ValueError as exc:
+        return VerifierResult(
+            status=AssertionStatus.ERROR,
+            evidence={"source": source, "query": query},
+            error=str(exc),
+        )
+    except Exception as exc:
+        return VerifierResult(
+            status=AssertionStatus.SKIP,
+            evidence={"source": source, "query": query},
+            error=f"adapter query failed: {exc}",
+        )
+    finally:
+        if owns_adapter and hasattr(adapter, "aclose"):
+            await adapter.aclose()
+
+    found, observed = _extract_path(payload, str(key_path) if key_path is not None else None)
+    evidence = {
+        "source": source,
+        "query": query,
+        "key": key_path,
+        "predicate": predicate,
+        "expected": expected,
+        "observed": observed,
+    }
+    if predicate == "exists":
+        return VerifierResult(
+            status=AssertionStatus.PASS if found and observed is not None else AssertionStatus.FAIL,
+            evidence=evidence,
+        )
+    if not found:
+        return VerifierResult(
+            status=AssertionStatus.FAIL,
+            evidence=evidence,
+        )
+    fn = _PREDICATES.get(predicate)
+    if fn is None:
+        return VerifierResult(
+            status=AssertionStatus.ERROR,
+            evidence=evidence,
+            error=f"unknown predicate {predicate!r}",
+        )
+    passed = fn(observed, expected)
+    return VerifierResult(
+        status=AssertionStatus.PASS if passed else AssertionStatus.FAIL,
+        evidence=evidence,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +734,42 @@ def _finding_affected(assertion: ConfigurationAssertion) -> list[dict[str, str]]
 class AssertionEngine:
     """One-shot dispatch. Stateless and cheap to instantiate; caller commits."""
 
+    def __init__(
+        self,
+        *,
+        ssh_adapter: Any = None,
+        http_client: Any = None,
+        adapters: dict[str, Any] | None = None,
+        tls_days_fn: Callable[[str], Any] | None = None,
+    ) -> None:
+        self.ssh_adapter = ssh_adapter
+        self.http_client = http_client
+        self.adapters = adapters
+        self.tls_days_fn = tls_days_fn
+
+    async def _dispatch_verifier(
+        self,
+        session: AsyncSession,
+        assertion: ConfigurationAssertion,
+    ) -> VerifierResult:
+        if assertion.kind is AssertionKind.OBSERVATION_PREDICATE:
+            return await _verify_observation_predicate(session, assertion)
+        verifiers: dict[AssertionKind, Callable[..., Any]] = {
+            AssertionKind.SSH_COMMAND: _verify_ssh_command,
+            AssertionKind.FILE_HASH: _verify_file_hash,
+            AssertionKind.HTTP_CHECK: _verify_http_check,
+            AssertionKind.API_QUERY: _verify_api_query,
+        }
+        verifier = verifiers.get(assertion.kind)
+        if verifier is not None:
+            out: VerifierResult = await verifier(self, session, assertion)
+            return out
+        return VerifierResult(
+            status=AssertionStatus.ERROR,
+            evidence={"kind": str(assertion.kind)},
+            error=f"unsupported assertion kind {assertion.kind!r}",
+        )
+
     async def run_assertion(
         self,
         session: AsyncSession,
@@ -379,8 +782,7 @@ class AssertionEngine:
         if arch_reason is not None:
             result: VerifierResult = VerifierResult(status=AssertionStatus.SKIP, error=arch_reason)
         else:
-            verifier = _VERIFIERS.get(assertion.kind, _verify_not_implemented)
-            result = await verifier(session, assertion)
+            result = await self._dispatch_verifier(session, assertion)
 
         run = AssertionRun(
             assertion_id=assertion.id,

@@ -95,6 +95,22 @@ def _hard_rejection(host: Host, profile: WorkloadProfile) -> str | None:
     return None
 
 
+def _score_gpu(host: Host, profile: WorkloadProfile, candidate: PlacementCandidate) -> None:
+    if profile.gpu == "optional":
+        candidate.score += 8.0
+        purpose = f" ({profile.gpu_purpose})" if profile.gpu_purpose else ""
+        candidate.reasons.append(f"GPU present for optional acceleration{purpose}")
+    elif profile.gpu == "required":
+        candidate.reasons.append("satisfies the GPU requirement")
+    vram_mb = _cap(host, "gpu_vram_mb")
+    if isinstance(vram_mb, int) and vram_mb > 0:
+        candidate.score += min(vram_mb / 4096.0, 4.0)
+        candidate.reasons.append(f"{vram_mb} MiB GPU VRAM available")
+    if _cap(host, "gpu_busy"):
+        candidate.score -= 4.0
+        candidate.caveats.append("GPU is currently busy with active compute/render work")
+
+
 def _evaluate(
     host: Host, profile: WorkloadProfile, guest_count: int
 ) -> PlacementCandidate | tuple[str, str]:
@@ -122,12 +138,8 @@ def _evaluate(
     else:
         candidate.caveats.append("CPU unknown (host not deep-probed)")
 
-    if profile.gpu == "optional" and gpu_count:
-        candidate.score += 8.0
-        purpose = f" ({profile.gpu_purpose})" if profile.gpu_purpose else ""
-        candidate.reasons.append(f"GPU present for optional acceleration{purpose}")
-    elif profile.gpu == "required" and gpu_count:
-        candidate.reasons.append("satisfies the GPU requirement")
+    if profile.gpu in ("optional", "required") and gpu_count:
+        _score_gpu(host, profile, candidate)
 
     disk_total = _cap(host, "total_disk_bytes")
     if profile.data_gravity and disk_total is not None and int(disk_total) >= _BULK_STORAGE_BYTES:

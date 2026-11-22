@@ -162,3 +162,71 @@ async def test_proxmox_backup_reads_are_plain_gets() -> None:
         ("GET", "/api2/json/cluster/backup", ""),
         ("GET", "/api2/json/nodes/pve0/storage/pbs/content", "content=backup"),
     ]
+
+
+def test_hass_offsite_backup_sensors_open_when_stale_or_failed() -> None:
+    from homelab_helper.engine.backups import hass_backup_issues
+
+    fresh_iso = (NOW - timedelta(hours=12)).isoformat()
+    stale_iso = (NOW - timedelta(hours=72)).isoformat()
+    states = [
+        {"entity_id": "sensor.offsite_push_last_run", "domain": "sensor", "state": fresh_iso},
+        {"entity_id": "sensor.offsite_replication_age", "domain": "sensor", "state": stale_iso},
+        {"entity_id": "binary_sensor.offsite_backup_ok", "domain": "binary_sensor", "state": "off"},
+        {"entity_id": "sensor.temperature", "domain": "sensor", "state": "21"},
+    ]
+    issues, observed = hass_backup_issues("home-assistant-wyola", states, now=NOW)
+    assert observed == {"backup-offsite-stale"}
+    assert {(i.category, i.target_id) for i in issues} == {
+        ("backup-offsite-stale", "home-assistant-wyola/sensor.offsite_replication_age"),
+        ("backup-offsite-stale", "home-assistant-wyola/binary_sensor.offsite_backup_ok"),
+    }
+
+
+async def test_declared_targets_and_restore_drill_clear_backup_verify(sessionmaker) -> None:
+    from homelab_helper.engine.backups import (
+        declared_target_issues,
+        load_backup_targets,
+        record_restore_drill,
+        restore_drill_timestamps,
+    )
+
+    targets = load_backup_targets("ha-config:HA Config=48, omv-shares=24")
+    assert [t["id"] for t in targets] == ["ha-config", "omv-shares"]
+
+    runs = {
+        "ha-config": NOW - timedelta(hours=12),
+        "omv-shares": NOW - timedelta(hours=36),
+    }
+    t_issues, t_obs = declared_target_issues(
+        [{**targets[0], "require_verify": True}, targets[1], {"id": "velero", "max_age_hours": 24}],
+        now=NOW,
+        observed_runs=runs,
+    )
+    assert t_obs == {"backup-target-uncovered", "backup-target-stale", "backup-verify"}
+    assert {(i.category, i.target_id) for i in t_issues} == {
+        ("backup-verify", "ha-config"),
+        ("backup-target-stale", "omv-shares"),
+        ("backup-target-uncovered", "velero"),
+    }
+
+    # Guest 103 has a failed automated verify job; recording a restore drill resolves
+    # its open finding and suppresses it on future runs.
+    guests = [_guest(103, "badverify")]
+    backups = [_backup(103, 10, state="failed")]
+    async with session_scope(sessionmaker) as s:
+        initial = backup_issues(guests, [DAILY], backups, now=NOW)
+        assert len(initial) == 1
+        await reconcile_backup_findings(s, initial, set(CATEGORIES), when=NOW)
+
+        drill = await record_restore_drill(
+            s, "103", verified_at=NOW, notes="Booted from PBS snapshot in sandbox"
+        )
+        assert len(drill["resolved_findings"]) == 1
+        row = (await s.execute(select(ReconciliationFinding))).scalar_one()
+        assert row.status is FindingStatus.RESOLVED
+
+        drills = await restore_drill_timestamps(s)
+        assert "103" in drills
+        after = backup_issues(guests, [DAILY], backups, now=NOW, verified_drills=drills)
+        assert after == []

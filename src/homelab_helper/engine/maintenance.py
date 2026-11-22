@@ -57,6 +57,7 @@ from homelab_helper.engine.executor import (
     _ssh_credentials,
     execute_proposal,
     parse_manifest,
+    verify_running_kernel,
 )
 from homelab_helper.engine.manifest import (
     ManifestError as _ManifestError,
@@ -370,6 +371,35 @@ def talos_health_gate(talos: TalosAdapter, control_plane: str) -> HealthCallback
     return _check
 
 
+def proxmox_ceph_health_gate(adapter: ProxmoxAdapter) -> HealthCallback:
+    """Between-steps check for a Proxmox maintenance run when the cluster runs Ceph.
+
+    A cluster without Ceph passes immediately; a cluster with Ceph requires
+    ``health.status == "HEALTH_OK"`` and no degraded PGs before proceeding.
+    """
+
+    async def _check() -> tuple[bool, str]:
+        try:
+            status = await adapter.ceph_status()
+        except Exception:
+            return True, "no ceph"
+        if not isinstance(status, dict) or not status:
+            return True, "no ceph"
+        health = status.get("health") or {}
+        h_status = str(health.get("status") or "")
+        if not h_status:
+            return True, "no ceph"
+        if h_status != "HEALTH_OK":
+            return False, f"Ceph is {h_status}"
+        pgmap = status.get("pgmap") or {}
+        degraded = int(pgmap.get("degraded_objects") or 0)
+        if degraded > 0:
+            return False, f"Ceph has {degraded} degraded object(s)"
+        return True, "HEALTH_OK"
+
+    return _check
+
+
 async def plan_talos_maintenance(
     session: AsyncSession,
     talos: TalosAdapter,
@@ -657,6 +687,8 @@ __all__ = [
     "execute_maintenance",
     "plan_maintenance",
     "plan_talos_maintenance",
+    "proxmox_ceph_health_gate",
     "run_summary",
     "talos_health_gate",
+    "verify_running_kernel",
 ]

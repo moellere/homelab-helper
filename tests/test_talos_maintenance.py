@@ -232,3 +232,81 @@ async def test_a_step_at_propose_refuses_and_ends_the_run(sessionmaker_, fast_cl
         assert run.steps[0]["state"] == "failed"
         assert "propose" in run.steps[0]["detail"].lower()
     assert cluster.upgrades == []
+
+
+async def test_cluster_upgrade_playbook_and_ceph_health_gate_and_kernel_check(
+    sessionmaker_,  # noqa: F811
+) -> None:
+    from homelab_helper.adapters.kernel_ssh import CommandResult
+    from homelab_helper.db.enums import FindingKind, FindingSeverity, FindingStatus
+    from homelab_helper.db.models import ReconciliationFinding
+    from homelab_helper.engine.maintenance import (
+        proxmox_ceph_health_gate,
+        verify_running_kernel,
+    )
+    from homelab_helper.engine.playbooks import (
+        draft_maintenance_from_finding,
+        playbook_for,
+        run_playbooks,
+    )
+
+    class _FakeSSH:
+        async def run_command(self, host: str, cmd: str, **_: Any) -> CommandResult:
+            del host
+            return CommandResult(
+                command=cmd, stdout="6.8.12-1-pve\n6.8.12-2-pve\n", stderr="", exit_code=0
+            )
+
+    current, running, newest = await verify_running_kernel(_FakeSSH(), "hv1", user="root")  # type: ignore[arg-type]
+    assert current is False
+    assert (running, newest) == ("6.8.12-1-pve", "6.8.12-2-pve")
+
+    class _FakeCephPve:
+        def __init__(self, status: dict[str, Any]) -> None:
+            self._status = status
+
+        async def ceph_status(self) -> dict[str, Any]:
+            return self._status
+
+    ok_gate = proxmox_ceph_health_gate(_FakeCephPve({"health": {"status": "HEALTH_OK"}}))  # type: ignore[arg-type]
+    assert await ok_gate() == (True, "HEALTH_OK")
+    warn_gate = proxmox_ceph_health_gate(_FakeCephPve({"health": {"status": "HEALTH_WARN"}}))  # type: ignore[arg-type]
+    assert await warn_gate() == (False, "Ceph is HEALTH_WARN")
+
+    cluster = _FakeCluster(MEMBERS)
+    async with session_scope(sessionmaker_) as s:
+        finding = ReconciliationFinding(
+            kind=FindingKind.VERSION_DRIFT,
+            severity=FindingSeverity.HIGH,
+            fingerprint="t" * 16,
+            title="Talos Linux 1.12 is past end of support",
+            description="upgrade needed",
+            affected=[{"target_type": "cluster", "target_id": "kubernetes/talos-1.12"}],
+            evidence_refs=[
+                {"type": "category", "category": "talos-eol"},
+                {
+                    "type": "evidence",
+                    "nodes": [CP, "10.0.6.14"],
+                    "recommended_version": NEW,
+                },
+            ],
+            status=FindingStatus.OPEN,
+        )
+        s.add(finding)
+        await s.flush()
+
+        pb = playbook_for(finding)
+        assert pb is not None
+        assert pb.name == "cluster-upgrade"
+        res = await run_playbooks(
+            s,
+            min_age=talos_mod.timedelta(0)
+            if hasattr(talos_mod, "timedelta")
+            else __import__("datetime").timedelta(0),
+        )
+        assert len(res.drafted) == 1
+        assert "plan-talos" in finding.proposed_actions[0]["maintenance_command"]
+
+        m_run = await draft_maintenance_from_finding(s, finding, talos_adapter=cluster)
+        assert m_run.plane == "talos"
+        assert len(m_run.steps) == 3

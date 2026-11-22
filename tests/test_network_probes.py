@@ -324,3 +324,37 @@ def test_looks_textual_distinguishes_tls_from_http() -> None:
     assert _looks_textual(b"")
     # A typical TLS ServerHello starts with binary 0x16 (handshake type).
     assert not _looks_textual(b"\x16\x03\x01\x02\x00\x02\x00\x00\x00")
+
+
+async def test_tls_certificate_parsing_and_expiry_issues() -> None:
+    from datetime import UTC, datetime
+
+    from homelab_helper.db.enums import FindingSeverity
+    from homelab_helper.probes.network.fingerprint import parse_tls_cert, tls_expiry_issues
+
+    raw_cert = {
+        "subject": ((("commonName", "pve.lab.lan"),),),
+        "issuer": ((("organizationName", "Homelab CA"),),),
+        "subjectAltName": (("DNS", "pve.lab.lan"), ("IP Address", "10.0.1.10")),
+        "notAfter": "Oct 20 12:00:00 2026 GMT",
+    }
+    parsed = parse_tls_cert(raw_cert, now=datetime(2026, 10, 15, 12, 0, tzinfo=UTC))
+    assert parsed["subject"] == "pve.lab.lan"
+    assert parsed["issuer"] == "Homelab CA"
+    assert parsed["sans"] == ["pve.lab.lan", "10.0.1.10"]
+    assert parsed["days_remaining"] == 5
+
+    async def _fake_tls(_ip: str, _port: int, _timeout: float) -> dict[str, object]:
+        return parsed
+
+    probe = NetworkFingerprintProbe(ports=[8006], timeout_s=0.5, tls_inspector=_fake_tls)
+    res = await probe.run(_ctx_host("10.0.1.10"))
+    assert res.success is True
+    services = res.raw_payload["services"]
+    assert services[0]["hint"] == "https"
+    assert services[0]["evidence"]["tls"]["subject"] == "pve.lab.lan"
+
+    issues = tls_expiry_issues("10.0.1.10", services)
+    assert len(issues) == 1
+    assert issues[0].category == "tls-cert-expiring"
+    assert issues[0].severity is FindingSeverity.HIGH

@@ -389,3 +389,37 @@ def test_kubernetes_and_talos_minors_past_support_are_findings() -> None:
     ]
     issues, _ = k8s_eol_issues(mixed, table, TODAY)
     assert len({i.fingerprint for i in issues}) == 2
+
+
+def test_unpinned_workload_images_and_appliance_eol() -> None:
+    from homelab_helper.engine.versions import appliance_version_issues, workload_image_issues
+
+    workloads = [
+        {
+            "id": "default/deployment/immich",
+            "images": ["ghcr.io/immich-app/immich-server:v1.118.2", "redis:latest"],
+        },
+        {
+            "id": "default/deployment/pinned",
+            "images": ["nginx@sha256:deadbeef", "postgres:16.4"],
+        },
+    ]
+    w_issues, w_obs = workload_image_issues(workloads)
+    assert w_obs == {"image-tag-unpinned"}
+    assert [(i.category, i.target_id, i.evidence["unpinned_images"]) for i in w_issues] == [
+        ("image-tag-unpinned", "default/deployment/immich", ["redis:latest"])
+    ]
+
+    table = {"routeros": {"6": {"eol": "2026-05-01"}, "7": {"eol": "2029-12-31"}}}
+    a_issues, a_obs = appliance_version_issues(
+        [
+            {"kind": "routeros", "name": "core-gw", "version": "6.49.13"},
+            {"kind": "routeros", "name": "edge-gw", "version": "7.15.3"},
+        ],
+        table,
+        TODAY,
+    )
+    assert a_obs == {"appliance-eol"}
+    assert [(i.category, i.target_id, i.severity) for i in a_issues] == [
+        ("appliance-eol", "routeros:core-gw", FindingSeverity.HIGH)
+    ]

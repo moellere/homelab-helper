@@ -334,3 +334,20 @@ async def test_raid_member_drive_links_to_physical_part_and_escalates_on_degrade
         part = (await s.execute(select(PhysicalPart))).scalar_one()
         assert part.attributes["raid_array"]["array"] == "md0"
         assert part.attributes["raid_array"]["device"] == "sda1"
+
+
+def test_per_drive_temperature_baseline_departure() -> None:
+    # Drive normally runs at 31 °C over 6 readings; jumps to 43 °C (still under 50 °C HDD ceiling).
+    hist = _history(
+        *((d, _drive(rotation_rate=7200, temperature_c=31)) for d in (30, 25, 20, 15, 10, 5))
+    )
+    issues = disk_issues(
+        HOST,
+        "nas",
+        [_drive(rotation_rate=7200, temperature_c=43)],
+        hist,
+        now=NOW,
+    )
+    assert _cats(issues) == {"disk-hot": FindingSeverity.LOW}
+    assert issues[0].evidence["baseline_c"] == 31.0
+    assert issues[0].evidence["delta_c"] == 12.0

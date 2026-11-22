@@ -183,24 +183,48 @@ def _hot_issue(
     temp = dev.get("temperature_c")
     if not isinstance(temp, int | float):
         return None
-    peak = max([temp, *(v for _, v in _series(history, identity, "temperature_c"))])
+    past_temps = [float(v) for _, v in _series(history, identity, "temperature_c")]
+    peak = max([temp, *past_temps])
     warn, high = HOT_HDD if _rotational(dev) else HOT_SSD
-    if peak < warn:
-        return None
-    severity = FindingSeverity.HIGH if peak >= high else FindingSeverity.MEDIUM
-    kind = "spinning drive" if _rotational(dev) else "flash drive"
-    return _issue(
-        host_id,
-        identity,
-        "disk-hot",
-        severity,
-        title=f"{label}: {int(peak)} °C peak ({int(temp)} °C now)",
-        description=(
-            f"{label} peaked at {int(peak)} °C in the window and reads {int(temp)} °C now; "
-            f"a {kind} should stay under {warn} °C. Check airflow and the drive's neighbours."
-        ),
-        evidence={"temperature_c": temp, "peak_c": peak, "warn_c": warn, "high_c": high},
-    )
+    if peak >= warn:
+        severity = FindingSeverity.HIGH if peak >= high else FindingSeverity.MEDIUM
+        kind = "spinning drive" if _rotational(dev) else "flash drive"
+        return _issue(
+            host_id,
+            identity,
+            "disk-hot",
+            severity,
+            title=f"{label}: {int(peak)} °C peak ({int(temp)} °C now)",
+            description=(
+                f"{label} peaked at {int(peak)} °C in the window and reads {int(temp)} °C now; "
+                f"a {kind} should stay under {warn} °C. Check airflow and the drive's neighbours."
+            ),
+            evidence={"temperature_c": temp, "peak_c": peak, "warn_c": warn, "high_c": high},
+        )
+    if len(past_temps) >= 5:  # noqa: PLR2004
+        ordered = sorted(past_temps)
+        baseline_c = ordered[len(ordered) // 2]
+        delta_c = float(temp) - baseline_c
+        if delta_c >= 10.0:  # noqa: PLR2004
+            return _issue(
+                host_id,
+                identity,
+                "disk-hot",
+                FindingSeverity.LOW,
+                title=f"{label}: {int(temp)} °C (+{int(delta_c)} °C above its {int(baseline_c)} °C baseline)",
+                description=(
+                    f"{label} reads {int(temp)} °C, {int(delta_c)} °C warmer than its own historical "
+                    f"median of {int(baseline_c)} °C over {len(past_temps)} reading(s) (still below "
+                    f"the {warn} °C ceiling). Check for a stalled fan or blocked intake."
+                ),
+                evidence={
+                    "temperature_c": temp,
+                    "baseline_c": round(baseline_c, 1),
+                    "delta_c": round(delta_c, 1),
+                    "warn_c": warn,
+                },
+            )
+    return None
 
 
 def _wear_issue(

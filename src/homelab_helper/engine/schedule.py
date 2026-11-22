@@ -42,12 +42,20 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 
-from homelab_helper.db.enums import FindingKind, FindingSeverity
+from homelab_helper.db.enums import (
+    AssertionScope,
+    FindingKind,
+    FindingSeverity,
+    IntentState,
+    IntentTargetType,
+    PowerState,
+)
 from homelab_helper.db.models import (
     AssertionRun,
     ConfigurationAssertion,
     DiscoveryRun,
     Host,
+    OperationalIntent,
     SourceRun,
 )
 from homelab_helper.db.session import session_scope
@@ -344,20 +352,76 @@ class ScheduleRun:
     not_due: int = 0
     probe_findings: dict[str, int] = field(default_factory=dict)
     """``PROBE_FAILING`` activity this pass, zero counts dropped."""
+    skipped_expected_off: list[str] = field(default_factory=list)
+    """Targets or host-scoped assertions skipped because the host is expected off."""
 
 
-async def reconcile_probe_failures(session: AsyncSession, schedule: Schedule) -> CategoryResult:
+async def expected_off_hosts(session: AsyncSession, *, now: datetime | None = None) -> set[str]:
+    """Hostnames and host UUIDs of targets currently expected to be powered off (P2-AC4).
+
+    A host is expected off when:
+    - its ``Host.expected_power_state`` is ``PowerState.OFF``, or
+    - it carries an active ``OperationalIntent`` of ``STOPPED_BY_DESIGN`` or
+      ``DECOMMISSIONING`` (with ``review_at`` unset or in the future).
+    """
+    current = now or datetime.now(UTC)
+    hosts = (await session.execute(select(Host))).scalars().all()
+    by_id = {str(h.id): h for h in hosts}
+    by_name = {h.hostname: h for h in hosts}
+    off: set[str] = set()
+    for h in hosts:
+        if h.expected_power_state == PowerState.OFF:
+            off.add(h.hostname)
+            off.add(str(h.id))
+    intents = (
+        (
+            await session.execute(
+                select(OperationalIntent).where(
+                    OperationalIntent.target_type == IntentTargetType.HOST,
+                    OperationalIntent.intent.in_(
+                        (IntentState.STOPPED_BY_DESIGN, IntentState.DECOMMISSIONING)
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in intents:
+        review_at = _aware(row.review_at)
+        if review_at is not None and review_at <= current:
+            continue
+        off.add(row.target_id)
+        matched = by_id.get(row.target_id) or by_name.get(row.target_id)
+        if matched is not None:
+            off.add(matched.hostname)
+            off.add(str(matched.id))
+    return off
+
+
+async def reconcile_probe_failures(
+    session: AsyncSession, schedule: Schedule, *, now: datetime | None = None
+) -> CategoryResult:
     """Turn a scheduled probe's repeated failure into a finding; its next success resolves it.
 
     A failed run still counts as a run for cadence, so without this a probe that always
     fails looks merely not due. A pair with too few runs to judge, or a mixed recent
     history, is left out of ``observed`` and any finding on it stays as it is.
+    Hosts currently expected to be off (P2-AC4) are excluded so an offline WoL or
+    stopped-by-design node never raises ``PROBE_FAILING``.
     """
-    plan = await plan_probes(session, schedule)
-    pairs = {(d.target, d.probe) for d in plan}
+    off = await expected_off_hosts(session, now=now)
+    plan = await plan_probes(session, schedule, now=now)
+    pairs = {(d.target, d.probe) for d in plan if d.target not in off}
+    if not pairs:
+        return await reconcile_category_findings(
+            session, FindingKind.PROBE_FAILING, [], set(), observed_targets=set()
+        )
     # Only as far back as the slowest probe needs to show its last few runs.
     slowest = max((d.interval for d in plan), default=timedelta(0))
-    since = datetime.now(UTC) - max(PROBE_FAILING_WINDOW, slowest * PROBE_FAILING_AFTER * 2)
+    since = (now or datetime.now(UTC)) - max(
+        PROBE_FAILING_WINDOW, slowest * PROBE_FAILING_AFTER * 2
+    )
     ranked = (
         select(
             Host.hostname.label("hostname"),
@@ -467,11 +531,16 @@ async def _due_probes(
     sessionmaker: async_sessionmaker[AsyncSession] | None,
     concurrency: int,
 ) -> None:
+    off = await expected_off_hosts(session, now=current)
     plan = await plan_probes(session, schedule, now=current)
     due = due_now(plan, current)
     result.not_due += len(plan) - len(due)
     by_target: dict[tuple[str, str], list[str]] = {}
     for d in due:
+        if d.target in off:
+            if d.target not in result.skipped_expected_off:
+                result.skipped_expected_off.append(d.target)
+            continue
         by_target.setdefault((d.kind, d.target), []).append(d.probe)
     specs = {("host", h.name): h for h in schedule.hosts} | {
         ("talos", t.name): t for t in schedule.talos
@@ -513,7 +582,7 @@ async def _due_probes(
         for p in getattr(outcome, "probes", []) or []:
             if not getattr(p, "success", True):
                 result.probe_failures.append(redact(f"{target}/{p.probe}: {p.error}"))
-    counts = (await reconcile_probe_failures(session, schedule)).counts()
+    counts = (await reconcile_probe_failures(session, schedule, now=current)).counts()
     result.probe_findings = {k: v for k, v in counts.items() if v}
     await session.commit()
 
@@ -527,9 +596,19 @@ async def _due_assertions(
 ) -> None:
     from homelab_helper.engine.assertions import AssertionEngine as _Engine  # noqa: PLC0415
 
+    off = await expected_off_hosts(session, now=current)
     engine = assertion_engine or _Engine()
     for item in assertions_due(await plan_assertions(session, schedule, now=current), current):
         name = item.assertion.name
+        if (
+            item.assertion.scope == AssertionScope.HOST
+            and item.assertion.scope_target
+            and item.assertion.scope_target in off
+        ):
+            label = f"assertion:{name}"
+            if label not in result.skipped_expected_off:
+                result.skipped_expected_off.append(label)
+            continue
         try:
             run = await engine.run_assertion(session, item.assertion)
             await session.commit()
@@ -605,6 +684,7 @@ __all__ = [
     "TalosSpec",
     "assertions_due",
     "due_now",
+    "expected_off_hosts",
     "load_schedule",
     "parse_interval",
     "plan_assertions",

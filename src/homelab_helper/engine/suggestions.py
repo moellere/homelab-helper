@@ -130,12 +130,27 @@ def idle_gpu_issues(
     issues: list[CategoryIssue] = []
     for host_id, hostname, capabilities in hosts:
         count = capabilities.get("gpu_count") or 0
-        if not count:
+        if not count or capabilities.get("gpu_busy"):
             continue
         vendors = capabilities.get("gpu_vendors") or []
         vendor_label = ", ".join(str(v) for v in vendors) if vendors else "unknown vendor"
-        offers = sorted(candidates.items())[:4]
+        vram_mb = capabilities.get("gpu_vram_mb")
+        drivers = capabilities.get("gpu_drivers") or []
+        offers = [
+            (name, profile)
+            for name, profile in sorted(candidates.items())
+            if not isinstance(vram_mb, int) or profile.ram_mb <= max(vram_mb * 2, 2048)
+        ][:4] or sorted(candidates.items())[:4]
         suggestions = "; ".join(f"{name} ({profile.gpu_purpose})" for name, profile in offers)
+        evidence: dict[str, Any] = {
+            "gpu_count": count,
+            "gpu_vendors": list(vendors),
+            "candidates": [name for name, _ in offers],
+        }
+        if vram_mb is not None:
+            evidence["gpu_vram_mb"] = vram_mb
+        if drivers:
+            evidence["gpu_drivers"] = list(drivers)
         issues.append(
             _issue(
                 category="capability-idle-gpu",
@@ -149,11 +164,7 @@ def idle_gpu_issues(
                     f"Candidates: {suggestions}. Matched on names only, so a guest named for "
                     "something else that already uses the GPU would not show up here."
                 ),
-                evidence={
-                    "gpu_count": count,
-                    "gpu_vendors": list(vendors),
-                    "candidates": [name for name, _ in offers],
-                },
+                evidence=evidence,
             )
         )
     return issues

@@ -37,9 +37,14 @@ from homelab_helper.engine.argocd_drift import reconcile_argocd_drift
 from homelab_helper.engine.backups import CATEGORIES as BACKUP_CATEGORIES
 from homelab_helper.engine.backups import (
     backup_issues,
+    backup_target_timestamps,
     capacity_issues,
+    declared_target_issues,
+    hass_backup_issues,
+    load_backup_targets,
     orphan_issues,
     reconcile_backup_findings,
+    restore_drill_timestamps,
 )
 from homelab_helper.engine.baselines import reconcile_anomaly_findings
 from homelab_helper.engine.capacity import (
@@ -105,6 +110,7 @@ from homelab_helper.engine.versions import (
     os_eol_issues,
     proxmox_issues,
     reconcile_version_findings,
+    workload_image_issues,
 )
 from homelab_helper.engine.virt_reconcile import (
     PROXMOX_CONCURRENCY,
@@ -465,6 +471,10 @@ async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
     issues += host_issues
     observed |= host_observed
 
+    img_issues, img_observed = workload_image_issues(await persisted_k8s_workloads(session))
+    issues += img_issues
+    observed |= img_observed
+
     try:
         for hass in factories.hass_all():
             try:
@@ -486,7 +496,7 @@ async def _discover_versions(session: AsyncSession) -> dict[str, Any]:
 
 
 async def _discover_backups(session: AsyncSession) -> dict[str, Any]:
-    """Phase 8.2: backup posture from Proxmox backup jobs and backup storages."""
+    """Phase 8.2 / 13.1: backup posture from Proxmox, Home Assistant off-site sensors, and declared targets."""
     adapter = factories.proxmox()
     try:
         guests = await adapter.list_vms()
@@ -513,8 +523,31 @@ async def _discover_backups(session: AsyncSession) -> dict[str, Any]:
     finally:
         await adapter.aclose()
     now = datetime.now(UTC)
-    issues = backup_issues(guests, jobs, backups, now=now) + orphans + capacity_issues(storages)
-    result = await reconcile_backup_findings(session, issues, set(BACKUP_CATEGORIES), when=now)
+    drills = await restore_drill_timestamps(session)
+    observed = set(BACKUP_CATEGORIES)
+    issues = (
+        backup_issues(guests, jobs, backups, now=now, verified_drills=drills)
+        + orphans
+        + capacity_issues(storages)
+    )
+    target_issues, target_observed = declared_target_issues(
+        load_backup_targets(),
+        now=now,
+        observed_runs=await backup_target_timestamps(session),
+        verified_drills=drills,
+    )
+    issues += target_issues
+    observed |= target_observed
+    with contextlib.suppress(Exception):
+        for hass in factories.hass_all():
+            try:
+                states = await hass.list_states()
+            finally:
+                await hass.aclose()
+            h_issues, h_observed = hass_backup_issues(hass.config.service_name, states, now=now)
+            issues += h_issues
+            observed |= h_observed
+    result = await reconcile_backup_findings(session, issues, observed, when=now)
     return {
         "guests": len(guests),
         "jobs": len(jobs),

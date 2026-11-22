@@ -254,11 +254,76 @@ async def test_findings_without_a_playbook_are_left_alone(sessionmaker) -> None:
         assert r.no_playbook == 1
     assert {pb.name for pb in PLAYBOOKS} == {
         "argocd-resync",
+        "guest-start",
         "workload-restart",
         "rightsize",
         "node-update",
         "cluster-upgrade",
     }
+
+
+async def test_guest_start_playbook_drafts_start_and_post_resize_restart(sessionmaker) -> None:
+    async with session_scope(sessionmaker) as s:
+        s.add_all(
+            [
+                ReconciliationFinding(
+                    kind=FindingKind.DRIFT_CANDIDATE,
+                    severity="medium",
+                    fingerprint="guest-stopped-101",
+                    title="vm/101 is stopped",
+                    description="expected running",
+                    affected=[{"target_type": "guest", "target_id": "pve1/101"}],
+                    evidence_refs=[
+                        {
+                            "type": "category",
+                            "category": "guest-stopped",
+                        },
+                        {
+                            "type": "evidence",
+                            "node": "pve1",
+                            "vmid": 101,
+                            "vm_kind": "qemu",
+                            "name": "dns",
+                        },
+                    ],
+                    status=FindingStatus.OPEN,
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                ),
+                ReconciliationFinding(
+                    kind=FindingKind.DRIFT_CANDIDATE,
+                    severity="low",
+                    fingerprint="guest-restart-102",
+                    title="vm/102 awaits restart after resize",
+                    description="pending resize",
+                    affected=[{"target_type": "guest", "target_id": "pve1/102"}],
+                    evidence_refs=[
+                        {
+                            "type": "category",
+                            "category": "guest-restart-pending",
+                        },
+                        {
+                            "type": "evidence",
+                            "node": "pve1",
+                            "vmid": 102,
+                            "vm_kind": "qemu",
+                            "name": "ha",
+                        },
+                    ],
+                    status=FindingStatus.OPEN,
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                ),
+            ]
+        )
+        await s.flush()
+        r = await run_playbooks(s, min_age=NOW)
+        assert len(r.drafted) == 2
+        proposals = (
+            (await s.execute(select(ProposalLog).order_by(ProposalLog.title))).scalars().all()
+        )
+        actions = [p.artifact["action"]["action_kind"] for p in proposals]
+        assert sorted(actions) == ["restart", "start"]
 
 
 # ----------------------------------------------------------------- listener

@@ -307,6 +307,9 @@ _NETWORK_RULES: tuple[HostProjectionRule, ...] = (
 _GPU_RULES: tuple[HostProjectionRule, ...] = (
     HostProjectionRule(key="host.gpu.count", capability="gpu_count"),
     HostProjectionRule(key="host.gpu.vendors", capability="gpu_vendors"),
+    HostProjectionRule(key="host.gpu.drivers", capability="gpu_drivers"),
+    HostProjectionRule(key="host.gpu.vram_mb", capability="gpu_vram_mb"),
+    HostProjectionRule(key="host.gpu.busy", capability="gpu_busy"),
 )
 
 # RAID: a compact per-array summary from host.raid. Health findings for

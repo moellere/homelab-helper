@@ -312,17 +312,13 @@ async def _resolve_target_host(
 
 
 def _resolve_ssh_creds(host: Host, spec: dict[str, Any]) -> tuple[str, str | None] | None:
+    from homelab_helper.secrets import resolve_ssh_credentials_ref  # noqa: PLC0415
+
     user = spec.get("ssh_user")
     key_path = spec.get("ssh_key_path")
     if isinstance(user, str) and user:
         return user, str(key_path) if key_path else None
-    ref = host.credentials_ref or ""
-    if ref.startswith("ssh:"):
-        _, _, rest = ref.partition("ssh:")
-        u, _, kp = rest.partition(":")
-        if u:
-            return u, kp or None
-    return None
+    return resolve_ssh_credentials_ref(host.credentials_ref)
 
 
 async def _run_ssh_command(

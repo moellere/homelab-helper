@@ -40,18 +40,19 @@ def parse_lspci(content: str) -> list[dict[str, Any]]:
         class_name, class_code = split_code(block.get("Class", ""))
         vendor, vendor_id = split_code(block.get("Vendor", ""))
         device, device_id = split_code(block.get("Device", ""))
-        devices.append(
-            {
-                "slot": block.get("Slot"),
-                "class_name": class_name or None,
-                "class_code": class_code,
-                "vendor": vendor or None,
-                "vendor_id": vendor_id,
-                "device": device or None,
-                "device_id": device_id,
-                "rev": block.get("Rev"),
-            }
-        )
+        entry: dict[str, Any] = {
+            "slot": block.get("Slot"),
+            "class_name": class_name or None,
+            "class_code": class_code,
+            "vendor": vendor or None,
+            "vendor_id": vendor_id,
+            "device": device or None,
+            "device_id": device_id,
+            "rev": block.get("Rev"),
+        }
+        if block.get("Driver"):
+            entry["driver"] = block.get("Driver")
+        devices.append(entry)
 
     for raw in content.splitlines():
         if not raw.strip():

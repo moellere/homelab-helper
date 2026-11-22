@@ -265,6 +265,40 @@ def _cluster_upgrade(finding: ReconciliationFinding) -> Draft | None:
         return None
 
 
+def _guest_start(finding: ReconciliationFinding) -> Draft | None:
+    """A ``guest-stopped`` or ``guest-restart-pending`` drift finding → start or restart the guest."""
+    cat = category_of(finding)
+    if cat not in ("guest-stopped", "guest-restart-pending"):
+        return None
+    ev: dict[str, Any] = next(
+        (dict(r) for r in finding.evidence_refs or [] if r.get("type") == "evidence"), {}
+    )
+    node, vmid, vm_kind = ev.get("node"), ev.get("vmid"), ev.get("vm_kind")
+    if not node or not isinstance(vmid, int) or vm_kind not in ("qemu", "lxc"):
+        return None
+    name = ev.get("name") or f"{vm_kind}/{vmid}"
+    action_kind = "start" if cat == "guest-stopped" else "restart"
+    try:
+        artifact = build_artifact(
+            action_kind=action_kind,
+            node=str(node),
+            vmid=vmid,
+            vm_kind=str(vm_kind),
+        )
+    except ManifestError:
+        return None
+    verb = "Start" if action_kind == "start" else "Restart"
+    reason = (
+        "expected running, observed stopped" if action_kind == "start" else "apply pending resize"
+    )
+    return Draft(
+        artifact=artifact,
+        title=f"{verb} {name} ({reason})",
+        blast_radius="single-service",
+        summary=f"guest-start ({action_kind}): {vm_kind}/{vmid} on {node}",
+    )
+
+
 PLAYBOOKS: tuple[Playbook, ...] = (
     Playbook(
         name="argocd-resync",
@@ -272,6 +306,13 @@ PLAYBOOKS: tuple[Playbook, ...] = (
         target_type="argocd-app",
         build=_argocd_resync,
         description="Argo CD reports the app out of sync or unhealthy → sync it to git.",
+    ),
+    Playbook(
+        name="guest-start",
+        finding_kind=FindingKind.DRIFT_CANDIDATE,
+        target_type="guest",
+        build=_guest_start,
+        description="An expected-running guest is stopped (or awaits a post-resize reboot) → start or restart it.",
     ),
     Playbook(
         name="workload-restart",

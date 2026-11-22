@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
 AGE_IDENTITY_VAR = "HOMELAB_HELPER_AGE_IDENTITY"
-SCHEMES: tuple[str, ...] = ("env", "file", "keyring")
+SCHEMES: tuple[str, ...] = ("env", "file", "keyring", "op", "vault")
 _MIN_REDACT_LEN = 4  # never scrub "1" or "no" out of an error message
 
 
@@ -148,6 +148,28 @@ def _resolve_env(name: str) -> str:
     return value
 
 
+def _resolve_op(spec: str, runner: Callable[[Sequence[str]], str]) -> str:
+    body = spec.removeprefix("//").strip("/")
+    if body.count("/") < 2:  # noqa: PLR2004 - vault/item/field
+        raise SecretError(f"op reference needs 'op://<vault>/<item>/<field>', got {spec!r}")
+    uri = f"op://{body}"
+    out = runner(["op", "read", "--no-newline", uri]).rstrip("\r\n")
+    if not out:
+        raise SecretError(f"op read returned an empty value for {uri!r}")
+    return out
+
+
+def _resolve_vault(spec: str, runner: Callable[[Sequence[str]], str]) -> str:
+    raw = spec.removeprefix("//").lstrip("/")
+    mount_path, sep, field = raw.partition("#")
+    if not sep or not mount_path or not field or "/" not in mount_path:
+        raise SecretError(f"vault reference needs 'vault://<mount>/<path>#<field>', got {spec!r}")
+    out = runner(["vault", "kv", "get", f"-field={field}", mount_path]).rstrip("\r\n")
+    if not out:
+        raise SecretError(f"vault kv get returned an empty value for {mount_path}#{field}")
+    return out
+
+
 def _remember(value: str) -> None:
     if len(value) >= _MIN_REDACT_LEN:
         _known.add(value)
@@ -170,11 +192,34 @@ def resolve_secret(
         resolved = _resolve_env(rest)
     elif scheme == "file":
         resolved = _resolve_file(rest, run)
+    elif scheme == "op":
+        resolved = _resolve_op(rest, run)
+    elif scheme == "vault":
+        resolved = _resolve_vault(rest, run)
     else:
         resolved = _resolve_keyring(rest)
     _cache[value] = resolved
     _remember(resolved)
     return resolved
+
+
+def resolve_ssh_credentials_ref(
+    ref: str | None, *, runner: Callable[[Sequence[str]], str] | None = None
+) -> tuple[str, str | None] | None:
+    """Parse ``ssh:<user>:<key-path-or-secret-ref>`` (or a secret ref resolving to one)."""
+    if not ref:
+        return None
+    resolved_ref = (resolve_secret(ref, runner=runner) or "") if is_reference(ref) else ref
+    if not resolved_ref.startswith("ssh:"):
+        return None
+    _, _, rest = resolved_ref.partition("ssh:")
+    user, _, key_path = rest.partition(":")
+    if not user:
+        return None
+    resolved_key = (
+        (resolve_secret(key_path, runner=runner) or "") if is_reference(key_path) else key_path
+    )
+    return user, (resolved_key or None)
 
 
 def secret_from_env(var: str) -> str | None:
@@ -183,7 +228,7 @@ def secret_from_env(var: str) -> str | None:
 
 
 def reference_scheme(value: str | None) -> str | None:
-    """``"file"`` / ``"keyring"`` / ``"env"`` for a reference, else None."""
+    """``"file"`` / ``"keyring"`` / ``"env"`` / ``"op"`` / ``"vault"`` for a reference, else None."""
     if not value or not is_reference(value):
         return None
     return value.partition(":")[0]
@@ -211,5 +256,6 @@ __all__ = [
     "redact",
     "reference_scheme",
     "resolve_secret",
+    "resolve_ssh_credentials_ref",
     "secret_from_env",
 ]

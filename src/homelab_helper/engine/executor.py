@@ -646,8 +646,13 @@ def _ssh_credentials(host: Host) -> tuple[str, str | None]:
 
     The ref is the only place a node's login lives; a node the operator never
     onboarded has none, and a node update is refused rather than guessed at.
+    Either ``credentials_ref`` itself or its ``<key-path>`` segment may be a
+    secret reference (``env:``, ``file:``, ``keyring:``, ``op://``, ``vault://``).
     """
-    ref = host.credentials_ref or ""
+    from homelab_helper.secrets import is_reference, resolve_secret  # noqa: PLC0415
+
+    raw = host.credentials_ref or ""
+    ref = (resolve_secret(raw) or "") if is_reference(raw) else raw
     if not ref.startswith("ssh:"):
         raise ValueError(
             f"host {host.hostname} has no ssh credentials_ref "
@@ -657,7 +662,10 @@ def _ssh_credentials(host: Host) -> tuple[str, str | None]:
     user, _, key_path = rest.partition(":")
     if not user:
         raise ValueError(f"host {host.hostname} credentials_ref names no user")
-    return user, key_path or None
+    resolved_key = (
+        (resolve_secret(key_path) or "") if is_reference(key_path) else key_path
+    ) or None
+    return user, resolved_key
 
 
 REBOOT_TIMEOUT_S = 900

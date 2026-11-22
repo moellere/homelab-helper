@@ -499,6 +499,112 @@ def hass_update_issues(instance: str, states: list[dict[str, Any]]) -> list[Cate
     ]
 
 
+# --------------------------------------------------- images & appliances (13.2)
+
+_FLOATING_TAGS = frozenset({"latest", "main", "master", "edge", "dev", "nightly"})
+
+
+def _is_unpinned_image(image: str) -> bool:
+    raw = image.strip()
+    if not raw or "@sha256:" in raw:
+        return False
+    last_segment = raw.rsplit("/", 1)[-1]
+    if ":" not in last_segment:
+        return True
+    _, _, tag = last_segment.partition(":")
+    return tag.strip().lower() in _FLOATING_TAGS
+
+
+def workload_image_issues(
+    workloads: Iterable[dict[str, Any]],
+) -> tuple[list[CategoryIssue], set[str]]:
+    """Flag persisted Kubernetes workloads that run floating or untagged container images."""
+    rows = list(workloads)
+    if not rows:
+        return [], set()
+    issues: list[CategoryIssue] = []
+    for w in rows:
+        wid = str(w.get("id") or "")
+        images = [str(img) for img in (w.get("images") or []) if isinstance(img, str) and img]
+        if not wid or not images:
+            continue
+        unpinned = [img for img in images if _is_unpinned_image(img)]
+        if not unpinned:
+            continue
+        issues.append(
+            VersionIssue(
+                category="image-tag-unpinned",
+                target_type="workload",
+                target_id=wid,
+                severity=FindingSeverity.LOW,
+                title=f"Workload {wid} uses unpinned image tag(s): {', '.join(unpinned)}",
+                description=(
+                    f"Kubernetes workload {wid} runs {', '.join(unpinned)} without a pinned release "
+                    "tag or digest. Floating tags make rollbacks non-deterministic."
+                ),
+                evidence={"workload": wid, "unpinned_images": unpinned, "images": images},
+            )
+        )
+    return issues, {"image-tag-unpinned"}
+
+
+def appliance_version_issues(
+    appliances: Iterable[dict[str, Any]],
+    table: dict[str, Any],
+    today: date,
+) -> tuple[list[CategoryIssue], set[str]]:
+    """Check router/NAS appliance versions (MikroTik RouterOS, OpenMediaVault) against ``table``."""
+    rows = list(appliances)
+    if not rows:
+        return [], set()
+    observed: set[str] = set()
+    issues: list[CategoryIssue] = []
+    for app in rows:
+        kind = str(app.get("kind") or "").lower()
+        name = str(app.get("name") or kind)
+        version = str(app.get("version") or "").strip()
+        if not kind or not version:
+            continue
+        section = table.get(kind)
+        if not isinstance(section, dict):
+            continue
+        observed.add("appliance-eol")
+        major = version.split(".", 1)[0]
+        minor = _minor(version)
+        entry = section.get(minor) if minor and minor in section else section.get(major)
+        if not isinstance(entry, dict) or "eol" not in entry:
+            continue
+        eol = entry["eol"] if isinstance(entry["eol"], date) else date.fromisoformat(entry["eol"])
+        remaining = eol - today
+        if remaining > EOL_WARNING_WINDOW:
+            continue
+        past = remaining.days < 0
+        issues.append(
+            VersionIssue(
+                category="appliance-eol",
+                target_type="service",
+                target_id=f"{kind}:{name}",
+                severity=FindingSeverity.HIGH if past else FindingSeverity.MEDIUM,
+                title=(
+                    f"{name} ({kind} {version}) is past end of support"
+                    if past
+                    else f"{name} ({kind} {version}) reaches end of support in {remaining.days} days"
+                ),
+                description=(
+                    f"{name} runs {kind} {version}, whose support date is {eol.isoformat()}."
+                ),
+                evidence={
+                    "kind": kind,
+                    "name": name,
+                    "version": version,
+                    "eol": eol.isoformat(),
+                    "days_remaining": remaining.days,
+                },
+            )
+        )
+    return issues, observed
+
+
 # ---------------------------------------------------------------- reconcile
 
 
@@ -519,6 +625,7 @@ __all__ = [
     "CATEGORIES",
     "EOL_TABLE_PATH",
     "VersionIssue",
+    "appliance_version_issues",
     "ceph_daemon_versions",
     "ceph_issues",
     "hass_update_issues",
@@ -529,4 +636,5 @@ __all__ = [
     "os_release",
     "proxmox_issues",
     "reconcile_version_findings",
+    "workload_image_issues",
 ]

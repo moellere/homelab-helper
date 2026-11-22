@@ -1451,8 +1451,26 @@ See `roadmap.md` Phase 12. Closes the four structural seams across Kubernetes wo
   - [x] Multi-instance Home Assistant support (`HOMELAB_HELPER_HASS_INSTANCES`) and `device_tracker.*` / device registry identity correlation
   - [x] Project `host.storage` filesystem usage (`fsavail`/`fssize`) into daily `filesystem` `UsageSample` rows so `engine/capacity.py` projects time-to-full for all probed hosts
 
+## Phase 13 — Continuous Verification, Backup Depth & Fleet Hygiene
+
+See `roadmap.md` Phase 13. Closes the operational follow-ups across off-site/non-Proxmox backup posture, deep GPU & TLS probes, image/firmware/thermal currency, daemon probe & assertion cadences, and NetBox deep sync + secret reference schemes.
+
+- [x] **13.1 Off-site & multi-target backup posture + restore drills**
+  - [x] Correlate Home Assistant off-site replication / backup sensors (`backup-offsite-stale`) and operator-declared non-Proxmox backup targets (`HOMELAB_HELPER_BACKUP_TARGETS` → `backup-target-stale` / `backup-target-uncovered`) in `engine/backups.py` and `engine/discoverers.py`
+  - [x] Record auditable restore-drill verifications (`record_restore_drill`, CLI/MCP) that clear `backup-verify` / `backup-unverified` findings
+- [x] **13.2 GPU & TLS probe depth + image/firmware currency**
+  - [x] Extend `probes/host/gpu.py` and `engine/reconciler.py` with bound driver, VRAM size, and active compute status; use VRAM and busy state in `engine/placement.py` and `engine/suggestions.py`
+  - [x] Extract TLS certificate subject, SANs, issuer, and expiry days on HTTPS ports in `probes/network/fingerprint.py` (`tls-cert-expiring`)
+  - [x] Add unpinned container image tag (`image-tag-unpinned`) and MikroTik/OMV version checks in `engine/versions.py`, plus per-drive temperature baseline departures (`disk-temp-anomaly`) in `engine/disk_health.py`
+- [x] **13.3 Daemon probe/assertion cadences, power-policy gating & new playbooks**
+  - [x] Add `probes:` and `assertions:` cadences to `engine/schedule.py` and `cli/daemon.py` with `OperationalIntent.EXPECTED_OFF` power-policy gating (P2-AC4)
+  - [x] Add `guest-stopped` (expected-on guest observed stopped) and post-resize VM `restart` playbooks in `engine/playbooks.py`, plus optional scheduled digest notifications
+- [x] **13.4 NetBox deep sync & secret reference hardening**
+  - [x] Extend `adapters/netbox.py` to sync host NIC interfaces, primary IPs, discovered VLANs/prefixes, and `Service` / `ServiceEndpoint` records
+  - [x] Support `op://` and `vault://` secret reference schemes in `secrets.py`, resolve `Host.credentials_ref` through `secrets.py`, and redact CLI-printed adapter errors
+
 ## Not tracked here
 
 Phase 2 (continuous agent / time-series) is specified in `roadmap.md` but
-deliberately deferred — Phase 7 slice 2 picks it up as the scheduler. Post-roadmap
-(Phase 13+) items are deliberately not tracked.
+deliberately deferred — Phase 7 slice 2 and Phase 13 slice 3 pick it up as the
+scheduler. Post-roadmap (Phase 14+) items are deliberately not tracked.

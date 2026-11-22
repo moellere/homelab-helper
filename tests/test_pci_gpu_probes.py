@@ -53,3 +53,32 @@ def test_select_gpus_filters_class_03xx() -> None:
     # VGA (0300) + 3D (0302); the host bridge (0600) is excluded.
     assert {g["slot"] for g in gpus} == {"00:02.0", "01:00.0"}
     assert any("NVIDIA" in (g["vendor"] or "") for g in gpus)
+
+
+def test_gpu_telemetry_enriches_driver_vram_and_busy() -> None:
+    from homelab_helper.engine.suggestions import idle_gpu_issues
+    from homelab_helper.engine.workloads import load_workload_library
+    from homelab_helper.probes.host.gpu import parse_gpu_telemetry
+
+    lspci_with_driver = _LSPCI + "Driver:\tnvidia\n"
+    telemetry = parse_gpu_telemetry(
+        sysfs_output="0000:00:02.0|i915|0|0\n",
+        nvidia_output="00000000:01:00.0, 12288, 1024, 45\n",
+    )
+    gpus = select_gpus(parse_lspci(lspci_with_driver), telemetry)
+    by_slot = {g["slot"]: g for g in gpus}
+    assert by_slot["00:02.0"]["driver"] == "i915"
+    assert by_slot["01:00.0"]["driver"] == "nvidia"
+    assert by_slot["01:00.0"]["vram_mb"] == 12288
+    assert by_slot["01:00.0"]["busy"] is True
+
+    # A host whose GPU is busy does not get an idle-gpu suggestion.
+    library = load_workload_library()
+    busy_hosts = [("h1", "gpu-node", {"gpu_count": 1, "gpu_vendors": ["NVIDIA"], "gpu_busy": True})]
+    assert idle_gpu_issues(busy_hosts, library, set()) == []
+    idle_hosts = [
+        ("h1", "gpu-node", {"gpu_count": 1, "gpu_vendors": ["NVIDIA"], "gpu_vram_mb": 12288})
+    ]
+    issues = idle_gpu_issues(idle_hosts, library, set())
+    assert len(issues) == 1
+    assert issues[0].evidence["gpu_vram_mb"] == 12288

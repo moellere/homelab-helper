@@ -643,14 +643,51 @@ Every half of the harness consumes what the other halves already collect — con
 
 ---
 
-## Post-roadmap (Phase 13+)
+## Phase 13 — Continuous Verification, Backup Depth & Fleet Hygiene
+
+With Phase 12 complete, every core plane (hosts, Proxmox, Kubernetes, Talos, RAID/SMART, assertions, maintenance runs, multi-site Home Assistant, and time-of-day baselines) operates end-to-end. Phase 13 closes the operational follow-ups across backup verification beyond Proxmox, deep GPU/TLS probe telemetry and container image/firmware currency, daemon-scheduled host probing and assertion cadences with power-policy gating, and NetBox deep sync plus external secret-manager reference schemes.
+
+### Goals
+
+- Extend backup posture beyond Proxmox vzdump jobs to cover off-site replication sensors (via Home Assistant), operator-declared non-Proxmox backup targets, and auditable restore-drill verification records.
+- Deepen hardware and network probes (`host.gpu` driver/VRAM/active compute processes, `network.fingerprint` TLS certificate subject/SANs/issuer/expiry) and extend version currency to unpinned container image tags, router/NAS firmware, and per-drive thermal baselines.
+- Add periodic host probing, hourly usage rollups, and `AssertionEngine` verifier cadences to `schedule.yaml` in the daemon — respecting `OperationalIntent` power policies (`EXPECTED_OFF` / WoL windows) — plus new playbooks (`guest-stopped`, post-resize VM `restart`) and optional scheduled digest notifications.
+- Complete NetBox deep sync (host NICs, primary IPs, VLANs/prefixes, and `Service`/`ServiceEndpoint` projections) and harden credential handling with `op://` and `vault://` secret references and full CLI error redaction.
+
+### Slices, in delivery order
+
+| # | Slice | Delivers |
+|---|---|---|
+| 13.1 | **Off-site & multi-target backup posture + restore drills** | Correlate Home Assistant off-site/backup entities (`backup-offsite-stale`) and operator-declared external backup targets (`HOMELAB_HELPER_BACKUP_TARGETS` → `backup-target-stale` / `backup-target-uncovered`) in `engine/backups.py` and `engine/discoverers.py`; add auditable restore-drill verification records (`record_restore_drill`, CLI/MCP) that clear `backup-verify` / `backup-unverified` findings. |
+| 13.2 | **GPU & TLS probe depth + image/firmware currency** | Extend `probes/host/gpu.py` and `engine/reconciler.py` with kernel driver, VRAM bytes, and active compute status so `engine/placement.py` and `engine/suggestions.py` match VRAM and distinguish busy GPUs; wrap HTTPS ports in `probes/network/fingerprint.py` to extract TLS subject, SANs, issuer, and expiry days (`tls-cert-expiring`); add unpinned container image tag (`image-tag-unpinned`) and MikroTik/OMV firmware checks in `engine/versions.py`, plus per-drive temperature baseline departures (`disk-temp-anomaly`) in `engine/disk_health.py`. |
+| 13.3 | **Daemon probe/assertion cadences, power-policy gating & new playbooks** | Add `probes:` and `assertions:` cadences to `engine/schedule.py` and `cli/daemon.py` with `OperationalIntent.EXPECTED_OFF` power-policy gating (P2-AC4); add `guest-stopped` and post-resize VM `restart` playbooks in `engine/playbooks.py`; wire optional scheduled digest notifications (`engine/digest.py` → `engine/notify.py`). |
+| 13.4 | **NetBox deep sync & secret reference hardening** | Extend `adapters/netbox.py` to sync host NIC interfaces, primary IPs, discovered VLANs/prefixes, and `Service` / `ServiceEndpoint` records (`dry_run` preview + apply); add `op://` and `vault://` secret reference resolvers in `secrets.py`, route `Host.credentials_ref` through the secret resolver, and redact CLI-printed adapter errors. |
+
+### Acceptance criteria
+
+1. **Off-site replication and non-Proxmox backup targets open and resolve `BACKUP_GAP` findings**, and recording a restore drill verifies the target and resolves its `backup-verify` finding.
+2. **`host.gpu` reports driver, VRAM, and busy/idle compute status**, `network.fingerprint` extracts TLS SANs/issuer/expiry on HTTPS ports, `discover versions` flags `:latest` workload images and router/NAS lag, and `engine/disk_health.py` flags drives departing from their own thermal history.
+3. **The daemon schedules host probes and assertion verifiers while skipping `EXPECTED_OFF` hosts without false findings**, drafts `guest-stopped` and post-resize `restart` proposals, and can push a scheduled digest notification.
+4. **`NetBoxAdapter` syncs interfaces, IPs, VLANs/prefixes, and services**, and `secrets.py` resolves `op://` and `vault://` references while redacting secrets from CLI error output.
+
+### Effort
+
+**6–10 weeks.** Each slice builds directly on existing engine primitives (`category_findings`, `Probe`, `schedule.py`, `NetBoxAdapter`, `secrets.py`).
+
+### Stop-here value
+
+The framework continuously verifies assertions and host probes on a power-aware schedule, tracks backup posture across every storage tier and off-site target, and projects the complete physical and logical inventory into NetBox.
+
+---
+
+## Post-roadmap (Phase 14+)
 
 These are real future phases, deliberately not committed in this roadmap:
 
 - **Multi-tenant + hosted service**. The Nabu-Casa-style subscription tier — managed LLM access, off-site backup, remote access, mobile push, community template marketplace.
 - **Heterogeneous architecture support beyond Linux**. FreeBSD probes (TrueNAS Core, pfSense/OPNsense), macOS probes (Mac mini servers), Windows probes (Windows hosts in mixed labs).
 
-Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–12). Predictive operations became Phase 10; Talos as a managed plane became Phase 11; workload depth, live verifiers, and operational maturity became Phase 12.
+Each of those is its own roadmap-scale effort. Not promising any of them; just naming them so they don't accidentally creep into the committed phases (1–13). Predictive operations became Phase 10; Talos as a managed plane became Phase 11; workload depth, live verifiers, and operational maturity became Phase 12; continuous verification, backup depth, and fleet hygiene became Phase 13.
 
 ---
 

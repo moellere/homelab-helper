@@ -627,6 +627,151 @@ class NetBoxAdapter:
             patch=patch,
         )
 
+    # ------------------------------------------ interfaces, VLANs & services
+
+    async def list_interfaces(self, device_id: int) -> list[dict[str, Any]]:
+        return await self._paginate(
+            "/api/dcim/interfaces/", params={"device_id": device_id, "limit": 100}
+        )
+
+    async def sync_host_interfaces(
+        self,
+        device_id: int,
+        interfaces: list[dict[str, Any]],
+        *,
+        dry_run: bool = False,
+    ) -> SyncInventoryResult:
+        """Upsert discovered physical NIC interfaces onto a NetBox Device (create + update only)."""
+        result = SyncInventoryResult(device_id=device_id)
+        existing_rows = await self.list_interfaces(device_id)
+        existing = {r["name"]: r for r in existing_rows if isinstance(r.get("name"), str)}
+        for iface in interfaces:
+            name = iface.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            mac = (iface.get("mac") or iface.get("mac_address") or "").upper() or None
+            enabled = (
+                iface.get("operstate", "up") != "down"
+                if "operstate" in iface
+                else bool(iface.get("enabled", True))
+            )
+            mtu = iface.get("mtu") if isinstance(iface.get("mtu"), int) else None
+            payload: dict[str, Any] = {
+                "device": device_id,
+                "name": name,
+                "type": str(iface.get("type") or "other"),
+                "enabled": enabled,
+            }
+            if mac:
+                payload["mac_address"] = mac
+            if mtu is not None:
+                payload["mtu"] = mtu
+            row = existing.get(name)
+            if row is None:
+                if not dry_run:
+                    await self._request("POST", "/api/dcim/interfaces/", json=payload)
+                result.created.append(name)
+            elif (
+                (row.get("mac_address") or None) == mac
+                and bool(row.get("enabled", True)) == enabled
+                and (row.get("mtu") or None) == mtu
+            ):
+                result.unchanged.append(name)
+            else:
+                if not dry_run:
+                    await self._request("PATCH", f"/api/dcim/interfaces/{row['id']}/", json=payload)
+                result.updated.append(name)
+        return result
+
+    async def list_vlans(self) -> list[dict[str, Any]]:
+        return await self._paginate("/api/ipam/vlans/", params={"limit": 100})
+
+    async def sync_vlans(
+        self,
+        vlans: list[dict[str, Any]],
+        *,
+        dry_run: bool = False,
+    ) -> SyncInventoryResult:
+        """Upsert discovered VLANs into NetBox IPAM by VLAN ID (``vid``)."""
+        result = SyncInventoryResult(device_id=0)
+        existing_rows = await self.list_vlans()
+        existing = {int(r["vid"]): r for r in existing_rows if isinstance(r.get("vid"), int)}
+        for vlan in vlans:
+            raw_vid = vlan.get("vid") if vlan.get("vid") is not None else vlan.get("vlan_id")
+            if not isinstance(raw_vid, int):
+                continue
+            name = str(vlan.get("name") or f"vlan-{raw_vid}")
+            label = f"{raw_vid}:{name}"
+            payload = {"vid": raw_vid, "name": name, "status": "active"}
+            row = existing.get(raw_vid)
+            if row is None:
+                if not dry_run:
+                    await self._request("POST", "/api/ipam/vlans/", json=payload)
+                result.created.append(label)
+            elif row.get("name") == name:
+                result.unchanged.append(label)
+            else:
+                if not dry_run:
+                    await self._request("PATCH", f"/api/ipam/vlans/{row['id']}/", json=payload)
+                result.updated.append(label)
+        return result
+
+    async def list_services(self, device_id: int) -> list[dict[str, Any]]:
+        return await self._paginate(
+            "/api/ipam/services/", params={"device_id": device_id, "limit": 100}
+        )
+
+    async def sync_services(
+        self,
+        device_id: int,
+        services: list[dict[str, Any]],
+        *,
+        dry_run: bool = False,
+    ) -> SyncInventoryResult:
+        """Upsert discovered services onto a NetBox Device (matched by name + protocol)."""
+        result = SyncInventoryResult(device_id=device_id)
+        existing_rows = await self.list_services(device_id)
+        existing: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in existing_rows:
+            r_name = r.get("name")
+            proto_raw = r.get("protocol")
+            proto = str(
+                (proto_raw.get("value") or "tcp")
+                if isinstance(proto_raw, dict)
+                else (proto_raw or "tcp")
+            ).lower()
+            if isinstance(r_name, str):
+                existing[(r_name, proto)] = r
+        for svc in services:
+            name = svc.get("name")
+            ports = sorted(int(p) for p in (svc.get("ports") or []) if isinstance(p, int))
+            if not isinstance(name, str) or not name or not ports:
+                continue
+            protocol = str(svc.get("protocol") or "tcp").lower()
+            description = str(svc.get("description") or "")
+            payload: dict[str, Any] = {
+                "device": device_id,
+                "name": name,
+                "protocol": protocol,
+                "ports": ports,
+                "description": description,
+            }
+            row = existing.get((name, protocol))
+            if row is None:
+                if not dry_run:
+                    await self._request("POST", "/api/ipam/services/", json=payload)
+                result.created.append(name)
+            elif (
+                sorted(int(p) for p in (row.get("ports") or []) if isinstance(p, int)) == ports
+                and (row.get("description") or "") == description
+            ):
+                result.unchanged.append(name)
+            else:
+                if not dry_run:
+                    await self._request("PATCH", f"/api/ipam/services/{row['id']}/", json=payload)
+                result.updated.append(name)
+        return result
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -28,7 +28,9 @@ the cluster is not healthy, so a node that came back wrong halts the rest.
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -375,16 +377,27 @@ CEPH_MAINTENANCE_CHECKS = frozenset({"OSDMAP_FLAGS"})
 """Health checks a rolling update raises on purpose (``noout`` and friends)."""
 
 
-def proxmox_ceph_health_gate(adapter: ProxmoxAdapter) -> HealthCallback:
+CEPH_SETTLE_TIMEOUT_S = 600.0
+CEPH_SETTLE_POLL_S = 15.0
+
+
+def proxmox_ceph_health_gate(
+    adapter: ProxmoxAdapter,
+    *,
+    timeout_s: float = CEPH_SETTLE_TIMEOUT_S,
+    poll_s: float = CEPH_SETTLE_POLL_S,
+) -> HealthCallback:
     """Between-steps check for a Proxmox maintenance run when the cluster runs Ceph.
 
     A cluster without Ceph passes. With Ceph the run goes on at ``HEALTH_OK``, or at a
     ``HEALTH_WARN`` whose only checks are the maintenance flags the operator set, and
-    only with no degraded objects. A status that cannot be read stops the run: the gate
-    never passes on a guess.
+    only with no degraded objects. A node that has just rebooted leaves Ceph recovering
+    for a few minutes, so the gate waits up to ``timeout_s`` for that to settle (as the
+    Talos gate waits on ``talosctl health``) and stops the run if it does not. A status
+    that cannot be read is never a pass: it is retried, then it stops the run.
     """
 
-    async def _check() -> tuple[bool, str]:
+    async def _once() -> tuple[bool, str]:
         try:
             status = await adapter.ceph_status()
         except Exception as exc:
@@ -408,6 +421,14 @@ def proxmox_ceph_health_gate(adapter: ProxmoxAdapter) -> HealthCallback:
         if degraded > 0:
             return False, f"Ceph has {degraded} degraded object(s)"
         return True, h_status if not flags_only else "HEALTH_WARN (maintenance flags only)"
+
+    async def _check() -> tuple[bool, str]:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            ok, why = await _once()
+            if ok or time.monotonic() >= deadline:
+                return (ok, why) if ok else (False, f"{why} (waited {int(timeout_s)} s)")
+            await asyncio.sleep(poll_s)
 
     return _check
 

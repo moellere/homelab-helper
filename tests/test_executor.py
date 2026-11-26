@@ -434,6 +434,48 @@ async def test_failed_dispatch_writes_failed_receipt_and_keeps_pending(sessionma
     await adapter.aclose()
 
 
+async def test_starting_a_guest_its_node_already_started_succeeds(sessionmaker) -> None:
+    """A maintenance run's return step finds an onboot guest already up after the
+    reboot; Proxmox fails the start with "already running", but the asked-for state
+    holds, so the receipt succeeds and the cell is not demoted."""
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests, task_exit="VM 101 already running")
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "start",
+            "single-host",
+            AutonomyLevel.AUTONOMOUS,
+            actor="enoch",
+        )
+        p = await make_proposal(s, make_artifact(action_kind="start", rollback_verified=True))
+        result = await execute_proposal(s, p, adapter, actor="enoch")
+        assert result.outcome == "succeeded", result.error
+        assert result.escalation is None or not result.escalation.demoted
+    await adapter.aclose()
+
+
+async def test_a_failed_stop_is_not_excused_by_the_already_running_rule(sessionmaker) -> None:
+    requests: list[httpx.Request] = []
+    adapter = make_adapter(requests, task_exit="VM 101 already running")
+    async with session_scope(sessionmaker) as s:
+        await seed_domains(s)
+        await grant_cell(
+            s,
+            TrustDomain.CONTAINERS,
+            "stop",
+            "single-host",
+            AutonomyLevel.AUTONOMOUS,
+            actor="enoch",
+        )
+        p = await make_proposal(s, make_artifact(action_kind="stop", rollback_verified=True))
+        result = await execute_proposal(s, p, adapter, actor="enoch")
+        assert result.outcome == "failed"
+    await adapter.aclose()
+
+
 async def test_task_that_fails_after_the_api_accepted_it_is_a_failed_receipt(sessionmaker) -> None:
     """The POST returning a task id says the work was queued, not that it worked."""
     requests: list[httpx.Request] = []

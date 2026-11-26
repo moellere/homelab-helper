@@ -547,6 +547,32 @@ async def test_plan_names_the_steps_the_gate_would_refuse_today(sessionmaker) ->
         assert "would be refused" in run_summary(run)["steps"][-2]["detail"]
 
 
+def test_a_closed_terminal_does_not_stop_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After the hangup, the next progress line hits a dead tty (EIO); that write
+    must go nowhere quietly, not raise between a node's update and its reboot."""
+    import io
+    import sys
+
+    from homelab_helper.cli._terminal import outlive_the_terminal
+
+    class _DeadTTY(io.StringIO):
+        def write(self, text: str) -> int:
+            raise OSError(5, "Input/output error")
+
+    import signal
+
+    previous = signal.getsignal(signal.SIGHUP)
+    monkeypatch.setattr(sys, "stdout", _DeadTTY())
+    monkeypatch.setattr(sys, "stderr", _DeadTTY())
+    try:
+        outlive_the_terminal()
+        print("step 6: reboot bmax0")
+        sys.stderr.write("still here\n")
+        sys.stdout.flush()
+    finally:
+        signal.signal(signal.SIGHUP, previous)
+
+
 def test_run_and_exec_run_ignore_a_terminal_hangup(monkeypatch: pytest.MonkeyPatch) -> None:
     """The process must outlive the SSH session that started it, or the receipts are lost."""
     import signal

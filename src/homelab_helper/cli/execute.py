@@ -10,8 +10,6 @@ is ever dispatched past the gate.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import signal
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -28,6 +26,7 @@ from homelab_helper.adapters.kubernetes import KubeError
 from homelab_helper.adapters.proxmox import ProxmoxAPIError, ProxmoxConfigError
 from homelab_helper.adapters.talos import TalosAdapter
 from homelab_helper.adapters.unifi import UniFiAPIError
+from homelab_helper.cli._terminal import outlive_the_terminal
 from homelab_helper.config import database_url
 from homelab_helper.db.enums import ProposalOutcome
 from homelab_helper.db.lookup import rows_by_id_prefix
@@ -166,13 +165,6 @@ def _report_run(result: ExecutionResult, *, used_override: bool) -> int:
     return 0 if result.outcome == "succeeded" else 4
 
 
-def _outlive_the_terminal() -> None:
-    """A dispatch (a reboot wait can be 15 minutes) survives the terminal that started it,
-    so its receipt is written even when the SSH session drops."""
-    with contextlib.suppress(ValueError, OSError, AttributeError):
-        signal.signal(signal.SIGHUP, signal.SIG_IGN)
-
-
 @exec_app.command(name="run")
 def exec_run(
     proposal_id: str = typer.Argument(..., help="Proposal id (or unique prefix)."),
@@ -197,7 +189,7 @@ def exec_run(
     crosses an absolute floor, and it never makes a propose-only cell execute.
     The gesture is deliberately high-friction: you retype the cell key.
     """
-    _outlive_the_terminal()
+    outlive_the_terminal()
 
     async def _confirm(manifest: ActionManifest, decision: Decision) -> bool:
         console.print(

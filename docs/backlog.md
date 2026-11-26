@@ -1294,6 +1294,16 @@ keeps; no model anywhere.
     full run on bmax3 executed every step from an SSH session that dropped as
     the last step returned; the process died before its commit and nothing was
     recorded. Reconstructed from bmax3's journal and the pveproxy access logs.
+  - [x] Four false failures from the 11/26/2026 runs on bmax0–2 (11/26/2026):
+    a closed terminal raised `EIO` on the next progress line and stopped a run
+    between update and reboot (stdout/stderr now go quiet instead); a reboot of
+    the node serving `HOMELAB_HELPER_PROXMOX_URL` failed on the API outage it
+    caused (the wait now treats an unreachable API as "not back yet"); a
+    return-step `start` of a guest its node's `onboot` had already started
+    failed with "already running" and demoted the cell (a start whose guest the
+    node reports running succeeds); and an update right after a drain shutdown
+    was refused because `/cluster/resources` still listed the guest running
+    (each listed-running guest is confirmed against the node's live status).
   - [ ] Follow-ups: the Talos node variant landed as 11.3; pre-flight "newest
     installed kernel is the running one" after the reboot; Ceph "PGs clean" in
     the return wait when the cluster runs Ceph.

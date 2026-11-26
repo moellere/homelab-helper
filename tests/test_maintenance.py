@@ -566,7 +566,7 @@ def test_a_closed_terminal_does_not_stop_the_run(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(sys, "stderr", _DeadTTY())
     try:
         outlive_the_terminal()
-        print("step 6: reboot bmax0")
+        print("step 6: reboot the node")
         sys.stderr.write("still here\n")
         sys.stdout.flush()
     finally:

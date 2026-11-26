@@ -1294,7 +1294,7 @@ keeps; no model anywhere.
     full run on bmax3 executed every step from an SSH session that dropped as
     the last step returned; the process died before its commit and nothing was
     recorded. Reconstructed from bmax3's journal and the pveproxy access logs.
-  - [x] Four false failures from the 11/26/2026 runs on bmax0–2 (11/26/2026):
+  - [x] Four false failures from three node maintenance runs (11/26/2026):
     a closed terminal raised `EIO` on the next progress line and stopped a run
     between update and reboot (stdout/stderr now go quiet instead); a reboot of
     the node serving `HOMELAB_HELPER_PROXMOX_URL` failed on the API outage it

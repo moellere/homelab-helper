@@ -61,7 +61,7 @@ async def digest_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         )
         s.add(
             ProposalLog(
-                title="Resize esphome-lxc to 1 core",
+                title="Resize builder-lxc to 1 core",
                 artifact={"kind": "action"},
                 blast_radius="single-host",
             )

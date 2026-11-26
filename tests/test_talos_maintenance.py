@@ -33,8 +33,8 @@ CP = "10.0.6.13"
 OLD, NEW = "v1.14.1", "v1.14.2"
 MEMBERS = [
     {"hostname": "hv4", "machine_type": "worker", "address": "10.0.6.24", "talos": OLD},
-    {"hostname": "talos-cp2", "machine_type": "controlplane", "address": "10.0.6.14", "talos": OLD},
-    {"hostname": "talos-cp1", "machine_type": "controlplane", "address": CP, "talos": OLD},
+    {"hostname": "k8s-cp2", "machine_type": "controlplane", "address": "10.0.6.14", "talos": OLD},
+    {"hostname": "k8s-cp1", "machine_type": "controlplane", "address": CP, "talos": OLD},
     {"hostname": "hv5", "machine_type": "worker", "address": "10.0.6.25", "talos": NEW},
 ]
 
@@ -130,14 +130,14 @@ async def test_plan_orders_control_planes_first_and_skips_members_on_the_target(
             "k8s-upgrade",
         ]
         assert [st["name"].split(" ")[1] for st in run.steps[:3]] == [
-            "talos-cp1",
-            "talos-cp2",
+            "k8s-cp1",
+            "k8s-cp2",
             "hv4",
         ], "control planes first, workers after, hv5 (already on target) absent"
         proposals = [await s.get(ProposalLog, uuid.UUID(st["proposal_id"])) for st in run.steps]
         assert [p.blast_radius for p in proposals] == ["single-host"] * 3 + ["cluster"]
         assert proposals[0].artifact["action"]["target"] == {"node": CP, "version": NEW}
-        assert proposals[0].artifact["action"]["hostnames"] == ["talos-cp1"]
+        assert proposals[0].artifact["action"]["hostnames"] == ["k8s-cp1"]
         assert proposals[3].artifact["action"]["target"] == {
             "control_plane": CP,
             "version": "1.37.2",

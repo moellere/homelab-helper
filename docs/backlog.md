@@ -384,8 +384,8 @@ The rest of Phase 1, and all of Phase 6, is below.
   late**, not native Phase 4; and it touches load-bearing invariant #1 — a
   retire must close placements *explicitly* without weakening the rule that an
   absent observation never auto-resolves. Motivating case: three Pi control-plane
-  nodes (`pi-cp1/2/3`) were reflashed and moved to the Wyola site as
-  `wyhome`/`wynode2`/`wynode3`. NIC lineage tracked the move by MAC, but the
+  nodes (`pi-cp1/2/3`) were reflashed and moved to SiteB as
+  `remote-ha`/`pi2`/`pi3`. NIC lineage tracked the move by MAC, but the
   disk placements stayed open on the retired hostnames because the USB
   enclosures forge a shared WWN and Talos vs. Ubuntu report different serial
   fields for the same drive — so no identity links the two eras. Part merge is
@@ -398,8 +398,8 @@ The rest of Phase 1, and all of Phase 6, is below.
   The cost is that changing a controller's name changes its resolver tag, and
   the previous slice is left behind with nothing to ever reap it. Observed live:
   a single-controller lab adopting the multi-controller form renamed `default` →
-  `covington`, so 107 endpoints under resolver `unifi` were silently superseded
-  by 107 identical rows under `unifi:covington`. Nothing errored, nothing
+  `site-a`, so 107 endpoints under resolver `unifi` were silently superseded
+  by 107 identical rows under `unifi:site-a`. Nothing errored, nothing
   reported it, and the duplicates are invisible until someone groups endpoints
   by resolver. Cleaned up by hand this time.
 
@@ -445,7 +445,7 @@ The rest of Phase 1, and all of Phase 6, is below.
   ceph-osd + etcd added as lan-required, media servers marked lan-preferred)
   and placement now folds path verdicts in: **lan-required across a
   non-LAN-grade path to the data-gravity anchor is refused** with the
-  worst-link explanation (AC6's Wyola↔Covington case, verified through the
+  worst-link explanation (AC6's SiteB↔SiteA case, verified through the
   real CLI), lan-preferred takes a penalty + caveat. `helper plan path A B
   [--workload X]` shows hops, inheritance, and the verdict.
 - [x] **Rebalance solver** (`engine/rebalance.py` + `helper plan rebalance
@@ -514,7 +514,7 @@ The rest of Phase 1, and all of Phase 6, is below.
 ### Known gaps (found during validation)
 
 - [ ] **Planners have no "is a hypervisor" notion** (P5-AC5, 10/03/2026): `plan surplus`
-  calls covomv's RAM surplus although it is a NAS running Docker; `plan rebalance`
+  calls nas01's RAM surplus although it is a NAS running Docker; `plan rebalance`
   had the mirror defect (fixed in #51 via cluster membership). Surplus should skip
   hosts that are nodes of no cluster, or carry a role.
 - [ ] **Runbook text assumes the day-one 1 GbE / 2.5 GbE asymmetry** (P4-AC2, P5-AC4):
@@ -559,15 +559,15 @@ The rest of Phase 1, and all of Phase 6, is below.
   `exportfs -v` (or `/etc/exports`) and `testparm -s`, plus fstab/findmnt, and
   feeds the existing stray-export check scoped `host:<name>` — fstab **bind**
   mounts count as declared backing, which is how OpenMediaVault serves NFS.
-  Live 10/09/2026: covomv md0 raid5 3/3 healthy; 21 exports, 16 of 17 paths
+  Live 10/09/2026: nas01 md0 raid5 3/3 healthy; 21 exports, 16 of 17 paths
   judgeable, no strays.
 - [x] **`talos.host` CPU/DIMM depth** (Phase 9.5) — `memorymodules` → the
   canonical `host.memory.dimms` (`sizeMiB` → bytes; placeholder serials → a
   gap, not a part); `processors` → sockets/cores/threads/max MHz. CPU model and
   vendor now come from `/proc/cpuinfo` — they were read from
-  `systeminformation`, i.e. the chassis (bmax4's "CPU" was `LENOVO
+  `systeminformation`, i.e. the chassis (pve4's "CPU" was `LENOVO
   10MUS0BV00`), and threads equalled cores. Hardware resources are best
-  effort. Live: bmax4 i5-6500T 4c, two serialled Micron DIMMs; talos-cp1 (VM)
+  effort. Live: pve4 i5-6500T 4c, two serialled Micron DIMMs; k8s-cp1 (VM)
   one serial-less DIMM.
 
 
@@ -780,7 +780,7 @@ is who may *trigger*, and how much of the lab has an executor-gated write path.
 - [x] `REVERSIBLE_ACTION_KINDS` grew by the three new kinds; `LOW_BLAST_RADII`
   by `single-service`.
 - [x] **Live validation** (`live-validation.md`, Part 3) — 10/03/2026 on the
-  Covington lab: migrate + rollback, workload restart + undo, Approve and Deny,
+  lab: migrate + rollback, workload restart + undo, Approve and Deny,
   all through `execute_proposal` with a phone tap. _P7-AC2, AC3._
 
 ### Slice 2 — surfaces (landed)
@@ -899,14 +899,14 @@ fuse; the first two expired unseen and, as "answers", were never re-asked.
 
 See `roadmap.md` Phase 8. Slices land in this order.
 
-- [x] 8.1 Version currency — `engine/versions.py`, `helper discover versions`, `run_discovery("versions")`: `version-drift` findings for Proxmox package lag (node's cached apt list, Debian/Proxmox split, pve-manager called out) and mixed cluster versions, OS end of life from `data/os-eol.yaml`, kubelet/Talos skew, Home Assistant `update.*` pending (platform MEDIUM, devices LOW). Categories resolve only when observed (invariant 1). First live run 10/05/2026: bmax1–3 on 9.2.11 with 120–123 pending, bmax0 on 9.2.20, 7 HA updates.
+- [x] 8.1 Version currency — `engine/versions.py`, `helper discover versions`, `run_discovery("versions")`: `version-drift` findings for Proxmox package lag (node's cached apt list, Debian/Proxmox split, pve-manager called out) and mixed cluster versions, OS end of life from `data/os-eol.yaml`, kubelet/Talos skew, Home Assistant `update.*` pending (platform MEDIUM, devices LOW). Categories resolve only when observed (invariant 1). First live run 10/05/2026: pve1–3 on 9.2.11 with 120–123 pending, pve0 on 9.2.20, 7 HA updates.
   - [x] Ceph (10/09/2026): `ceph-eol` from `/cluster/ceph/metadata` against a `ceph:` section of `data/os-eol.yaml` (reef 2026-03-20, squid 2026-10-31, tentacle 2027-06-01, upstream dates), `ceph-mixed` when daemons run different versions. Prompted by the 10/09 maintenance: Squid goes EOL 10/31/2026 and only a forum thread said so.
   - [ ] Follow-ups: Argo CD image tags vs upstream releases; Debian security-update count (needs the node's apt sources, not exposed by the API); UniFi/OMV firmware; the X1/X4 Pis now have `os_*` facts via the schedule, so their Buster/Bullseye EOL findings should appear on the next pass — verify.
 - [x] 8.2 Backup posture — `engine/backups.py`, `helper discover backups`, `run_discovery("backups")`: `backup-gap` findings for guests no enabled job selects, selected guests whose newest backup is older than twice the job interval (or missing), newest backup failing verification, backups retained for vmids that no longer exist, backup storage ≥ 80/90%. Shared reconcile extracted to `engine/category_findings.py` (8.1 uses it too). First live run 10/05/2026: all 23 live guests covered, fresh, verified; 1.3 TiB logical retained for deleted guests 102/107/110 (prune keeps a group's newest backups forever).
-  - [ ] Follow-ups: offsite freshness (offsite-push publishes status to the Wyola HA's MQTT — read it once HA instances are multi-site in the adapter); restore-drill results; state outside Proxmox (HA config, covomv data) as operator-declared backup targets.
+  - [ ] Follow-ups: offsite freshness (offsite-push publishes status to the SiteB HA's MQTT — read it once HA instances are multi-site in the adapter); restore-drill results; state outside Proxmox (HA config, nas01 data) as operator-declared backup targets.
 - [x] 8.3 Usage history — `usage_sample` table (migration `a7d3e9c2b5f1`), `engine/usage.py`, `helper discover usage`, `helper usage [subject] [--days]`, MCP `usage_summary`. Hourly rollups from the RRD `month` timeframe (30-min points), daily from `year` (6-h points): mean of AVERAGE, peak of MAX. First run backfills ~30 days hourly and up to a year daily; reruns upsert; `prune_usage` keeps 45 days hourly / 730 days daily (`HOMELAB_HELPER_USAGE_HOURLY_DAYS` / `_DAILY_DAYS`). First live run 10/05/2026: 17,504 rollups for 26 subjects in 7 s.
-  - [ ] Follow-ups: K8s pod usage (metrics-server), OMV/covomv disks, non-Proxmox hosts via probes.
-- [x] 8.4 Rightsizing & real-usage placement — `engine/rightsizing.py`, `helper plan rightsize [--days] [--persist]`, MCP `rightsizing`; `plan rebalance --basis usage` / `plan_rebalance(basis="usage")`. `rightsizing` findings (cpu-grow, cpu-shrink, mem-shrink, mem-grow for containers only, idle), each naming allocation, p95, peak, window and proposed value; < 7 days of hourly history → no verdict and no resolution (`observed_targets` added to the shared reconcile). VM memory is never grown: Proxmox's figure includes guest page cache (measured: ubuntu-dev reported 14.6 GiB, 4 GiB used in-guest). First live run 10/06/2026: Home Assistant CPU-bound 2 → 3 cores; ESPHome builders 4 GiB → 1–2 GiB; proxmox-dc 2 → 1 core, 4 → 1.5 GiB; esphome-lxc idle.
+  - [ ] Follow-ups: K8s pod usage (metrics-server), OMV/nas01 disks, non-Proxmox hosts via probes.
+- [x] 8.4 Rightsizing & real-usage placement — `engine/rightsizing.py`, `helper plan rightsize [--days] [--persist]`, MCP `rightsizing`; `plan rebalance --basis usage` / `plan_rebalance(basis="usage")`. `rightsizing` findings (cpu-grow, cpu-shrink, mem-shrink, mem-grow for containers only, idle), each naming allocation, p95, peak, window and proposed value; < 7 days of hourly history → no verdict and no resolution (`observed_targets` added to the shared reconcile). VM memory is never grown: Proxmox's figure includes guest page cache (measured: a dev VM reported 14.6 GiB, 4 GiB used in-guest). First live run 10/06/2026: Home Assistant CPU-bound 2 → 3 cores; ESPHome builders 4 GiB → 1–2 GiB; dc01 2 → 1 core, 4 → 1.5 GiB; builder-lxc idle.
   - [x] `resize` action kind (10/06/2026): cores and/or `memory_mib` on a guest, through the executor via `set_vm_config`; refused at dispatch beyond the node's CPUs/physical memory (no write); a QEMU balloon floor above the new memory is lowered with it; QEMU without hotplug reports *pending until next stop/start*, containers apply live. Rollback: `prior-config` generalised to the keys an action changes (cpu; cores/memory/balloon). In `REVERSIBLE_ACTION_KINDS`. `rightsize` playbook drafts one resize per cpu-*/mem-* rightsizing finding (never for `idle`); rightsizing evidence now carries node/vmid/kind. MCP `propose_action(cores=, memory_mib=)`.
   - [ ] Follow-ups: in-guest memory via the QEMU guest agent so VM memory can grow too; K8s requests vs usage; an optional restart-after-resize for VMs (today the operator restarts, or a `restart` proposal).
 - [x] 8.5 Storage efficiency — `engine/storage.py`, `helper discover storage`,
@@ -935,7 +935,7 @@ See `roadmap.md` Phase 8. Slices land in this order.
     retained, nothing can bind it again.
   - [ ] Follow-ups: backup retention cost (8.2's `backup-orphans` already names
     the groups kept for deleted guests; a per-tier cost breakdown is reporting
-    rather than a finding); OMV/covomv filesystem headroom via the OMV adapter;
+    rather than a finding); OMV/nas01 filesystem headroom via the OMV adapter;
     ZFS snapshot space accounting (`written`/`refer`) so a stale snapshot's real
     cost is a number rather than an explanation.
 - [x] 8.6 Weekly digest — `engine/digest.py`, `db/models/digest.py` (migration
@@ -1230,7 +1230,7 @@ keeps; no model anywhere.
   and `cpu-headroom` when a node's daily mean trends across 90% of RAM / 80% CPU
   inside the horizon. Two things the first live preview taught: a step is not
   a trend (the fit restarts after the last day-to-day jump above 10% of the
-  total — HA moving onto bmax2 read as "crosses 90% in 11 days"), and a node's
+  total — HA moving onto pve2 read as "crosses 90% in 11 days"), and a node's
   memory climb is guests touching their allocations, so the memory trend is
   judged only where the running guests' commitment plus the OS reserve could
   carry it across the line. The digest leads with "What runs out first" (capacity and
@@ -1277,7 +1277,7 @@ keeps; no model anywhere.
   - [x] `plan --resume <run>` (10/12/2026): a run that stopped after its
     drain is finished by a second one — the guests the stopped run moved and
     never returned join the new run's return leg, checked against where each
-    guest is now. Born of the first live run, which drained bmax3 and stopped
+    guest is now. Born of the first live run, which drained pve3 and stopped
     at the update step for want of a `credentials_ref`.
   - [x] Hardening from the first live runs (10/12/2026): a preflight that stops
     before the target is touched (undrained node, missing login, node already on
@@ -1291,9 +1291,9 @@ keeps; no model anywhere.
     after an `uv tool upgrade` from an rc installed with `--prerelease allow`
     pulled httpx 1.0.dev6 (no `AsyncClient`).
   - [x] `maintenance run` and `exec run` ignore SIGHUP (10/12/2026): the first
-    full run on bmax3 executed every step from an SSH session that dropped as
+    full run on pve3 executed every step from an SSH session that dropped as
     the last step returned; the process died before its commit and nothing was
-    recorded. Reconstructed from bmax3's journal and the pveproxy access logs.
+    recorded. Reconstructed from pve3's journal and the pveproxy access logs.
   - [x] Four false failures from three node maintenance runs (11/26/2026):
     a closed terminal raised `EIO` on the next progress line and stopped a run
     between update and reboot (stdout/stderr now go quiet instead); a reboot of

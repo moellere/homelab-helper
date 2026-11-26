@@ -289,7 +289,7 @@ async def test_pending_proposals_are_the_recommendation_tail(sessionmaker) -> No
     async with session_scope(sessionmaker) as s:
         s.add(
             ProposalLog(
-                title="Resize esphome-lxc to 1 core",
+                title="Resize builder-lxc to 1 core",
                 artifact={"kind": "action"},
                 blast_radius="single-host",
             )
@@ -297,7 +297,7 @@ async def test_pending_proposals_are_the_recommendation_tail(sessionmaker) -> No
         await s.flush()
         digest = await build_digest(s, now=NOW)
 
-    assert digest.pending_proposals == ["Resize esphome-lxc to 1 core"]
+    assert digest.pending_proposals == ["Resize builder-lxc to 1 core"]
 
 
 # ---------------------------------------------------------------------------

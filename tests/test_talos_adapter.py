@@ -255,9 +255,9 @@ _KUBELETCONFIG = """{
 }"""
 
 _MEMBERS = """{
-    "metadata": {"id": "talos-cp1", "namespace": "cluster"},
+    "metadata": {"id": "k8s-cp1", "namespace": "cluster"},
     "node": "10.0.0.1",
-    "spec": {"nodeId": "a", "addresses": ["10.0.6.13", "10.0.6.16"], "hostname": "talos-cp1",
+    "spec": {"nodeId": "a", "addresses": ["10.0.6.13", "10.0.6.16"], "hostname": "k8s-cp1",
              "machineType": "controlplane", "operatingSystem": "Talos (v1.14.2)"}
 }
 {
@@ -288,7 +288,7 @@ async def test_members_carry_type_address_and_talos_release() -> None:
     members = await TalosAdapter(runner=runner).members("10.0.0.1")
     assert members == [
         {
-            "hostname": "talos-cp1",
+            "hostname": "k8s-cp1",
             "machine_type": "controlplane",
             "address": "10.0.6.13",
             "talos": "v1.14.2",

@@ -13,12 +13,12 @@ Architectural premise (revisited from earlier in the conversation): NetBox is **
 ### Sites and tenancy
 
 ```
-Site: Covington
+Site: SiteA
   description: Primary site, all compute, NAS, UniFi gear
   status: active
   facility: home
 
-Site: Wyola
+Site: SiteB
   description: Remote site reached via site-to-site VPN
   status: active
   facility: remote-home
@@ -28,25 +28,25 @@ Tenant: example.lan   # optional, only one tenant — skip if it adds noise
 
 ### VLAN Group, VLANs, Prefixes
 
-NetBox wants a `VLANGroup` to scope the VLAN namespace so VID collisions are detected. One group for the controller's L2 domain at Covington.
+NetBox wants a `VLANGroup` to scope the VLAN namespace so VID collisions are detected. One group for the controller's L2 domain at SiteA.
 
 ```
-VLANGroup: example-covington
-  scope: Site=Covington
+VLANGroup: example-site-a
+  scope: Site=SiteA
 
-VLANs (all in example-covington):
+VLANs (all in example-site-a):
   vid=1   name=Primary    role=mgmt
-  vid=4   name=DorkIOT    role=iot
+  vid=4   name=IoT    role=iot
   vid=6   name=Kubernet   role=compute
-  vid=8   name=CovGuest   role=guest
-  vid=10  name=CovVMs     role=vm-network
+  vid=8   name=Guest   role=guest
+  vid=10  name=VMs     role=vm-network
 
 Prefixes:
-  10.0.0.0/23  VLAN=Primary   role=mgmt           site=Covington
-  10.0.4.0/23  VLAN=DorkIOT   role=iot            site=Covington
-  10.0.6.0/23  VLAN=Kubernet  role=compute        site=Covington
-  10.0.8.0/24  VLAN=CovGuest  role=guest          site=Covington
-  10.0.10.0/24 VLAN=CovVMs    role=vm-network     site=Covington
+  10.0.0.0/23  VLAN=Primary   role=mgmt           site=SiteA
+  10.0.4.0/23  VLAN=IoT   role=iot            site=SiteA
+  10.0.6.0/23  VLAN=Kubernet  role=compute        site=SiteA
+  10.0.8.0/24  VLAN=Guest  role=guest          site=SiteA
+  10.0.10.0/24 VLAN=VMs    role=vm-network     site=SiteA
 ```
 
 VLAN 6 as a contiguous /23 just works — NetBox doesn't care that it spans two `/24`-shaped halves.
@@ -56,13 +56,13 @@ VLAN 6 as a contiguous /23 just works — NetBox doesn't care that it spans two 
 ```
 TunnelGroup: example-vpn
 
-Tunnel: wyola-site-vpn
+Tunnel: site-b-vpn
   group: example-vpn
   encapsulation: ipsec-transport   # or whatever UniFi actually uses
   status: active
   terminations:
-    - Termination(role=hub, device=Covington-UDM, interface=wan1)
-    - Termination(role=spoke, site=Wyola, ip=<wyola-public>)
+    - Termination(role=hub, device=SiteA-UDM, interface=wan1)
+    - Termination(role=spoke, site=SiteB, ip=<site-b-public>)
 ```
 
 WAN2 is a separate `Circuit` whose status reflects the long-running outage — see "where the model bends" for why this matters beyond just a status field.
@@ -79,10 +79,10 @@ DeviceTypes:
   Generic_MiniPC_i5-6500T (node4/5/6 — likely a specific ExampleVendor/Minisforum SKU)
   ExampleVendor_NAS_Variant     (nas0)
   RaspberryPi_4B          (cp1/2/3, edgepi1)
-  UDM_Pro_(UDMA6A8)       (Covington gateway)
-  USW_Pro_Max_16_PoE      (dorkcore)
+  UDM_Pro_(example)       (SiteA gateway)
+  USW_Pro_Max_16_PoE      (core-sw)
   USW_24_PoE_2.5G         (usw25office)
-  USW_Flex_Mini           (uswjordan, uswlivingroom)
+  USW_Flex_Mini           (uswbedroom, uswlivingroom)
   U7_Pro                  (the APs — model varies, may need multiple types)
   Mikrotik_PTP_Radio      (the dark-infrastructure radios)
 ```
@@ -101,7 +101,7 @@ nas, usb-ip-server, gateway, switch-core, switch-access, ap, ptp-radio
 Eighteen-ish named devices. Listed with the fields that matter for downstream reasoning, not exhaustively:
 
 ```
-Compute (Site=Covington):
+Compute (Site=SiteA):
   node0     role=proxmox-node           primary_ip=10.0.6.20/23
   node1     role=proxmox-node           primary_ip=10.0.6.21/23
   node2     role=proxmox-node           primary_ip=10.0.6.22/23
@@ -115,19 +115,19 @@ Compute (Site=Covington):
   edgepi1 role=usb-ip-server        primary_ip=10.0.0.53/23
   nas0    role=nas                    primary_ip=10.0.0.29/23   # see interface note
 
-Network (Site=Covington):
-  Covington   role=gateway              (UDM-class)
-  dorkcore    role=switch-core
+Network (Site=SiteA):
+  SiteA   role=gateway              (UDM-class)
+  core-sw    role=switch-core
   usw25office role=switch-access
-  uswjordan   role=switch-access
+  uswbedroom   role=switch-access
   uswlivingroom role=switch-access
-  u7playroom  role=ap     ← also functional uplink for dorkcore
-  u7officehall role=ap
+  u7den  role=ap     ← also functional uplink for core-sw
+  u7hall role=ap
   garage      role=ap
-  dorkmesh    role=ap
+  mesh-ap    role=ap
   upstairs    role=ap
 
-Network (Site=Wyola):
+Network (Site=SiteB):
   <mikrotik-ptp-1>  role=ptp-radio    # exact device names tbd
   <mikrotik-ptp-2>  role=ptp-radio
 ```
@@ -155,21 +155,21 @@ NetBox can express the bridge relationship and the MAC values, but the *invarian
 ClusterType: proxmox-ve
 ClusterType: kubernetes
 
-Cluster: dorkprox
+Cluster: pve-cluster
   type: proxmox-ve
-  site: Covington
+  site: SiteA
   members: node0, node1, node2, node3
 
-Cluster: dorkk8s
+Cluster: k8s-cluster
   type: kubernetes
-  site: Covington
+  site: SiteA
   members: cp1, cp2, cp3, node4, node5, node6
 
-VirtualMachines (cluster=dorkprox):
+VirtualMachines (cluster=pve-cluster):
   pbs              # raw-passthrough to sda1 — see bend #5
   <other proxmox VMs you have>
 
-VirtualMachines (cluster=dorkk8s):
+VirtualMachines (cluster=k8s-cluster):
   Not modeled per-pod in NetBox. K8s API is SoT.
   Optionally model "logical workloads" as VMs if you want a unified Services view —
   see "what lives outside NetBox" below.
@@ -205,13 +205,13 @@ The one cable that earns its keep:
 
 ```
 Cable(
-  termination_a=dorkcore.uplink,
-  termination_b=u7playroom.lan_port,
+  termination_a=core-sw.uplink,
+  termination_b=u7den.lan_port,
   label="homelab-chokepoint"
 )
 ```
 
-That edge is load-bearing for the harness's failure-domain reasoning. Everything else (which Pi is in which dorkcore port, which AP is connected to what) is documentation-only — model it if you enjoy that, skip it otherwise. Cable inventory is the single best example of "NetBox accuracy decays to 30% within 60 days" that the surveys keep finding; only model cables you'd actually keep current.
+That edge is load-bearing for the harness's failure-domain reasoning. Everything else (which Pi is in which core-sw port, which AP is connected to what) is documentation-only — model it if you enjoy that, skip it otherwise. Cable inventory is the single best example of "NetBox accuracy decays to 30% within 60 days" that the surveys keep finding; only model cables you'd actually keep current.
 
 ---
 
@@ -370,7 +370,7 @@ Audit rule: any device with `discovery_source=manual` and `last_verified > 180 d
 
 ### 10. Topology chokepoint
 
-The dorkcore → u7playroom uplink is a NetBox cable, as noted. The *implication* — every node in VLAN 6 depends on u7playroom for any traffic leaving the homelab subnet — is derived. The harness needs a topology-aware function: "for service S running on device D, enumerate the failure domains it depends on for (a) internal traffic, (b) internet egress, (c) cross-VLAN traffic." That function reads NetBox cables, traces paths, returns dependency sets.
+The core-sw → u7den uplink is a NetBox cable, as noted. The *implication* — every node in VLAN 6 depends on u7den for any traffic leaving the homelab subnet — is derived. The harness needs a topology-aware function: "for service S running on device D, enumerate the failure domains it depends on for (a) internal traffic, (b) internet egress, (c) cross-VLAN traffic." That function reads NetBox cables, traces paths, returns dependency sets.
 
 That's downstream of NetBox modeling, but it's worth flagging now because it shapes which cables you model. Model the cables that affect failure-domain queries; skip the rest.
 
@@ -504,9 +504,9 @@ What the harness produces from the inventory above on its first full run, withou
   Current state is "broken in a way nothing alerts on."
 
 [MEDIUM] CHOKEPOINT
-  dorkcore (homelab core switch) uplinks via u7playroom (AP). Single edge
-  between VLAN 6 and the rest of the network. If u7playroom fails, the
-  entire homelab is partitioned. Consider direct dorkcore→gateway uplink.
+  core-sw (homelab core switch) uplinks via u7den (AP). Single edge
+  between VLAN 6 and the rest of the network. If u7den fails, the
+  entire homelab is partitioned. Consider direct core-sw→gateway uplink.
 
 [MEDIUM] INVENTORY-GAP
   CPU model unknown for node1, node2, node3. Will be filled by next

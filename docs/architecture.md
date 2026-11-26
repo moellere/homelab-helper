@@ -328,9 +328,9 @@ Sufficient for Phase 1. Discovery is invoked manually via CLI.
 
 Phase 2+ topology. Agent runs on each managed host. helper-server is the single coordination point.
 
-### Multi-site (the Wyola case)
+### Multi-site (the remote-site case)
 
-helper-server stays at the primary site (Covington). Agents at Wyola post observations over the site-to-site VPN. Adapters at the primary site that need to reach Wyola (none in MVP) would also traverse the VPN. NetBox Sites + Locations model the topology; the agent doesn't care about geography, just network reachability.
+helper-server stays at the primary site (SiteA). Agents at SiteB post observations over the site-to-site VPN. Adapters at the primary site that need to reach SiteB (none in MVP) would also traverse the VPN. NetBox Sites + Locations model the topology; the agent doesn't care about geography, just network reachability.
 
 ## Security & trust
 

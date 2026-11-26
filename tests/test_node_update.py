@@ -147,16 +147,18 @@ def test_node_update_can_never_be_auto_promoted() -> None:
 
 
 class _FakeProxmox:
-    def __init__(self, guests: list[dict[str, Any]]) -> None:
-        self._guests = guests
+    def __init__(
+        self, guests: list[dict[str, Any]], live: dict[int, dict[str, Any]] | None = None
+    ) -> None:
+        self._guests, self._live = guests, live or {}
         self.calls: list[str] = []
 
     async def cluster_resources(self, kind: str) -> list[dict[str, Any]]:
         self.calls.append(f"cluster_resources:{kind}")
         return self._guests
 
-    async def vm_current_status(self, *a: Any, **k: Any) -> dict[str, Any]:
-        return {}
+    async def vm_current_status(self, node: str, vmid: int, kind: str) -> dict[str, Any]:
+        return self._live.get(vmid, {})
 
 
 def _proxmox(guests: list[dict[str, Any]]) -> Any:
@@ -240,6 +242,38 @@ async def test_an_undrained_node_is_refused_before_any_write(sessionmaker_) -> N
         assert "drain it first" in (result.error or "")
         assert ssh.calls == [], "nothing ran on the node"
         assert p.outcome is ProposalOutcome.PENDING, "still retryable once drained"
+
+
+async def test_a_guest_the_cluster_listing_still_shows_running_does_not_block(
+    sessionmaker_,
+) -> None:
+    """/cluster/resources lags the node by a status cycle: a guest whose shutdown
+    just returned OK still reads running there. The node's own answer decides."""
+    ssh = _FakeSSH()
+    stale = [{"node": NODE, "vmid": 6115, "name": "cp3", "type": "qemu", "status": "running"}]
+    pve = _FakeProxmox(stale, live={6115: {"status": "stopped"}})
+    async with session_scope(sessionmaker_) as s:
+        await seeded(s)
+        p = proposal_for()
+        s.add(p)
+        await s.flush()
+        result = await execute_proposal(s, p, pve, actor="enoch", confirm_cb=_yes, ssh_adapter=ssh)
+    assert result.outcome == "succeeded", result.error
+    assert len(ssh.calls) == 1
+
+
+async def test_a_guest_the_node_confirms_running_still_blocks(sessionmaker_) -> None:
+    ssh = _FakeSSH()
+    live = [{"node": NODE, "vmid": 6115, "name": "cp3", "type": "qemu", "status": "running"}]
+    pve = _FakeProxmox(live, live={6115: {"status": "running"}})
+    async with session_scope(sessionmaker_) as s:
+        await seeded(s)
+        p = proposal_for()
+        s.add(p)
+        await s.flush()
+        result = await execute_proposal(s, p, pve, actor="enoch", confirm_cb=_yes, ssh_adapter=ssh)
+    assert result.outcome == "refused"
+    assert ssh.calls == []
 
 
 async def test_stopped_guests_do_not_block_an_update(sessionmaker_) -> None:

@@ -50,11 +50,12 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from sqlalchemy import select
 
 from homelab_helper.adapters.argocd import ArgoCDAPIError
 from homelab_helper.adapters.kubernetes import KubeError
-from homelab_helper.adapters.proxmox import ProxmoxAPIError
+from homelab_helper.adapters.proxmox import ProxmoxAPIError, ProxmoxTaskError
 from homelab_helper.adapters.talos import TalosError, image_with_tag, wait_for_tag
 from homelab_helper.adapters.unifi import UniFiAPIError
 from homelab_helper.db.enums import AutonomyLevel, ProposalOutcome, TrustDomain
@@ -706,7 +707,10 @@ async def _node_preflight(
     running = [
         v
         for v in await adapter.cluster_resources("vm")
-        if str(v.get("node")) == node and v.get("status") == "running" and not v.get("template")
+        if str(v.get("node")) == node
+        and v.get("status") == "running"
+        and not v.get("template")
+        and await _still_running(adapter, node, v)
     ]
     if running:
         names = ", ".join(str(v.get("name") or v.get("vmid")) for v in running[:6])
@@ -717,14 +721,46 @@ async def _node_preflight(
     return node, ssh, host, user, key_path
 
 
+async def _still_running(adapter: ProxmoxAdapter, node: str, guest: dict[str, Any]) -> bool:
+    """Confirm a guest ``/cluster/resources`` lists as running against the node itself.
+
+    That listing lags by a status cycle: a guest whose shutdown task has just
+    returned OK still reads "running" for several seconds, which refused a
+    drained node's update. A live read that fails or names no status keeps the
+    listing's answer, so the check can only lift a refusal the node disproves.
+    """
+    kind = guest.get("type")
+    if kind not in {"qemu", "lxc"}:
+        return True
+    try:
+        current = await adapter.vm_current_status(node, int(guest["vmid"]), str(kind))
+    except (ProxmoxAPIError, httpx.TransportError, KeyError, TypeError, ValueError):
+        return True
+    return current.get("status") != "stopped"
+
+
+async def _node_online(adapter: ProxmoxAdapter, node: str) -> bool | None:
+    """Whether the API lists ``node`` online; ``None`` when the API cannot be reached.
+
+    The API endpoint may be the node being rebooted, so an unreachable API is
+    an expected state during the wait, not a failure of the reboot.
+    """
+    try:
+        nodes = await adapter.list_nodes()
+    except (ProxmoxAPIError, httpx.TransportError):
+        return None
+    return any(str(n.get("node")) == node and n.get("status") == "online" for n in nodes)
+
+
 async def _node_is_back(
     adapter: ProxmoxAdapter, ssh: KernelSSHAdapter, host: Host, node: str, user: str, key_path: Any
 ) -> bool:
-    nodes = await adapter.list_nodes()
-    online = any(str(n.get("node")) == node and n.get("status") == "online" for n in nodes)
-    if not online:
+    if not await _node_online(adapter, node):
         return False
-    if not (await adapter.cluster_status()).get("quorate", True):
+    try:
+        if not (await adapter.cluster_status()).get("quorate", True):
+            return False
+    except (ProxmoxAPIError, httpx.TransportError):
         return False
     ok, _ = await ssh.health_check(host.primary_ip or node, user=user, key_path=key_path)
     return ok
@@ -788,8 +824,7 @@ async def _dispatch_node_reboot(
     # First let the API notice the node leaving, so a stale "online" from
     # before the reboot is not mistaken for its return.
     while time.monotonic() - started < REBOOT_GOING_DOWN_S:
-        nodes = await adapter.list_nodes()
-        if not any(str(n.get("node")) == node and n.get("status") == "online" for n in nodes):
+        if not await _node_online(adapter, node):
             break
         await asyncio.sleep(REBOOT_POLL_S)
     while time.monotonic() - started < REBOOT_TIMEOUT_S:
@@ -1029,7 +1064,18 @@ async def _dispatch_guest(manifest: ActionManifest, adapter: ProxmoxAdapter) -> 
             node, vmid, vm_kind, manifest.target_node, online=online
         )
     verb = _POWER_DISPATCH[manifest.action_kind]
-    return verb, await adapter.vm_power(node, vmid, vm_kind, verb)
+    try:
+        return verb, await adapter.vm_power(node, vmid, vm_kind, verb)
+    except ProxmoxTaskError:
+        # A guest with onboot set is started by the node's own boot before a
+        # maintenance run's return step reaches it; Proxmox fails that start
+        # with "already running". The asked-for state holds, so it succeeded.
+        if verb != "start":
+            raise
+        current = await adapter.vm_current_status(node, vmid, vm_kind)
+        if current.get("status") != "running":
+            raise
+        return "start (already running)", None
 
 
 async def _dispatch(

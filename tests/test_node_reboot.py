@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from homelab_helper.adapters.kernel_ssh import CommandResult
@@ -58,6 +59,7 @@ class _FakeProxmox:
     def __init__(self, guests: list[dict[str, Any]], statuses: list[str], quorate: bool = True):
         self._guests, self._statuses, self._quorate = guests, list(statuses), quorate
         self.calls: list[str] = []
+        self.unreachable = False
 
     async def cluster_resources(self, kind: str) -> list[dict[str, Any]]:
         self.calls.append(f"cluster_resources:{kind}")
@@ -66,6 +68,8 @@ class _FakeProxmox:
     async def list_nodes(self) -> list[dict[str, Any]]:
         status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
         self.calls.append(f"list_nodes:{status}")
+        if status == "unreachable":
+            raise httpx.ConnectError("All connection attempts failed")
         return [{"node": NODE, "status": status}, {"node": "hv0", "status": "online"}]
 
     async def cluster_status(self) -> dict[str, Any]:
@@ -149,6 +153,24 @@ async def test_a_drained_node_reboots_and_the_dispatch_waits_for_its_return(
     assert ssh.health_checks == 2
     assert fast_clock[0] >= executor_mod.REBOOT_POLL_S * 2
     assert "list_nodes:offline" in pve.calls, "waited for the node to actually leave"
+
+
+async def test_a_reboot_of_the_node_serving_the_api_waits_through_the_outage(
+    sessionmaker_,  # noqa: F811
+    fast_clock,
+) -> None:  # noqa: F811
+    """The harness's Proxmox URL may be the node it reboots: the API refusing
+    connections while that node is down is the wait, not a failed reboot."""
+    pve = _FakeProxmox([], ["online", "unreachable", "unreachable", "online"])
+    ssh = _FakeSSH()
+    async with session_scope(sessionmaker_) as s:
+        await seeded(s)
+        p = proposal_for()
+        s.add(p)
+        await s.flush()
+        result = await execute_proposal(s, p, pve, actor="enoch", confirm_cb=_yes, ssh_adapter=ssh)
+        assert result.outcome == "succeeded", result.error
+    assert pve.calls.count("list_nodes:unreachable") == 2
 
 
 async def test_a_node_that_never_comes_back_is_a_failed_receipt_not_a_success(

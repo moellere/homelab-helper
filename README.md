@@ -408,7 +408,7 @@ its drain is finished by a second one: `helper maintenance plan <node>
 run's return leg (a guest that has moved since is left alone).
 
 ```bash
-helper maintenance plan bmax2            # the steps, as proposals
+helper maintenance plan pve2            # the steps, as proposals
 helper maintenance run 01a1…  --yes      # drain → update → reboot → return
 helper maintenance list                  # every run and how far it got
 ```
@@ -512,7 +512,7 @@ own self-heal gets first go); one live proposal per finding; a six-hour
 cooldown after any decision so a fix that did not clear the finding is not
 retried every pass; and a draft whose finding resolves is withdrawn.
 The listener sends every prompt at once — each titled with what it would do
-("Resize proxmox-dc: cores 2 → 1"), with one line of why and when it takes
+("Resize dc01: cores 2 → 1"), with one line of why and when it takes
 effect, on a high-importance "homelab-helper approvals" channel, sticky until
 answered, and cleared from the phone once answered or expired (15 minutes by
 default, `HOMELAB_HELPER_APPROVAL_TIMEOUT_S`). Approve or Deny is final; a

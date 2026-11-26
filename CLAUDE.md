@@ -336,7 +336,7 @@ Build state by phase (see `docs/backlog.md` for the authoritative punch list):
 Live-fleet validation: Phases 4–7 are signed off against the operator's lab
 (`docs/live-validation.md` sign-off table); the operator's lab runs
 `containers/workload-restart/single-service` at AUTONOMOUS. Open: the first
-maintenance run's resumed finish on bmax3, and the Phase 11 rows, which wait on
+maintenance run's resumed finish on pve3, and the Phase 11 rows, which wait on
 the next Talos / Kubernetes patch release.
 Packaging is release-ready: `helper` works from `uv tool install` (per-user
 data/config dirs, packaged migrations and workload library), and a `v*` tag

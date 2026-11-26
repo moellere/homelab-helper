@@ -271,8 +271,8 @@ def test_window_matches_a_target_given_by_address() -> None:
         _context(
             cell_level=AutonomyLevel.AUTONOMOUS,
             cell_granted=True,
-            windows=(_window({"hosts": ["talos-cp1"]}),),
-            target_aliases=("talos-cp1",),
+            windows=(_window({"hosts": ["k8s-cp1"]}),),
+            target_aliases=("k8s-cp1",),
         ),
     )
     assert decision.level == AutonomyLevel.AUTONOMOUS
@@ -433,7 +433,7 @@ async def test_context_loads_the_targets_boundary_whatever_else_is_listed(sessio
 async def test_context_resolves_an_address_target_to_its_host(sessionmaker) -> None:
     async with session_scope(sessionmaker) as s:
         await seed_domains(s)
-        host = Host(hostname="talos-cp1", primary_ip="10.0.6.13")
+        host = Host(hostname="k8s-cp1", primary_ip="10.0.6.13")
         s.add(host)
         await s.flush()
         s.add(
@@ -442,8 +442,8 @@ async def test_context_resolves_an_address_target_to_its_host(sessionmaker) -> N
     action = _action(hostnames=("10.0.6.13",), target_hosts=("10.0.6.13",))
     async with sessionmaker() as s:
         context = await load_trust_context(s, action)
-    assert [b.hostname for b in context.boundaries] == ["talos-cp1"]
-    assert context.target_aliases == ("talos-cp1",)
+    assert [b.hostname for b in context.boundaries] == ["k8s-cp1"]
+    assert context.target_aliases == ("k8s-cp1",)
 
 
 def test_operator_identity_env_wins(monkeypatch: pytest.MonkeyPatch) -> None:

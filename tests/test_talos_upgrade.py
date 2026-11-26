@@ -37,7 +37,7 @@ OLD, NEW = "v1.14.1", "v1.14.2"
 def proposal_for(version: str = NEW) -> ProposalLog:
     return ProposalLog(
         title=f"Upgrade {NODE} to {version}",
-        artifact=build_talos_artifact(node=NODE, version=version, hostnames=("talos-cp1",)),
+        artifact=build_talos_artifact(node=NODE, version=version, hostnames=("k8s-cp1",)),
         blast_radius="single-host",
         proposed_by="agent:mcp",
     )
@@ -117,7 +117,7 @@ def test_the_manifest_names_a_release_and_nothing_else() -> None:
     assert manifest.is_talos
     assert not manifest.is_node
     assert manifest.cell_key == "host-os/talos-upgrade/single-host"
-    assert manifest.hostnames == (NODE, "talos-cp1")
+    assert manifest.hostnames == (NODE, "k8s-cp1")
     assert manifest.target_hosts == (NODE,)
     assert manifest.target_label == f"talos node {NODE} -> {NEW}"
     assert select_strategy(manifest) == PRIOR_IMAGE

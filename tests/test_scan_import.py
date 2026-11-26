@@ -52,9 +52,9 @@ def sessionmaker(engine):
 def test_parse_skips_blank_ip_and_normalizes_dashes() -> None:
     rows = parse_scan_csv(_CSV)
     assert len(rows) == 5
-    dorkprint = next(r for r in rows if r.ip == "10.0.0.30")
-    assert dorkprint.hostname is None  # "-" -> None
-    assert dorkprint.mac is None
+    printer = next(r for r in rows if r.ip == "10.0.0.30")
+    assert printer.hostname is None  # "-" -> None
+    assert printer.mac is None
 
 
 def test_classify_strategies() -> None:

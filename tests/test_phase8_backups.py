@@ -175,11 +175,11 @@ def test_hass_offsite_backup_sensors_open_when_stale_or_failed() -> None:
         {"entity_id": "binary_sensor.offsite_backup_ok", "domain": "binary_sensor", "state": "off"},
         {"entity_id": "sensor.temperature", "domain": "sensor", "state": "21"},
     ]
-    issues, observed = hass_backup_issues("home-assistant-wyola", states, now=NOW)
+    issues, observed = hass_backup_issues("home-assistant-site-b", states, now=NOW)
     assert observed == {"backup-offsite-stale"}
     assert {(i.category, i.target_id) for i in issues} == {
-        ("backup-offsite-stale", "home-assistant-wyola/sensor.offsite_replication_age"),
-        ("backup-offsite-stale", "home-assistant-wyola/binary_sensor.offsite_backup_ok"),
+        ("backup-offsite-stale", "home-assistant-site-b/sensor.offsite_replication_age"),
+        ("backup-offsite-stale", "home-assistant-site-b/binary_sensor.offsite_backup_ok"),
     }
 
 

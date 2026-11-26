@@ -207,7 +207,7 @@ the stopped guests, move the DIMMs, or accept it as reserve).
 ### P5-AC6 · the VPN path is refused
 
 ```bash
-uv run helper plan path <wyola-host> <covington-host>
+uv run helper plan path <site-b-host> <site-a-host>
 ```
 
 **Pass:** refuses to place Ceph-replicated work across the link and explains
@@ -400,10 +400,10 @@ receipt, `helper exec rollback` — on a target you can afford to touch:
 `helper approvals show` lists what each pending proposal would get and the
 answers so far.
 
-Run 10/03/2026 (Covington lab): all three approved from the phone within a few
+Run 10/03/2026 (lab): all three approved from the phone within a few
 seconds; cpu-type showed as *pending* on guest 102 and rolled back; the DNS
-record appeared on the Wyola controller and rolled back by deletion; the Argo
-CD sync ran as a no-op on `app-guacamole-reconciler`. Finding: that app has
+record appeared on the SiteB controller and rolled back by deletion; the Argo
+CD sync ran as a no-op on `app-example-reconciler`. Finding: that app has
 **automated sync**, and Argo CD refuses its rollback API while it is on — so the
 verifier now reports such apps as unverifiable (AUTONOMOUS degrades to CONFIRM)
 and the undo of a sync there is a git revert, which stays human. A timed-out
@@ -476,7 +476,7 @@ single-host`, `host-os node-reboot single-host`. Consider revoking the two
 ### Per node
 
 ```bash
-uv run helper maintenance plan bmax2            # drafts the steps; nothing moves
+uv run helper maintenance plan pve2            # drafts the steps; nothing moves
 uv run helper maintenance run <id>              # one consent, then step by step
 ```
 
@@ -486,7 +486,7 @@ each node step's inverse:
 ```bash
 uv run helper trust grant host-os talos-upgrade single-host confirm
 uv run helper trust grant containers k8s-upgrade cluster confirm   # only with --kubernetes
-uv run helper maintenance plan-talos 10.250.6.13 --to v1.14.3     # control planes, then workers
+uv run helper maintenance plan-talos 10.0.6.13 --to v1.14.3     # control planes, then workers
 uv run helper maintenance run <id>                                 # health-gated between nodes
 uv run helper exec rollback <receipt-id>                           # one node back to its prior release
 uv run helper maintenance show <id>             # where it got to, with receipts
@@ -522,25 +522,25 @@ shape — see the asymmetric fixture under P4-AC2.
 | Criterion | Result | Notes |
 |---|---|---|
 | P4-AC1 chat grounded | ✅ 10/03/2026 | 17 hosts named from inventory, cloud footer honest. Found: the footer said "cloud" but not that Ollama had been tried and was unreachable — `RouterResult.skipped` + a `skipped:` line (PR #52). |
-| P4-AC2 Ceph narration | ✅ 10/09/2026 | Not observable on this fleet by construction: bmax0–3 are symmetric 1 GbE, Ceph HEALTH_OK, covomv on 10 GbE, so the analyser is correctly silent. the bundled `asymmetric` lab supplies the asymmetry — `discover replay` + `bottlenecks` produce the `CEPH_BOTTLENECK` finding a narrator would cite, through the real CLI, with no hardware (`tests/test_lab_replay_asymmetric.py`). Narration ran 10/09/2026 against the asymmetric fixture through the router (Anthropic, prefer-local fell through): the prose named `ceph-c`, the 1000 vs 2500 Mbps links and all four mitigations with their trade-offs, and ended by saying nothing moves until the operator acts. |
-| P4-AC3 onboard | ✅ 10/11/2026 | A fresh devbox clone the harness had never seen (`onboard1`, 10.250.1.227): one opening description, the interview confirmed and registered it, `--probe` ran warm discovery (47 observations; `smartctl` failed for want of sudo, as expected on a devbox) and `helper host show onboard1` had the host. Retired and destroyed afterwards. |
-| P4-AC4 MCP discovery | ✅ 10/03/2026 | `probe_host bmax3` from Claude Code: 4 probes, 33 observations, 0 failures, capability changes reconciled. |
+| P4-AC2 Ceph narration | ✅ 10/09/2026 | Not observable on this fleet by construction: pve0–3 are symmetric 1 GbE, Ceph HEALTH_OK, nas01 on 10 GbE, so the analyser is correctly silent. the bundled `asymmetric` lab supplies the asymmetry — `discover replay` + `bottlenecks` produce the `CEPH_BOTTLENECK` finding a narrator would cite, through the real CLI, with no hardware (`tests/test_lab_replay_asymmetric.py`). Narration ran 10/09/2026 against the asymmetric fixture through the router (Anthropic, prefer-local fell through): the prose named `ceph-c`, the 1000 vs 2500 Mbps links and all four mitigations with their trade-offs, and ended by saying nothing moves until the operator acts. |
+| P4-AC3 onboard | ✅ 10/11/2026 | A fresh devbox clone the harness had never seen (`onboard1`, 10.0.1.227): one opening description, the interview confirmed and registered it, `--probe` ran warm discovery (47 observations; `smartctl` failed for want of sudo, as expected on a devbox) and `helper host show onboard1` had the host. Retired and destroyed afterwards. |
+| P4-AC4 MCP discovery | ✅ 10/03/2026 | `probe_host pve3` from Claude Code: 4 probes, 33 observations, 0 failures, capability changes reconciled. |
 | P4-AC5 strict-local refusal | ✅ 10/03/2026 | Names the tier, the policy, each backend's exclusion reason, and the three options. |
 | P4-AC6 skill profile | ✅ mechanism 10/03/2026 | One Ceph/CSI question inferred `storage` + `container-orchestration` (basic, evidence 1). Longitudinal drift still to observe. |
 | P5-AC1 workload library | ✅ 10/03/2026 | 67 entries. |
-| P5-AC2 placement | ✅ 10/03/2026 | `immich` → bmax0 with RAM headroom, threads, GPU optionality and photo-library data gravity; arm/RAM rejections explained. |
-| P5-AC3 rebalance | ✅ after fix 10/03/2026 | First run: no migrations-only plan. Then: Proxmox guests planned onto a NAS, arm64 Pis and Talos workers, one VM ping-ponging. Three defects fixed (PR #51); now three plan classes, all moves within bmax0–3, no repeated VM. |
+| P5-AC2 placement | ✅ 10/03/2026 | `immich` → pve0 with RAM headroom, threads, GPU optionality and photo-library data gravity; arm/RAM rejections explained. |
+| P5-AC3 rebalance | ✅ after fix 10/03/2026 | First run: no migrations-only plan. Then: Proxmox guests planned onto a NAS, arm64 Pis and Talos workers, one VM ping-ponging. Three defects fixed (PR #51); now three plan classes, all moves within pve0–3, no repeated VM. |
 | P5-AC4 Ceph mitigations | ✅ 10/09/2026 | Against the asymmetric fixture: all four mitigations derived from its facts — CRUSH-reweight away from `ceph-c`, bring it 1000→2500 Mbps, relocate its OSDs to `ceph-a`, accept it as a cold tier. The runbook's "fail if they look hardcoded" check is now a test rather than a manual step: change `ceph-c`'s speed and the recommendation moves with it; make it symmetric and the pattern goes quiet. |
-| P5-AC5 surplus | ✅ 10/03/2026 | bmax0: three stopped guests, 32 GiB spare DIMMs, three options. Gap: covomv (a NAS running Docker) is also called surplus — the planner has no "not a hypervisor" notion; same root as the P5-AC3 targets defect. Fixed in Phase 9.2: only cluster nodes are candidates and the NAS is listed as not a placement target with the reason (`test_a_nas_with_spare_dimms_is_not_surplus`); re-run to confirm on the fleet. |
-| P5-AC6 VPN path refused | ✅ 10/03/2026 | Needed a topology file (none existed): two sites, VPN 6 ms RTT measured, bandwidth a placeholder. `plan path wynode2 bmax0` → LAN-grade: no. |
+| P5-AC5 surplus | ✅ 10/03/2026 | pve0: three stopped guests, 32 GiB spare DIMMs, three options. Gap: nas01 (a NAS running Docker) is also called surplus — the planner has no "not a hypervisor" notion; same root as the P5-AC3 targets defect. Fixed in Phase 9.2: only cluster nodes are candidates and the NAS is listed as not a placement target with the reason (`test_a_nas_with_spare_dimms_is_not_surplus`); re-run to confirm on the fleet. |
+| P5-AC6 VPN path refused | ✅ 10/03/2026 | Needed a topology file (none existed): two sites, VPN 6 ms RTT measured, bandwidth a placeholder. `plan path pi2 pve0` → LAN-grade: no. |
 | P6 steps 0–7 | ✅ by way of P7 (10/03/2026) | Grants, pessimistic gate, execution, receipts, rollback, override logging and demotion-on-reject all ran live during the Phase 7 sessions; step 5 and step 6 ran live 10/11/2026 against a `migrate` of a vmid that does not exist: step 6 first — window open, `exec run` stopped at the confirm prompt, `window kill --yes` from the side, answer `y` → `refused: elevation window … closed before dispatch — halting`, nothing dispatched; then step 5 without a window — Proxmox answered 500 on the migrate POST, a `failed` receipt was written, the proposal stayed pending, and `hypervisor/migrate/single-host` dropped to `propose (probation)` with a `demote` row on the audit spine and a phone notice. Re-grant pending. |
-| P7 steps 0–6 | ✅ 10/03/2026 | Covington lab: guest 102 (devbox clone) migrated bmax0→bmax3→bmax0 and rolled back to bmax3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
+| P7 steps 0–6 | ✅ 10/03/2026 | lab: guest 102 (devbox clone) migrated pve0→pve3→pve0 and rolled back to pve3; `homepage` deployment restarted (rev 19) and undone (rev 20 from 18); Approve, Deny and both undo paths exercised from a Pixel; every answer on `trust history`. Finding: Android shows the buttons only when the notification is expanded — hint + `clickAction: noAction` added. |
 | P7 step 7 (proactive loop) | ✅ 10/03/2026 | app-wirestudio resync drafted by `argocd-resync`, asked by the listener, approved from the phone, executed (receipt actor `listener`). Found: Synced/Degraded apps got a useless resync (fixed: OutOfSync only); app-of-apps blipped OutOfSync under automated sync and the phone was asked before Argo healed it (fixed: 15-min debounce + withdrawal). Daemon now runs from cron every 15 min. |
-| P8 / P10.4 maintenance run (one node) | ✅ 10/12/2026 (record reconstructed) | Two runs on bmax3. `01a12d91` drained five guests (proxmox-dc, esphome-builder, esphome-lxc, traefik-lxc → bmax1; guacamole-lxc → bmax2) and refused at the update step — no host row carried an SSH `credentials_ref` (fixed: #95). `01a12e11` (`plan --resume`, #97) then ran end to end at 03:04:44–03:05:57 UTC: `apt dist-upgrade` (nothing pending), `systemctl reboot` (bmax3 down 03:04:45, back 03:05:28), then the five returns — but the SSH session it was started from dropped as the last migrate returned, SIGHUP killed the CLI before its commit, and the harness kept **no record**: the proof is bmax3's journal and the pveproxy access logs, not a receipt. Fixed: `maintenance run` / `exec run` ignore SIGHUP (#101), runs commit per step (#100). The refusal's demotion of `host-os/node-update` is also fixed (#100). |
+| P8 / P10.4 maintenance run (one node) | ✅ 10/12/2026 (record reconstructed) | Two runs on pve3. `01a12d91` drained five guests (dc01, builder-vm, builder-lxc, proxy-lxc → pve1; remote-desktop-lxc → pve2) and refused at the update step — no host row carried an SSH `credentials_ref` (fixed: #95). `01a12e11` (`plan --resume`, #97) then ran end to end at 03:04:44–03:05:57 UTC: `apt dist-upgrade` (nothing pending), `systemctl reboot` (pve3 down 03:04:45, back 03:05:28), then the five returns — but the SSH session it was started from dropped as the last migrate returned, SIGHUP killed the CLI before its commit, and the harness kept **no record**: the proof is pve3's journal and the pveproxy access logs, not a receipt. Fixed: `maintenance run` / `exec run` ignore SIGHUP (#101), runs commit per step (#100). The refusal's demotion of `host-os/node-update` is also fixed (#100). |
 | P10.4 maintenance runs, three nodes | ✅ 11/26/2026, after fixes | Three nodes updated to the same kernel, every guest back, Ceph and etcd healthy; each run ended `failed` on a false failure, finished by hand or a `--resume` plan. The first stopped after its update on a dead terminal (`EIO`), then its reboot failed because the harness's Proxmox URL was that node. Two runs failed at the return `start` of a Talos control plane its node's `onboot` had already started. One was refused at the update a second after the control plane's shutdown returned, on a stale cluster listing. All four fixed. |
 | P11.1 talos-upgrade (one node) | ⏳ waits on a release | Every node runs Talos v1.14.2, the newest release (10/12/2026); the first patch release is the live test — `propose_talos_upgrade` on one worker, `helper exec run`, then `helper exec rollback` to see `talosctl rollback` bring the prior release back. |
 | P11.2 k8s-upgrade | ⏳ waits on a release | Kubernetes 1.37.1 is stable-1.37; the next patch is the live test, as the closing step of a Talos maintenance run. |
-| P11.3 Talos maintenance run | ⏳ waits on a release | `helper maintenance plan-talos 10.250.6.13 --to <next>`: three control planes, then three workers, health-gated. |
+| P11.3 Talos maintenance run | ⏳ waits on a release | `helper maintenance plan-talos 10.0.6.13 --to <next>`: three control planes, then three workers, health-gated. |
 | P11.4 workload usage | ✅ 10/12/2026 | `helper discover usage` recorded 67 workloads from 118 pods on the first run (prometheus 1.3 GiB, authentik-server 0.15 cores …); an hourly cron now feeds the history, so a workload baseline forms after two weeks. |
 | P7 step 8 (unattended run notice) | ✅ 10/05/2026 | `containers/workload-restart/single-service` granted AUTONOMOUS; an agent-drafted restart of `homepage/deployment/homepage` ran from `helper daemon run --once` with no tap (rev 20 → 21, receipt actor `listener`, rollback `rollout-undo` verified); the phone showed the ✓ notice with `unattended` and the `helper exec rollback` line, after the receipt. Failure/demotion path not forced live — it needs a write that fails after a read that succeeds; pinned by tests. Cell left at AUTONOMOUS by the operator's choice. Found: the 15-min cron listener asked about the proposal while the cell was still CONFIRM, the ask timed out, and the listener then (correctly) refused to run it unattended after the grant — draft *after* granting. |
 | P12-AC1 workloads persisted and rightsized | ✅ 11/22/2026, on a copy | Run against a copy of the lab database with the live adapters, so nothing was written to the lab. `discover k8s` kept 66 workloads on the cluster row, `plan rightsize` gave 55 workload recommendations, and the diagram drew them. |
@@ -554,7 +554,7 @@ shape — see the asymmetric fixture under P4-AC2.
 
 Open as of 10/12/2026:
 
-- **The bmax3 maintenance run** — done (see the row): the fleet is in the
+- **The pve3 maintenance run** — done (see the row): the fleet is in the
   intended end state and the procedure ran, but the receipts were lost to a
   terminal hangup. The next node with real updates pending is the first run
   that will leave a complete record.

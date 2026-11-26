@@ -90,7 +90,7 @@ widget; dot paths reach nested keys.
     icon: mdi-clipboard-check-outline
     widget:
       type: customapi
-      url: http://ubuntu-dev.lan:8710/status
+      url: http://devvm.lan:8710/status
       refreshInterval: 60000
       # headers: { X-API-Token: "{{HOMEPAGE_VAR_HOMELAB_HELPER_TOKEN}}" }
       mappings:
@@ -118,7 +118,7 @@ proposal is waiting, say:
 sensor:
   - platform: rest
     name: homelab_helper
-    resource: http://ubuntu-dev.lan:8710/status
+    resource: http://devvm.lan:8710/status
     scan_interval: 120
     value_template: "{{ value_json.health }}"
     json_attributes_path: "$"
